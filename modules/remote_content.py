@@ -102,9 +102,11 @@ class RemoteContentManager:
         return bool(current_id) and current_id != last_seen_id
 
     def _do_fetch(self, url):
-        """发起 HTTP GET 请求并解析 JSON"""
-        req = urllib.request.Request(url, method='GET')
+        """发起 HTTP GET 请求并解析 JSON（附加时间戳绕过 CDN 缓存）"""
+        bust = f'{"&" if "?" in url else "?"}t={int(time.time())}'
+        req = urllib.request.Request(url + bust, method='GET')
         req.add_header('User-Agent', 'PaperLab/1.0')
+        req.add_header('Cache-Control', 'no-cache')
         with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
             raw = resp.read()
             return json.loads(raw.decode('utf-8'))
