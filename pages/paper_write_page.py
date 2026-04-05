@@ -1,0 +1,4428 @@
+# -*- coding: utf-8 -*-
+"""
+论文写作页面
+"""
+
+import os
+import re
+import tkinter as tk
+import tkinter.font as tkfont
+from tkinter import filedialog, messagebox, ttk
+
+try:
+    from PIL import Image, ImageTk
+except Exception:
+    Image = None
+    ImageTk = None
+
+from modules.aux_tools import AuxTools
+from modules.app_metadata import MODULE_PAPER_WRITE
+from modules.paper_writer import PaperWriter
+from pages.home_support import ensure_model_configured
+from modules.prompt_center import PromptCenter
+from modules.task_runner import TaskRunner
+from modules.ui_components import (
+    COLORS,
+    FONTS,
+    CardFrame,
+    apply_mixed_fonts,
+    create_home_shell_button,
+    LoadingOverlay,
+    ModernButton,
+    bind_responsive_two_pane,
+    create_scrolled_text,
+    get_resource_path,
+    load_image,
+    show_tooltip,
+)
+from modules.workspace_state import WorkspaceStateMixin
+
+
+class PaperWritePage(WorkspaceStateMixin):
+    PAGE_STATE_ID = 'paper_write'
+    PARAGRAPH_INDENT = '　　'
+    DEFAULT_BG_SWATCH_COLOR = '#C9CED8'
+    TOOLBAR_ICON_SIZE = (20, 20)
+    TOOLBAR_SEPARATOR_WIDTH = 2
+    TOOLBAR_SEPARATOR_HEIGHT = 22
+    STACKABLE_INLINE_FORMAT_TAGS = (
+        'fmt_bold',
+        'fmt_italic',
+        'fmt_underline',
+        'fmt_strike',
+    )
+    SCRIPT_FORMAT_TAGS = (
+        'fmt_superscript',
+        'fmt_subscript',
+    )
+    LOWER_GREEK_LETTERS = (
+        'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ',
+        'ν', 'ξ', 'ο', 'π', 'ρ', 'σ', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω',
+    )
+    NUMBERING_MENU_OPTIONS = (
+        ('1,2,3...', 'decimal'),
+        ('a,b,c...', 'lower_alpha'),
+        ('i,ii,iii...', 'lower_roman'),
+        ('A,B,C', 'upper_alpha'),
+        ('I,II,III...', 'upper_roman'),
+        ('一、二、三…', 'cn_comma'),
+        ('（一）（二）（三）…', 'cn_paren'),
+        ('①②③…', 'circled_digit'),
+        ('α,β,γ,δ', 'lower_greek'),
+    )
+    BULLET_MENU_OPTIONS = (
+        ('○ 大圆圈', '○'),
+        ('● 小黑点', '●'),
+        ('■ 小方块', '■'),
+        ('▼ 下三角', '▼'),
+        ('▶ 右三角', '▶'),
+    )
+    TOOLBAR_ICON_FILES = {
+        '撤回': 'png/Withdraw.png',
+        '重做': 'png/Redo.png',
+        '查替': 'png/Query.png',
+        '缩进': 'png/Indentation.png',
+        '项目符号': 'png/Bullet_points.png',
+        '引用': 'png/Quote.png',
+        '编号': 'png/Number.png',
+        '加粗': 'png/Bold.png',
+        '斜体': 'png/Italic.png',
+        '下划线': 'png/Underline.png',
+        '删除线': 'png/Strikethrough.png',
+        '上标': 'png/Superscript.png',
+        '下标': 'png/Subscript.png',
+        '格式刷': 'png/Format_Painter.png',
+        '字色': 'png/Color.png',
+        '字体格式': 'png/Font.png',
+    }
+    WORD_CN_FONT_FAMILIES = (
+        '宋体', '黑体', '楷体', '仿宋', '微软雅黑',
+        '华文中宋', '华文楷体', '华文仿宋', '方正小标宋',
+    )
+    WORD_EN_FONT_FAMILIES = (
+        'Times New Roman', 'Arial', 'Calibri',
+        'Cambria', 'Georgia', 'Courier New',
+    )
+    WORD_FONT_FAMILIES = WORD_CN_FONT_FAMILIES + WORD_EN_FONT_FAMILIES
+    WORD_FONT_SIZES = (
+        ('初号', 42), ('小初', 36), ('一号', 26), ('小一', 24),
+        ('二号', 22), ('小二', 18), ('三号', 16), ('小三', 15),
+        ('四号', 14), ('小四', 12), ('五号', 10.5), ('小五', 9),
+        ('六号', 7.5), ('小六', 6.5), ('七号', 5.5), ('八号', 5),
+    )
+    LEVEL_STYLE_DEFAULTS = {
+        'h1': {'font': '黑体', 'font_en': 'Times New Roman', 'size_name': '三号', 'size_pt': 16},
+        'h2': {'font': '黑体', 'font_en': 'Times New Roman', 'size_name': '四号', 'size_pt': 14},
+        'h3': {'font': '黑体', 'font_en': 'Times New Roman', 'size_name': '小四', 'size_pt': 12},
+        'body': {'font': '宋体', 'font_en': 'Times New Roman', 'size_name': '小四', 'size_pt': 12},
+    }
+    FOREGROUND_FORMAT_COLORS = (
+        ('黑', 'fmt_fg_black', '#15161A'),
+        ('蓝', 'fmt_fg_blue', '#2144B0'),
+        ('红', 'fmt_fg_red', '#C92A2A'),
+        ('绿', 'fmt_fg_green', '#2B8A3E'),
+        ('橙', 'fmt_fg_orange', '#E67700'),
+        ('灰', 'fmt_fg_gray', '#5E6372'),
+    )
+    BACKGROUND_FORMAT_COLORS = (
+        ('黄', 'fmt_bg_yellow', '#FFF1A8'),
+        ('蓝', 'fmt_bg_blue', '#DCE7FF'),
+        ('绿', 'fmt_bg_green', '#D8F5DD'),
+        ('粉', 'fmt_bg_pink', '#FFE1EA'),
+        ('灰', 'fmt_bg_gray', '#E9ECEF'),
+        ('无', '', ''),
+    )
+
+    def __init__(self, parent, config_mgr, api_client, history_mgr,
+                 set_status, navigate_page=None, app_bridge=None):
+        self.config = config_mgr
+        self.api = api_client
+        self.history = history_mgr
+        self.set_status = set_status
+        self.navigate_page = navigate_page
+        self.app_bridge = app_bridge
+        self.prompt_center = PromptCenter(config_mgr)
+        self.writer = PaperWriter(api_client)
+        self.aux = AuxTools(api_client)
+        self.frame = tk.Frame(parent, bg=COLORS['bg_main'])
+        self.loading = LoadingOverlay(self.frame, config_mgr)
+        self.task_runner = TaskRunner(self.frame, loading=self.loading, set_status=self.set_status)
+        self._snapshots = []
+        self._sections = {}   # {章节标题: 内容}
+        self._section_formats = {}  # {章节标题: [{'tag': 'fmt_*', 'start': '1.0', 'end': '1.4'}]}
+        self._section_order = []  # 章节顺序
+        self._section_levels = {}  # {章节标题: 层级}
+        self._section_parent = {}  # {章节标题: 父标题}
+        self._section_children = {}  # {章节标题: [子标题]}
+        self._collapsed_sections = set()  # 折叠的二级标题
+        self._editor_section_source = ''
+        self._outline_editing_title = ''
+        self._outline_drag_job = None
+        self._outline_drag_data = None
+        self._outline_context_title = ''
+        self._selection_snapshot = None
+        self._editor_selection_range = None
+        self._context_revision = 0
+        self._find_window = None
+        self._find_query_var = None
+        self._replace_query_var = None
+        self._editor_tool_buttons = {}
+        self._editor_tool_images = {}
+        self._editor_bg_swatch_images = {}
+        self._editor_tool_separators = []
+        self._editor_bg_indicator_color = self.DEFAULT_BG_SWATCH_COLOR
+        self._editor_numbering_window = None
+        self._editor_bullet_window = None
+        self._editor_palette_window = None
+        self._editor_popup_root_click_bind = None
+        self._editor_format_fonts = {}
+        self._editor_font_render_tags = {}
+        self._outline_level_fonts = {}
+        self._format_painter_tags = None
+        self._level_font_styles = {k: dict(v) for k, v in self.LEVEL_STYLE_DEFAULTS.items()}
+        self._current_cn_font = None
+        self._current_en_font = None
+        self._current_size_pt = 12
+        self._init_workspace_state_support()
+        self._build()
+        self.restore_saved_workspace_state()
+        self._bind_workspace_state_watchers()
+        self._enable_workspace_state_autosave()
+
+    # ──────────────────────────────────────────────
+    # 构建
+    # ──────────────────────────────────────────────
+
+    def _build(self):
+        # ── 写作设置卡片 ──────────────────────────────
+        self._build_settings_card()
+
+        # ── 主体双栏 ─────────────────────────────────
+        body = tk.Frame(self.frame, bg=COLORS['bg_main'])
+        body.pack(fill=tk.BOTH, expand=True)
+
+        left = self._build_left_panel(body)
+        right = self._build_right_panel(body)
+
+        bind_responsive_two_pane(body, left, right, breakpoint=1180, gap=8, left_minsize=260)
+
+    def _bind_workspace_state_watchers(self):
+        for widget in (self.topic_entry, self.subject_entry, self.section_entry, self.edit_text):
+            widget.bind('<KeyRelease>', self._schedule_workspace_state_save, add='+')
+            widget.bind('<<Paste>>', lambda _event: self.frame.after_idle(self._schedule_workspace_state_save), add='+')
+            widget.bind('<<Cut>>', lambda _event: self.frame.after_idle(self._schedule_workspace_state_save), add='+')
+
+        self.style_var.trace_add('write', lambda *_args: self._schedule_workspace_state_save())
+        self.ref_var.trace_add('write', lambda *_args: self._schedule_workspace_state_save())
+        self.wcount_var.trace_add('write', lambda *_args: self._schedule_workspace_state_save())
+
+    def export_workspace_state(self):
+        current_section = self.section_entry.get().strip()
+        editor_text = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        sections = dict(self._sections)
+        section_formats = self._copy_section_format_map()
+        section_order = list(self._section_order)
+        section_levels = dict(self._section_levels)
+        editor_section_source = self._editor_section_source or current_section
+        if editor_section_source:
+            sections[editor_section_source] = editor_text
+            section_formats[editor_section_source] = self._serialize_editor_format_spans()
+            if editor_section_source not in section_order:
+                section_order.append(editor_section_source)
+            section_levels[editor_section_source] = section_levels.get(
+                editor_section_source,
+                self._infer_outline_level(editor_section_source),
+            )
+
+        selected_section = ''
+        if hasattr(self, '_outline_selected') and self._outline_selected is not None:
+            selected_section = self._outline_selected.get().strip()
+
+        return {
+            'topic': self.topic_entry.get().strip(),
+            'style': self.style_var.get(),
+            'subject': self.subject_entry.get().strip(),
+            'reference_style': self.ref_var.get(),
+            'outline_text': self.outline_text.get('1.0', tk.END).strip(),
+            'sections': sections,
+            'section_formats': section_formats,
+            'section_order': section_order,
+            'section_levels': section_levels,
+            'section_parent': dict(self._section_parent),
+            'collapsed_sections': sorted(self._collapsed_sections),
+            'selected_section': selected_section,
+            'current_section': current_section,
+            'editor_section_source': editor_section_source,
+            'target_word_count': self.wcount_var.get(),
+            'editor_text': editor_text,
+            'editor_toolbar_bg_color': self._editor_bg_indicator_color,
+            'snapshots': list(self._snapshots),
+            'selection_snapshot': dict(self._selection_snapshot or {}),
+            'context_revision': self._context_revision,
+            'level_font_styles': {k: dict(v) for k, v in self._level_font_styles.items()},
+        }
+
+    def restore_workspace_state(self, state):
+        if not isinstance(state, dict):
+            return
+
+        self.topic_entry.delete(0, tk.END)
+        self.topic_entry.insert(0, state.get('topic', ''))
+        self.style_var.set(state.get('style', self.style_var.get()))
+        self.subject_entry.delete(0, tk.END)
+        self.subject_entry.insert(0, state.get('subject', ''))
+        self.ref_var.set(state.get('reference_style', self.ref_var.get()))
+        self.wcount_var.set(state.get('target_word_count', self.wcount_var.get()))
+
+        self.outline_text.delete('1.0', tk.END)
+        outline_text = state.get('outline_text', '')
+        if outline_text:
+            self.outline_text.insert('1.0', outline_text)
+
+        sections = state.get('sections', {})
+        self._sections = dict(sections) if isinstance(sections, dict) else {}
+        order = state.get('section_order', [])
+        self._section_order = [item for item in order if item in self._sections] if isinstance(order, list) else []
+        if not self._section_order:
+            self._section_order = list(self._sections)
+        levels = state.get('section_levels', {})
+        if isinstance(levels, dict):
+            self._section_levels = {
+                key: max(1, int(levels.get(key, self._infer_outline_level(key)) or 1))
+                for key in self._section_order
+            }
+        else:
+            self._section_levels = {key: self._infer_outline_level(key) for key in self._section_order}
+        parent_map = state.get('section_parent', {})
+        if isinstance(parent_map, dict):
+            self._section_parent = {
+                key: parent_map.get(key, '')
+                for key in self._section_order
+            }
+        else:
+            self._section_parent = {}
+        self._section_formats = self._sanitize_section_format_map(state.get('section_formats', {}))
+        self._merge_keyword_section_into_abstract()
+        if not any(self._section_parent.values()) and self._section_order:
+            self._infer_section_relationships_from_order()
+        else:
+            self._rebuild_section_children()
+        collapsed = state.get('collapsed_sections', [])
+        if isinstance(collapsed, list):
+            self._collapsed_sections = {
+                title for title in collapsed
+                if title in self._section_order and self._section_levels.get(title) == 2 and self._section_children.get(title)
+            }
+        else:
+            self._collapsed_sections = set()
+
+        snapshots = state.get('snapshots', [])
+        self._snapshots = list(snapshots) if isinstance(snapshots, list) else []
+        selection_snapshot = state.get('selection_snapshot', {})
+        self._selection_snapshot = dict(selection_snapshot) if isinstance(selection_snapshot, dict) else None
+
+        self._refresh_outline_list()
+
+        selected_section = state.get('selected_section', '')
+        if selected_section in self._sections:
+            self._select_section(selected_section, touch_context=False)
+
+        current_section = state.get('current_section', '')
+        self.section_entry.delete(0, tk.END)
+        self.section_entry.insert(0, current_section)
+        self._editor_section_source = state.get('editor_section_source', '') or current_section
+        toolbar_bg_color = state.get('editor_toolbar_bg_color', self.DEFAULT_BG_SWATCH_COLOR)
+        if isinstance(toolbar_bg_color, str) and re.match(r'^#[0-9A-Fa-f]{6}$', toolbar_bg_color):
+            self._editor_bg_indicator_color = toolbar_bg_color
+        else:
+            self._editor_bg_indicator_color = self.DEFAULT_BG_SWATCH_COLOR
+
+        editor_text = self._normalize_section_body(state.get('editor_text', ''))
+        editor_formats = self._section_formats.get(self._editor_section_source, [])
+        self._set_editor_content(editor_text, editor_formats, reset_undo=True)
+        self._update_background_color_button()
+
+        try:
+            self._context_revision = int(state.get('context_revision', 0) or 0)
+        except Exception:
+            self._context_revision = 0
+
+        saved_styles = state.get('level_font_styles', {})
+        if isinstance(saved_styles, dict) and saved_styles:
+            for key in ('h1', 'h2', 'h3', 'body'):
+                if key in saved_styles and isinstance(saved_styles[key], dict):
+                    self._level_font_styles[key] = dict(saved_styles[key])
+        self._apply_level_font_to_editor()
+
+        self._update_stats()
+
+    def _build_settings_card(self):
+        card = CardFrame(self.frame, title='写作设置')
+        card.pack(fill=tk.X, pady=(0, 8))
+        inner = card.inner
+
+        # 第一排：论文标题、论文类型、学科/方向、引用格式
+        row1 = tk.Frame(inner, bg=COLORS['card_bg'])
+        row1.pack(fill=tk.X, pady=(0, 8))
+
+        self.topic_entry = self._labeled_entry(row1, '论文标题', side=tk.LEFT, expand=True)
+
+        self.style_var = tk.StringVar(value='学术论文')
+        self._labeled_combo(
+            row1, '论文类型', self.style_var,
+            ['学术论文', '毕业论文', '综述文章', '研究报告', '实验报告'],
+            width=120,
+        )
+
+        self.subject_entry = self._labeled_entry(row1, '学科/方向', side=tk.LEFT, width=160)
+
+        self.ref_var = tk.StringVar(value='GB/T 7714')
+        self._labeled_combo(
+            row1, '引用格式', self.ref_var,
+            ['GB/T 7714', 'APA', 'MLA', 'Chicago', 'IEEE'],
+            width=110,
+        )
+
+        # 第二排：操作按钮
+        row2 = tk.Frame(inner, bg=COLORS['card_bg'])
+        row2.pack(fill=tk.X)
+
+        self._settings_secondary_action_row = tk.Frame(row2, bg=COLORS['card_bg'])
+        self._settings_secondary_action_row.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._settings_primary_action_row = tk.Frame(row2, bg=COLORS['card_bg'])
+        self._settings_primary_action_row.pack(side=tk.RIGHT, anchor='e')
+
+        primary_btn_specs = [
+            ('生成摘要', self._gen_abstract),
+            ('生成大纲', self._gen_outline),
+        ]
+        secondary_btn_specs = [
+            ('新建空白', self._new_doc),
+            ('导入文件', self._import_file),
+            ('保存快照', self._save_snapshot),
+            ('提示词', self._open_prompt_manager),
+        ]
+        self._settings_action_buttons = {}
+        self._settings_action_shells = {}
+        button_gap_x = 30
+        button_gap_y = 4
+        for index, (label, cmd) in enumerate(primary_btn_specs):
+            shell, button = create_home_shell_button(
+                self._settings_primary_action_row,
+                label,
+                command=cmd,
+                style='primary',
+            )
+            right_gap = button_gap_x if index < len(primary_btn_specs) - 1 else 0
+            shell.pack(side=tk.LEFT, padx=(0, right_gap), pady=button_gap_y)
+            self._settings_action_buttons[label] = button
+            self._settings_action_shells[label] = shell
+
+        for index, (label, cmd) in enumerate(secondary_btn_specs):
+            shell, button = create_home_shell_button(
+                self._settings_secondary_action_row,
+                label,
+                command=cmd,
+                style='secondary',
+            )
+            right_gap = button_gap_x if index < len(secondary_btn_specs) - 1 else 0
+            shell.pack(side=tk.LEFT, padx=(0, right_gap), pady=button_gap_y)
+            self._settings_action_buttons[label] = button
+            self._settings_action_shells[label] = shell
+
+    def _labeled_entry(self, parent, label, side=tk.LEFT, expand=False, width=None):
+        grp = tk.Frame(parent, bg=COLORS['card_bg'])
+        grp.pack(side=side, padx=(0, 12), fill=tk.X, expand=expand)
+        tk.Label(grp, text=label, font=FONTS['small'], fg=COLORS['text_sub'],
+                 bg=COLORS['card_bg']).pack(anchor='w')
+        kw = {'font': FONTS['body'], 'bg': COLORS['input_bg'], 'fg': COLORS['text_main'],
+              'relief': tk.FLAT, 'highlightthickness': 1,
+              'highlightbackground': COLORS['input_border']}
+        if width:
+            kw['width'] = width // 8
+        e = tk.Entry(grp, **kw)
+        e.pack(fill=tk.X, pady=(4, 0), ipady=4)
+        return e
+
+    def _labeled_combo(self, parent, label, var, values, width=140):
+        grp = tk.Frame(parent, bg=COLORS['card_bg'])
+        grp.pack(side=tk.LEFT, padx=(0, 12))
+        tk.Label(grp, text=label, font=FONTS['small'], fg=COLORS['text_sub'],
+                 bg=COLORS['card_bg']).pack(anchor='w')
+        cb = ttk.Combobox(grp, textvariable=var, values=values,
+                          state='readonly', style='Modern.TCombobox', width=width // 8)
+        cb.pack(pady=(4, 0))
+        return cb
+
+    # ── 左栏 ─────────────────────────────────────
+
+    def _build_left_panel(self, parent):
+        left = tk.Frame(parent, bg=COLORS['bg_main'])
+
+        # 论文大纲
+        outline_card = CardFrame(left, title='论文大纲')
+        outline_card.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+        outline_inner = outline_card.inner
+
+        # 大纲列表容器（可滚动）
+        list_frame = tk.Frame(outline_inner, bg=COLORS['surface_alt'],
+                              highlightbackground=COLORS['card_border'], highlightthickness=1)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(list_frame, bg=COLORS['surface_alt'], bd=0, highlightthickness=0)
+        sb = tk.Scrollbar(list_frame, orient='vertical', command=canvas.yview)
+        self._outline_list = tk.Frame(canvas, bg=COLORS['surface_alt'])
+        self._outline_list.bind('<Configure>',
+            lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        self._outline_window_id = canvas.create_window((0, 0), window=self._outline_list, anchor='nw')
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.bind('<Configure>', self._on_outline_canvas_configure, add='+')
+        self._outline_canvas = canvas
+        self._outline_empty_label = None
+
+        # 大纲原文文本（折叠区，用于生成大纲时回显）
+        self.outline_text = tk.Text(
+            outline_inner, height=0, width=1,
+            bg=COLORS['surface_alt'], fg=COLORS['text_main'],
+            font=('Consolas', 10), relief=tk.FLAT,
+        )
+        # 不 pack — 仅作数据存储
+
+        # 实时统计 + 使用建议
+        stat_card = CardFrame(left, title='实时统计')
+        stat_card.pack(fill=tk.X)
+        stat_inner = stat_card.inner
+
+        stats = [
+            ('总字符数', 'stat_total'),
+            ('中文字符', 'stat_cn'),
+            ('英文单词', 'stat_en'),
+            ('章节字符数', 'stat_section_total'),
+            ('章节中文字符', 'stat_section_cn'),
+        ]
+        self._stat_labels = {}
+        grid = tk.Frame(stat_inner, bg=COLORS['card_bg'])
+        grid.pack(fill=tk.X, pady=(0, 8))
+        for i, (lbl, key) in enumerate(stats):
+            col = tk.Frame(grid, bg=COLORS['surface_alt'],
+                           highlightbackground=COLORS['card_border'], highlightthickness=1)
+            col.grid(row=0, column=i, padx=(0, 4), sticky='ew')
+            grid.columnconfigure(i, weight=1)
+            tk.Label(col, text=lbl, font=FONTS['tiny'] if hasattr(FONTS, 'tiny') else FONTS['small'],
+                     fg=COLORS['text_muted'], bg=COLORS['surface_alt']).pack(pady=(4, 0))
+            val_lbl = tk.Label(col, text='0', font=FONTS['body_bold'] if 'body_bold' in FONTS else FONTS['body'],
+                               fg=COLORS['primary'], bg=COLORS['surface_alt'])
+            val_lbl.pack(pady=(0, 4))
+            self._stat_labels[key] = val_lbl
+
+        self.advice_label = tk.Label(
+            stat_inner, text='开始写作后将显示使用建议',
+            font=FONTS['small'], fg=COLORS['text_muted'],
+            bg=COLORS['card_bg'], wraplength=320, justify='left', anchor='w',
+        )
+        self.advice_label.pack(fill=tk.X)
+        stat_inner.bind('<Configure>', self._on_stats_container_configure, add='+')
+
+        return left
+
+    def _on_outline_canvas_configure(self, event=None):
+        self._sync_outline_list_width(event.width if event else None)
+
+    def _sync_outline_list_width(self, canvas_width=None):
+        if not hasattr(self, '_outline_canvas') or not hasattr(self, '_outline_window_id'):
+            return
+
+        if canvas_width is None:
+            canvas_width = self._outline_canvas.winfo_width()
+        if canvas_width <= 1:
+            return
+
+        self._outline_canvas.itemconfigure(self._outline_window_id, width=canvas_width)
+
+        wraplength = max(canvas_width - 24, 80)
+        if self._outline_empty_label is not None and self._outline_empty_label.winfo_exists():
+            self._outline_empty_label.configure(wraplength=wraplength)
+
+        for row_info in getattr(self, '_outline_row_widgets', {}).values():
+            row_info['title'].configure(wraplength=wraplength)
+
+    # ── 右栏 ─────────────────────────────────────
+
+    def _build_right_panel(self, parent):
+        right = tk.Frame(parent, bg=COLORS['bg_main'])
+
+        edit_card = CardFrame(right, title='内容编辑区')
+        edit_card.pack(fill=tk.BOTH, expand=True)
+        inner = edit_card.inner
+
+        # 顶部：当前章节 + 目标字数 + 写章节按钮
+        top_row = tk.Frame(inner, bg=COLORS['card_bg'])
+        top_row.pack(fill=tk.X, pady=(0, 8))
+
+        tk.Label(top_row, text='当前章节', font=FONTS['small'],
+                 fg=COLORS['text_sub'], bg=COLORS['card_bg']).pack(side=tk.LEFT)
+        self.section_entry = tk.Entry(
+            top_row, font=FONTS['body'],
+            bg=COLORS['input_bg'], fg=COLORS['text_main'],
+            relief=tk.FLAT, highlightthickness=1,
+            highlightbackground=COLORS['input_border'],
+        )
+        self.section_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4, padx=(6, 12))
+
+        tk.Label(top_row, text='目标字数', font=FONTS['small'],
+                 fg=COLORS['text_sub'], bg=COLORS['card_bg']).pack(side=tk.LEFT)
+        self.wcount_var = tk.StringVar(value='1000')
+        ttk.Combobox(
+            top_row, textvariable=self.wcount_var,
+            values=['500', '800', '1000', '1500', '2000', '3000', '5000'],
+            state='readonly', style='Modern.TCombobox', width=6,
+        ).pack(side=tk.LEFT, padx=(6, 12))
+
+        self._write_section_button_shell, self._write_section_button = create_home_shell_button(
+            top_row,
+            '写当前章节',
+            command=self._write_section,
+            style='primary',
+            padx=14,
+            pady=6,
+            font=FONTS['body_bold'],
+        )
+        self._write_section_button_shell.pack(side=tk.LEFT)
+
+        tool_row = tk.Frame(inner, bg=COLORS['card_bg'])
+        tool_row.pack(fill=tk.X, pady=(0, 8))
+        self._editor_tool_buttons = {}
+        self._editor_tool_images = {}
+        self._editor_tool_separators = []
+
+        tool_groups = [
+            [('撤回', self._editor_undo), ('重做', self._editor_redo)],
+            [('格式刷', self._handle_format_painter), ('字体格式', self._open_font_format_dialog), ('字色', lambda: self._open_color_palette('fg')), ('底色', lambda: self._open_color_palette('bg'))],
+            [
+                ('加粗', self._toggle_bold_selection),
+                ('斜体', lambda: self._toggle_inline_format_selection('fmt_italic')),
+                ('下划线', lambda: self._toggle_inline_format_selection('fmt_underline')),
+                ('删除线', lambda: self._toggle_inline_format_selection('fmt_strike')),
+                ('上标', lambda: self._toggle_inline_format_selection('fmt_superscript', exclusive_group=self.SCRIPT_FORMAT_TAGS)),
+                ('下标', lambda: self._toggle_inline_format_selection('fmt_subscript', exclusive_group=self.SCRIPT_FORMAT_TAGS)),
+            ],
+            [('缩进', self._indent_selected_paragraphs), ('项目符号', self._open_bullet_menu), ('编号', self._open_numbering_dialog)],
+            [('引用', self._insert_citation_template), ('查替', self._open_find_dialog)],
+        ]
+        column = 0
+        for group_index, group in enumerate(tool_groups):
+            for label, command in group:
+                btn = ModernButton(
+                    tool_row,
+                    '',
+                    style='ghost',
+                    command=command,
+                    padx=3,
+                    pady=4,
+                    font=FONTS['small'],
+                    image=self._load_toolbar_icon(label),
+                    compound='center',
+                )
+                self._configure_toolbar_icon_button(btn, label)
+                btn.grid(row=0, column=column, padx=(0, 3), sticky='ew')
+                tool_row.grid_columnconfigure(column, weight=1, uniform='editor_toolbar')
+                show_tooltip(btn, label)
+                self._editor_tool_buttons[label] = btn
+                column += 1
+            if group_index < len(tool_groups) - 1:
+                separator = tk.Frame(
+                    tool_row,
+                    bg=self._toolbar_separator_color(),
+                    width=self.TOOLBAR_SEPARATOR_WIDTH,
+                    height=self.TOOLBAR_SEPARATOR_HEIGHT,
+                )
+                separator.grid(row=0, column=column, padx=6, pady=2, sticky='ns')
+                tool_row.grid_columnconfigure(column, minsize=8)
+                self._editor_tool_separators.append(separator)
+                column += 1
+        self._refresh_editor_toolbar_icons()
+
+        # 编辑区文本框
+        edit_frame, self.edit_text = create_scrolled_text(
+            inner,
+            height=22,
+            undo=True,
+            autoseparators=True,
+            maxundo=200,
+        )
+        edit_frame.pack(fill=tk.BOTH, expand=True)
+        self.edit_text.configure(
+            bg=COLORS['input_bg'], fg=COLORS['text_main'],
+            font=FONTS['body'], relief=tk.FLAT,
+            exportselection=False,
+        )
+        self._refresh_editor_selection_style()
+        self.edit_text.tag_configure(
+            'outline_focus',
+            background=COLORS['accent_light'],
+            foreground=COLORS['text_main'],
+        )
+        self.edit_text.tag_configure(
+            'find_match',
+            background=COLORS['accent'],
+            foreground=COLORS['text_main'],
+        )
+        self._configure_editor_format_tags()
+        self.edit_text.edit_separator()
+        self.edit_text.bind('<KeyRelease>', self._on_editor_key_release)
+        self.edit_text.bind('<ButtonRelease-1>', self._on_editor_mouse_release)
+        self.edit_text.bind('<Return>', self._on_editor_return)
+        self.edit_text.bind('<Control-z>', self._editor_undo)
+        self.edit_text.bind('<Control-Z>', self._editor_undo)
+        self.edit_text.bind('<Control-y>', self._editor_redo)
+        self.edit_text.bind('<Control-Y>', self._editor_redo)
+
+        return right
+
+    def _format_tag_names(self):
+        tags = list(self.STACKABLE_INLINE_FORMAT_TAGS)
+        tags.extend(self.SCRIPT_FORMAT_TAGS)
+        tags.extend(tag for _label, tag, _color in self.FOREGROUND_FORMAT_COLORS)
+        tags.extend(tag for _label, tag, _color in self.BACKGROUND_FORMAT_COLORS if tag)
+        return tags
+
+    def _font_affecting_format_tags(self):
+        return list(self.STACKABLE_INLINE_FORMAT_TAGS[:2]) + list(self.SCRIPT_FORMAT_TAGS)
+
+    def _script_format_groups(self):
+        return [tuple(self.SCRIPT_FORMAT_TAGS)]
+
+    def _foreground_format_tags(self):
+        return [tag for _label, tag, _color in self.FOREGROUND_FORMAT_COLORS]
+
+    def _background_format_tags(self):
+        return [tag for _label, tag, _color in self.BACKGROUND_FORMAT_COLORS if tag]
+
+    def _build_editor_font(self, *, bold=False, italic=False, size_delta=0):
+        if getattr(self, 'edit_text', None) is not None:
+            font = tkfont.Font(root=self.frame, font=self.edit_text.cget('font'))
+        else:
+            font = tkfont.Font(root=self.frame, font=FONTS['body'])
+        font.configure(
+            family=self._current_cn_font or font.cget('family'),
+            weight='bold' if bold else 'normal',
+            slant='italic' if italic else 'roman',
+            size=max(8, int(self._current_size_pt or font.cget('size')) + size_delta),
+        )
+        return font
+
+    def _font_render_tag_name(self, *, bold=False, italic=False, script='normal'):
+        parts = ['_fmt_render']
+        if bold:
+            parts.append('bold')
+        if italic:
+            parts.append('italic')
+        if script != 'normal':
+            parts.append(script)
+        return '_'.join(parts)
+
+    def _configure_editor_render_fonts(self):
+        self._editor_format_fonts = {}
+        self._editor_font_render_tags = {}
+        script_options = {
+            'normal': {'size_delta': 0, 'offset': 0},
+            'superscript': {'size_delta': -2, 'offset': 4},
+            'subscript': {'size_delta': -2, 'offset': -2},
+        }
+        for bold in (False, True):
+            for italic in (False, True):
+                for script, config in script_options.items():
+                    if not bold and not italic and script == 'normal':
+                        continue
+                    tag_name = self._font_render_tag_name(bold=bold, italic=italic, script=script)
+                    font = self._build_editor_font(
+                        bold=bold,
+                        italic=italic,
+                        size_delta=config['size_delta'],
+                    )
+                    self._editor_format_fonts[tag_name] = font
+                    self._editor_font_render_tags[(bold, italic, script)] = tag_name
+                    self.edit_text.tag_configure(
+                        tag_name,
+                        font=font,
+                        offset=config['offset'],
+                    )
+
+    def _font_render_tag_names(self):
+        return list(self._editor_font_render_tags.values())
+
+    def _clear_editor_font_render_tags(self):
+        for tag in self._font_render_tag_names():
+            self.edit_text.tag_remove(tag, '1.0', tk.END)
+
+    def _resolve_font_render_tag(self, start):
+        active_tags = set(self.edit_text.tag_names(start))
+        bold = 'fmt_bold' in active_tags
+        italic = 'fmt_italic' in active_tags
+        script = 'normal'
+        if 'fmt_superscript' in active_tags:
+            script = 'superscript'
+        elif 'fmt_subscript' in active_tags:
+            script = 'subscript'
+        return self._editor_font_render_tags.get((bold, italic, script), '')
+
+    def _refresh_editor_font_render_tags(self):
+        self._clear_editor_font_render_tags()
+        text_end = self.edit_text.index('end-1c')
+        if not self.edit_text.get('1.0', text_end):
+            return
+
+        boundaries = {'1.0', text_end}
+        for tag in self._font_affecting_format_tags():
+            ranges = self.edit_text.tag_ranges(tag)
+            for idx in range(0, len(ranges), 2):
+                boundaries.add(self.edit_text.index(ranges[idx]))
+                boundaries.add(self.edit_text.index(ranges[idx + 1]))
+
+        ordered = sorted(boundaries, key=self._index_sort_key)
+        for idx in range(len(ordered) - 1):
+            start = ordered[idx]
+            end = ordered[idx + 1]
+            if self.edit_text.compare(start, '>=', end):
+                continue
+            render_tag = self._resolve_font_render_tag(start)
+            if render_tag:
+                self.edit_text.tag_add(render_tag, start, end)
+        self._raise_editor_overlay_tags()
+
+    def _configure_editor_format_tags(self):
+        self._configure_editor_render_fonts()
+        self.edit_text.tag_configure('fmt_underline', underline=1)
+        self.edit_text.tag_configure('fmt_strike', overstrike=1)
+        for _label, tag, color in self.FOREGROUND_FORMAT_COLORS:
+            self.edit_text.tag_configure(tag, foreground=color)
+        for _label, tag, color in self.BACKGROUND_FORMAT_COLORS:
+            if not tag:
+                continue
+            self.edit_text.tag_configure(tag, background=color)
+        self._refresh_editor_font_render_tags()
+        self._raise_editor_overlay_tags()
+
+    def _refresh_editor_selection_style(self):
+        self.edit_text.configure(
+            selectbackground=COLORS['accent'],
+            selectforeground=COLORS['text_main'],
+            inactiveselectbackground=COLORS['accent_light'],
+        )
+        self._raise_editor_overlay_tags()
+
+    def _raise_editor_overlay_tags(self):
+        try:
+            self.edit_text.tag_raise('find_match')
+            self.edit_text.tag_raise(tk.SEL)
+        except tk.TclError:
+            pass
+
+    def _is_toolbar_button_active(self, label):
+        return label == '格式刷' and self._format_painter_tags is not None
+
+    def _configure_toolbar_icon_button(self, button, label=None):
+        background = COLORS['accent_light'] if label and self._is_toolbar_button_active(label) else COLORS['card_bg']
+        button.configure(
+            bg=background,
+            activebackground=background,
+            highlightbackground=background,
+            highlightthickness=0,
+            bd=0,
+            relief=tk.FLAT,
+            overrelief=tk.FLAT,
+            cursor='hand2',
+        )
+
+    def _toolbar_icon_foreground(self):
+        return COLORS['text_main']
+
+    def _toolbar_separator_color(self):
+        return COLORS['text_sub']
+
+    def _load_toolbar_icon(self, label):
+        if label == '底色':
+            return self._get_background_swatch_image(self._editor_bg_indicator_color)
+        cache_key = (label, self._toolbar_icon_foreground())
+        if cache_key in self._editor_tool_images:
+            return self._editor_tool_images[cache_key]
+
+        filename = self.TOOLBAR_ICON_FILES.get(label, '')
+        if not filename:
+            return ''
+        try:
+            image = self._render_tinted_toolbar_icon(filename, self._toolbar_icon_foreground())
+        except Exception:
+            try:
+                image = load_image(filename, max_size=self.TOOLBAR_ICON_SIZE)
+            except Exception:
+                return ''
+        self._editor_tool_images[cache_key] = image
+        return image
+
+    def _render_tinted_toolbar_icon(self, filename, color_hex):
+        if Image is None or ImageTk is None:
+            return load_image(filename, max_size=self.TOOLBAR_ICON_SIZE)
+
+        path = get_resource_path(filename)
+        raw = Image.open(path).convert('RGBA')
+        raw.thumbnail(self.TOOLBAR_ICON_SIZE, Image.LANCZOS)
+        alpha = raw.getchannel('A')
+        tinted = Image.new('RGBA', raw.size, color_hex)
+        tinted.putalpha(alpha)
+        canvas = Image.new('RGBA', self.TOOLBAR_ICON_SIZE, (0, 0, 0, 0))
+        offset_x = max((self.TOOLBAR_ICON_SIZE[0] - raw.width) // 2, 0)
+        offset_y = max((self.TOOLBAR_ICON_SIZE[1] - raw.height) // 2, 0)
+        canvas.alpha_composite(tinted, (offset_x, offset_y))
+        return ImageTk.PhotoImage(canvas)
+
+    def _normalize_swatch_color(self, color):
+        if isinstance(color, str) and re.match(r'^#[0-9A-Fa-f]{6}$', color):
+            return color.upper()
+        return self.DEFAULT_BG_SWATCH_COLOR
+
+    def _get_background_swatch_image(self, color):
+        normalized = self._normalize_swatch_color(color)
+        if normalized in self._editor_bg_swatch_images:
+            return self._editor_bg_swatch_images[normalized]
+
+        width, height = self.TOOLBAR_ICON_SIZE
+        image = tk.PhotoImage(width=width, height=height)
+        image.put(COLORS['card_bg'], to=(0, 0, width, height))
+        border = max(2, width // 8)
+        right = max(width - border, border + 1)
+        bottom = max(height - border, border + 1)
+        inner_left = min(border * 2, width - 2)
+        inner_top = min(border * 2, height - 2)
+        inner_right = max(width - border * 2, inner_left + 1)
+        inner_bottom = max(height - border * 2, inner_top + 1)
+        image.put(COLORS['text_main'], to=(border, border, right, border + 1))
+        image.put(COLORS['text_main'], to=(border, bottom - 1, right, bottom))
+        image.put(COLORS['text_main'], to=(border, border, border + 1, bottom))
+        image.put(COLORS['text_main'], to=(right - 1, border, right, bottom))
+        image.put(normalized, to=(inner_left, inner_top, inner_right, inner_bottom))
+        self._editor_bg_swatch_images[normalized] = image
+        return image
+
+    def _update_background_color_button(self):
+        button = self._editor_tool_buttons.get('底色')
+        if button is None:
+            return
+        button.configure(image=self._get_background_swatch_image(self._editor_bg_indicator_color))
+
+    def _refresh_editor_toolbar_icons(self):
+        previous_images = self._editor_tool_images
+        previous_swatches = self._editor_bg_swatch_images
+        self._editor_tool_images = {}
+        self._editor_bg_swatch_images = {}
+        for label, button in self._editor_tool_buttons.items():
+            self._configure_toolbar_icon_button(button, label)
+            button.configure(image=self._load_toolbar_icon(label))
+        for separator in self._editor_tool_separators:
+            if separator.winfo_exists():
+                separator.configure(
+                    bg=self._toolbar_separator_color(),
+                    width=self.TOOLBAR_SEPARATOR_WIDTH,
+                    height=self.TOOLBAR_SEPARATOR_HEIGHT,
+                )
+        del previous_images
+        del previous_swatches
+
+    def _copy_section_format_map(self):
+        return {
+            title: [dict(span) for span in spans]
+            for title, spans in self._section_formats.items()
+            if title in self._sections
+        }
+
+    @staticmethod
+    def _index_sort_key(index):
+        try:
+            line, column = str(index).split('.', 1)
+            return int(line), int(column)
+        except Exception:
+            return 0, 0
+
+    def _sanitize_section_format_map(self, section_formats):
+        if not isinstance(section_formats, dict):
+            return {}
+
+        valid_tags = set(self._format_tag_names())
+        cleaned = {}
+        for title, spans in section_formats.items():
+            if title not in self._sections or not isinstance(spans, list):
+                continue
+            normalized_spans = []
+            for span in spans:
+                if not isinstance(span, dict):
+                    continue
+                tag = span.get('tag')
+                start = span.get('start')
+                end = span.get('end')
+                if tag not in valid_tags or not isinstance(start, str) or not isinstance(end, str):
+                    continue
+                normalized_spans.append({'tag': tag, 'start': start, 'end': end})
+            cleaned[title] = sorted(
+                normalized_spans,
+                key=lambda item: (self._index_sort_key(item['start']), self._index_sort_key(item['end']), item['tag']),
+            )
+        return cleaned
+
+    def _clear_editor_format_tags(self):
+        for tag in self._format_tag_names():
+            self.edit_text.tag_remove(tag, '1.0', tk.END)
+        self._clear_editor_font_render_tags()
+
+    def _set_editor_content(self, content, format_spans=None, reset_undo=False):
+        self.edit_text.delete('1.0', tk.END)
+        if content:
+            self.edit_text.insert('1.0', content)
+        self._clear_editor_format_tags()
+        self._apply_format_spans_to_editor(format_spans or [])
+        self._refresh_editor_font_render_tags()
+        self.edit_text.tag_remove('find_match', '1.0', tk.END)
+        self.edit_text.tag_remove('outline_focus', '1.0', tk.END)
+        self._raise_editor_overlay_tags()
+        self.edit_text.see('1.0')
+        if reset_undo:
+            self._reset_editor_undo_stack()
+
+    def _apply_format_spans_to_editor(self, spans):
+        if not spans:
+            return
+        text_end = self.edit_text.index('end-1c')
+        for span in spans:
+            tag = span.get('tag')
+            if tag not in self._format_tag_names():
+                continue
+            try:
+                start = self.edit_text.index(span.get('start', '1.0'))
+                end = self.edit_text.index(span.get('end', '1.0'))
+            except tk.TclError:
+                continue
+            if self.edit_text.compare(start, '>=', end):
+                continue
+            if self.edit_text.compare(start, '>=', text_end):
+                continue
+            if self.edit_text.compare(end, '>', text_end):
+                end = text_end
+            self.edit_text.tag_add(tag, start, end)
+        self._raise_editor_overlay_tags()
+
+    def _serialize_editor_format_spans(self):
+        text_end = self.edit_text.index('end-1c')
+        if not self.edit_text.get('1.0', text_end):
+            return []
+
+        spans = []
+        for tag in self._format_tag_names():
+            ranges = self.edit_text.tag_ranges(tag)
+            for idx in range(0, len(ranges), 2):
+                start = self.edit_text.index(ranges[idx])
+                end = self.edit_text.index(ranges[idx + 1])
+                if self.edit_text.compare(start, '>=', end):
+                    continue
+                if self.edit_text.compare(start, '>=', text_end):
+                    continue
+                if self.edit_text.compare(end, '>', text_end):
+                    end = text_end
+                spans.append({'tag': tag, 'start': start, 'end': end})
+
+        spans.sort(key=lambda item: (self._index_sort_key(item['start']), self._index_sort_key(item['end']), item['tag']))
+        merged = []
+        for span in spans:
+            if (
+                merged
+                and merged[-1]['tag'] == span['tag']
+                and self.edit_text.compare(span['start'], '<=', merged[-1]['end'])
+            ):
+                if self.edit_text.compare(span['end'], '>', merged[-1]['end']):
+                    merged[-1]['end'] = span['end']
+                continue
+            merged.append(dict(span))
+        return merged
+
+    def _copy_section_formats(self, title):
+        return [dict(span) for span in self._section_formats.get(title, [])]
+
+    def _preserve_existing_formats(self, title, previous_text, new_text, source_spans=None):
+        if previous_text and new_text.startswith(previous_text):
+            spans = source_spans if source_spans is not None else self._copy_section_formats(title)
+            return [dict(span) for span in spans]
+        return []
+
+    # ──────────────────────────────────────────────
+    # 统计
+    # ──────────────────────────────────────────────
+
+    def _update_stats(self, event=None):
+        full_text, chapter_text = self._collect_stats_texts()
+
+        total = self._count_text_characters(full_text)
+        cn = self._count_chinese_characters(full_text)
+        en = self._count_english_words(full_text)
+        chapter_total = self._count_text_characters(chapter_text)
+        chapter_cn = self._count_chinese_characters(chapter_text)
+
+        self._stat_labels['stat_total'].configure(text=str(total))
+        self._stat_labels['stat_cn'].configure(text=str(cn))
+        self._stat_labels['stat_en'].configure(text=str(en))
+        self._stat_labels['stat_section_total'].configure(text=str(chapter_total))
+        self._stat_labels['stat_section_cn'].configure(text=str(chapter_cn))
+
+        self._update_advice(total, cn, en, chapter_total, chapter_cn)
+
+    def _on_editor_key_release(self, event=None):
+        self._sync_editor_state()
+
+    def _on_editor_mouse_release(self, event=None):
+        self.frame.after_idle(self._capture_selection_snapshot)
+
+    def _on_stats_container_configure(self, event=None):
+        if not hasattr(self, 'advice_label') or self.advice_label is None:
+            return
+        width = getattr(event, 'width', 0) or self.advice_label.winfo_width()
+        if width <= 1:
+            return
+        self.advice_label.configure(wraplength=max(width - 18, 180))
+
+    def _collect_stats_texts(self):
+        current_text = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        current_section = self._editor_section_source or self.section_entry.get().strip()
+
+        sections = dict(self._sections)
+        if current_section:
+            sections[current_section] = current_text
+        elif current_text:
+            sections['__current__'] = current_text
+
+        full_parts = [
+            self._normalize_section_body(content)
+            for content in sections.values()
+            if self._normalize_section_body(content)
+        ]
+        return '\n'.join(full_parts), current_text
+
+    @staticmethod
+    def _count_text_characters(text):
+        normalized = re.sub(r'[\r\n]+', '', text or '')
+        return len(normalized)
+
+    @staticmethod
+    def _count_chinese_characters(text):
+        return len(re.findall(r'[\u4e00-\u9fff]', text or ''))
+
+    @staticmethod
+    def _count_english_words(text):
+        return len(re.findall(r"\b[a-zA-Z]+(?:[-'][a-zA-Z]+)*\b", text or ''))
+
+    def _sync_editor_state(self, *, touch_context=True, capture_selection=True):
+        self._store_current_editor_content()
+        self._refresh_editor_font_render_tags()
+        self._refresh_mixed_font_tags()
+        if touch_context:
+            self._touch_context_revision()
+        self._update_stats()
+        if capture_selection:
+            self.frame.after_idle(self._capture_selection_snapshot)
+        self._schedule_workspace_state_save()
+
+    def _reset_editor_undo_stack(self):
+        try:
+            self.edit_text.edit_reset()
+        except tk.TclError:
+            return
+        try:
+            self.edit_text.edit_separator()
+        except tk.TclError:
+            pass
+
+    def _on_editor_return(self, event=None):
+        insert_index = self.edit_text.index(tk.INSERT)
+        line_start = self.edit_text.index(f'{insert_index} linestart')
+        current_line_before_cursor = self.edit_text.get(line_start, insert_index)
+
+        try:
+            if self.edit_text.tag_ranges(tk.SEL):
+                self.edit_text.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                insert_index = self.edit_text.index(tk.INSERT)
+                line_start = self.edit_text.index(f'{insert_index} linestart')
+                current_line_before_cursor = self.edit_text.get(line_start, insert_index)
+        except tk.TclError:
+            pass
+
+        suffix = self.PARAGRAPH_INDENT if self._should_auto_indent_line(current_line_before_cursor) else ''
+        self.edit_text.insert(tk.INSERT, f'\n{suffix}')
+        self.edit_text.edit_separator()
+        self._sync_editor_state()
+        return 'break'
+
+    def _should_auto_indent_line(self, line_text):
+        text = (line_text or '').strip()
+        if not text:
+            return False
+        if self._parse_outline_heading(text):
+            return False
+        if re.match(r'^\[[0-9]+\]', text):
+            return False
+        if self._match_attached_bullet_prefix(text) or self._match_attached_numbering_prefix(text):
+            return False
+        if self._line_has_supported_list_prefix(text):
+            return False
+        return True
+
+    def _editor_undo(self, event=None):
+        try:
+            self.edit_text.edit_undo()
+        except tk.TclError:
+            return 'break'
+        self._sync_editor_state()
+        return 'break'
+
+    def _editor_redo(self, event=None):
+        try:
+            self.edit_text.edit_redo()
+        except tk.TclError:
+            return 'break'
+        self._sync_editor_state()
+        return 'break'
+
+    def _get_active_selection_range(self):
+        try:
+            ranges = self.edit_text.tag_ranges(tk.SEL)
+        except tk.TclError:
+            ranges = ()
+        if len(ranges) == 2:
+            start = self.edit_text.index(ranges[0])
+            end = self.edit_text.index(ranges[1])
+            if self.edit_text.compare(start, '<', end):
+                return start, end
+
+        stored = self._editor_selection_range or {}
+        if (
+            stored.get('section') == (self._editor_section_source or self.section_entry.get().strip())
+            and stored.get('context_revision') == self._context_revision
+            and stored.get('start')
+            and stored.get('end')
+        ):
+            start = self.edit_text.index(stored['start'])
+            end = self.edit_text.index(stored['end'])
+            if self.edit_text.compare(start, '<', end):
+                return start, end
+        return '', ''
+
+    def _restore_editor_selection(self, start, end):
+        if not start or not end or self.edit_text.compare(start, '>=', end):
+            return
+        self.edit_text.tag_remove(tk.SEL, '1.0', tk.END)
+        self.edit_text.tag_add(tk.SEL, start, end)
+        self._raise_editor_overlay_tags()
+        self.edit_text.mark_set(tk.INSERT, end)
+        self.edit_text.see(start)
+
+    def _selection_required(self):
+        start, end = self._get_active_selection_range()
+        if not start or not end:
+            self.set_status('请先在内容编辑区选中文本后再执行该操作', COLORS['warning'])
+            self.edit_text.focus_set()
+            return '', ''
+        return start, end
+
+    def _selection_fully_has_tag(self, start, end, tag):
+        cursor = start
+        while self.edit_text.compare(cursor, '<', end):
+            tag_range = self.edit_text.tag_nextrange(tag, cursor, end)
+            if not tag_range:
+                return False
+            tag_start = self.edit_text.index(tag_range[0])
+            tag_end = self.edit_text.index(tag_range[1])
+            if self.edit_text.compare(tag_start, '>', cursor):
+                return False
+            cursor = tag_end
+        return True
+
+    def _remove_tags_from_range(self, tag_names, start, end):
+        for tag in tag_names:
+            self.edit_text.tag_remove(tag, start, end)
+
+    def _inline_format_groups(self):
+        groups = [(tag,) for tag in self.STACKABLE_INLINE_FORMAT_TAGS]
+        groups.extend(self._script_format_groups())
+        groups.append(tuple(self._foreground_format_tags()))
+        groups.append(tuple(self._background_format_tags()))
+        return groups
+
+    def _remove_all_inline_format_tags_from_range(self, start, end):
+        self._remove_tags_from_range(self._format_tag_names(), start, end)
+
+    def _collect_uniform_format_tags(self, start, end):
+        applied = []
+        for group in self._inline_format_groups():
+            if len(group) == 1:
+                tag = group[0]
+                if self._selection_fully_has_tag(start, end, tag):
+                    applied.append(tag)
+                continue
+            chosen = next((tag for tag in group if self._selection_fully_has_tag(start, end, tag)), '')
+            if chosen:
+                applied.append(chosen)
+        return applied
+
+    def _collect_inherited_format_tags(self, start, end):
+        active_tags = set(self.edit_text.tag_names(start))
+        inherited = []
+        for tag in self.STACKABLE_INLINE_FORMAT_TAGS:
+            if tag in active_tags or self.edit_text.tag_nextrange(tag, start, end):
+                inherited.append(tag)
+
+        for group in [tuple(self.SCRIPT_FORMAT_TAGS), tuple(self._foreground_format_tags()), tuple(self._background_format_tags())]:
+            chosen = next((tag for tag in group if tag in active_tags), '')
+            if not chosen:
+                chosen = next((tag for tag in group if self.edit_text.tag_nextrange(tag, start, end)), '')
+            if chosen:
+                inherited.append(chosen)
+        return inherited
+
+    def _replace_range_text_preserving_formats(self, start, end, replacement_text):
+        inherited_tags = self._collect_inherited_format_tags(start, end)
+        self.edit_text.delete(start, end)
+        if replacement_text:
+            self.edit_text.insert(start, replacement_text)
+            new_end = f'{start}+{len(replacement_text)}c'
+            self._remove_all_inline_format_tags_from_range(start, new_end)
+            for tag in inherited_tags:
+                self.edit_text.tag_add(tag, start, new_end)
+            return new_end
+        return start
+
+    def _toggle_bold_selection(self):
+        self._toggle_inline_format_selection('fmt_bold')
+
+    def _toggle_inline_format_selection(self, tag_name, exclusive_group=None):
+        start, end = self._selection_required()
+        if not start:
+            return
+        group = tuple(exclusive_group or (tag_name,))
+        should_remove = self._selection_fully_has_tag(start, end, tag_name)
+        self.edit_text.edit_separator()
+        if should_remove:
+            self.edit_text.tag_remove(tag_name, start, end)
+        else:
+            if group:
+                self._remove_tags_from_range(group, start, end)
+            self.edit_text.tag_add(tag_name, start, end)
+        self.edit_text.edit_separator()
+        self._restore_editor_selection(start, end)
+        self._sync_editor_state()
+        self.edit_text.focus_set()
+
+    def _clear_format_painter(self, *, refresh=True):
+        self._format_painter_tags = None
+        if refresh:
+            self._refresh_editor_toolbar_icons()
+
+    def _handle_format_painter(self):
+        if self._format_painter_tags is not None:
+            start, end = self._get_active_selection_range()
+            if not start:
+                self._clear_format_painter()
+                self.set_status('格式刷已取消')
+                self.edit_text.focus_set()
+                return
+            self.edit_text.edit_separator()
+            self._remove_all_inline_format_tags_from_range(start, end)
+            for tag in self._format_painter_tags:
+                self.edit_text.tag_add(tag, start, end)
+            self.edit_text.edit_separator()
+            self._restore_editor_selection(start, end)
+            self._clear_format_painter()
+            self._sync_editor_state()
+            self.edit_text.focus_set()
+            self.set_status('已将复制的格式应用到当前选区')
+            return
+
+        start, end = self._selection_required()
+        if not start:
+            return
+        self._format_painter_tags = self._collect_uniform_format_tags(start, end)
+        self._refresh_editor_toolbar_icons()
+        self.edit_text.focus_set()
+        self.set_status('格式刷已就绪，请选中目标文本后再次点击格式刷')
+
+    def _apply_color_to_selection(self, mode, tag_name):
+        start, end = self._selection_required()
+        if not start:
+            return False
+
+        target_tags = self._foreground_format_tags() if mode == 'fg' else self._background_format_tags()
+        self.edit_text.edit_separator()
+        self._remove_tags_from_range(target_tags, start, end)
+        if tag_name:
+            self.edit_text.tag_add(tag_name, start, end)
+        self.edit_text.edit_separator()
+        self._restore_editor_selection(start, end)
+        if mode == 'bg':
+            resolved_color = next(
+                (color for _label, tag, color in self.BACKGROUND_FORMAT_COLORS if tag == tag_name),
+                self.DEFAULT_BG_SWATCH_COLOR,
+            )
+            self._editor_bg_indicator_color = self._normalize_swatch_color(resolved_color)
+            self._update_background_color_button()
+        self._sync_editor_state()
+        self.edit_text.focus_set()
+        return True
+
+    def _apply_palette_choice(self, mode, tag_name, color, popup_attr):
+        self._apply_color_to_selection(mode, tag_name)
+        self._close_popup_window(popup_attr)
+
+    def _close_popup_window(self, attr_name):
+        self._unbind_popup_outside_close()
+        window = getattr(self, attr_name, None)
+        if window is not None and window.winfo_exists():
+            window.destroy()
+        setattr(self, attr_name, None)
+
+    def _unbind_popup_outside_close(self):
+        if not self._editor_popup_root_click_bind:
+            return
+        try:
+            self.frame.winfo_toplevel().unbind('<Button-1>', self._editor_popup_root_click_bind)
+        except Exception:
+            pass
+        self._editor_popup_root_click_bind = None
+
+    def _bind_popup_outside_close(self, attr_name, anchor):
+        self._unbind_popup_outside_close()
+        root = self.frame.winfo_toplevel()
+
+        def on_root_click(event=None):
+            popup = getattr(self, attr_name, None)
+            widget = getattr(event, 'widget', None)
+            if popup is None or not popup.winfo_exists():
+                self._unbind_popup_outside_close()
+                return
+            if widget is anchor or (widget and str(widget).startswith(str(anchor))):
+                return
+            if widget is popup or (widget and str(widget).startswith(str(popup))):
+                return
+            self._close_popup_window(attr_name)
+
+        self._editor_popup_root_click_bind = root.bind('<Button-1>', on_root_click, add='+')
+
+    def _create_toolbar_popup(self, button_label, attr_name, title, borderless=False, close_on_outside_click=False):
+        self._close_popup_window(attr_name)
+        anchor = self._editor_tool_buttons.get(button_label)
+        if anchor is None:
+            return None
+
+        window = tk.Toplevel(self.frame)
+        window.title(title)
+        window.transient(self.frame.winfo_toplevel())
+        window.resizable(False, False)
+        window.configure(bg=COLORS['card_bg'])
+        if borderless:
+            window.wm_overrideredirect(True)
+            try:
+                window.attributes('-topmost', True)
+            except Exception:
+                pass
+        else:
+            window.bind('<FocusOut>', lambda _event, name=attr_name: self.frame.after(80, lambda: self._close_popup_window(name)))
+
+        anchor.update_idletasks()
+        x = anchor.winfo_rootx()
+        y = anchor.winfo_rooty() + anchor.winfo_height() + 4
+        window.geometry(f'+{x}+{y}')
+        setattr(self, attr_name, window)
+        window.lift()
+        if close_on_outside_click:
+            self.frame.after_idle(lambda name=attr_name, target=anchor: self._bind_popup_outside_close(name, target))
+        return window
+
+    def _open_numbering_dialog(self):
+        window = self._create_toolbar_popup(
+            '编号',
+            '_editor_numbering_window',
+            '插入编号',
+            borderless=True,
+            close_on_outside_click=True,
+        )
+        if window is None:
+            return
+
+        shell = tk.Frame(
+            window,
+            bg=COLORS['card_bg'],
+            padx=6,
+            pady=6,
+            highlightbackground=COLORS['card_border'],
+            highlightthickness=1,
+        )
+        shell.pack(fill=tk.BOTH, expand=True)
+        for index, (button_text, style_key) in enumerate(self.NUMBERING_MENU_OPTIONS):
+            button = ModernButton(
+                shell,
+                button_text,
+                style='ghost',
+                command=lambda numbering_style=style_key: (self._apply_numbering_to_selected_lines(numbering_style), self._close_popup_window('_editor_numbering_window')),
+                padx=8,
+                pady=4,
+                font=FONTS['small'],
+            )
+            button.pack(fill=tk.X, pady=(0, 4 if index < len(self.NUMBERING_MENU_OPTIONS) - 1 else 0))
+        window.update_idletasks()
+        window.lift()
+
+    def _open_bullet_menu(self):
+        window = self._create_toolbar_popup(
+            '项目符号',
+            '_editor_bullet_window',
+            '插入项目符号',
+            borderless=True,
+            close_on_outside_click=True,
+        )
+        if window is None:
+            return
+
+        shell = tk.Frame(
+            window,
+            bg=COLORS['card_bg'],
+            padx=6,
+            pady=6,
+            highlightbackground=COLORS['card_border'],
+            highlightthickness=1,
+        )
+        shell.pack(fill=tk.BOTH, expand=True)
+
+        for index, (button_text, symbol) in enumerate(self.BULLET_MENU_OPTIONS):
+            button = ModernButton(
+                shell,
+                button_text,
+                style='ghost',
+                command=lambda bullet_symbol=symbol: (self._apply_bullets_to_selected_lines(bullet_symbol), self._close_popup_window('_editor_bullet_window')),
+                padx=8,
+                pady=4,
+                font=FONTS['small'],
+            )
+            button.pack(fill=tk.X, pady=(0, 4 if index < len(self.BULLET_MENU_OPTIONS) - 1 else 0))
+        window.update_idletasks()
+        window.lift()
+
+    # ──────────────────────────────────────────────
+    # 字体格式统一设置
+    # ──────────────────────────────────────────────
+
+    def _open_font_format_dialog(self):
+        root = self.frame.winfo_toplevel()
+        dlg = tk.Toplevel(root)
+        dlg.title('字体格式统一设置')
+        dlg.configure(bg=COLORS['card_bg'])
+        dlg.transient(root)
+        dlg.withdraw()
+
+        size_names = [name for name, _pt in self.WORD_FONT_SIZES]
+        level_labels = [
+            ('h1', '一级标题'),
+            ('h2', '二级标题'),
+            ('h3', '三级标题'),
+            ('body', '正文'),
+        ]
+        combos = {}
+
+        header_frame = tk.Frame(dlg, bg=COLORS['card_bg'])
+        header_frame.pack(fill=tk.X, padx=20, pady=(20, 6))
+        for col, text in enumerate(['层级', '中文字体', '英文字体', '字号']):
+            tk.Label(header_frame, text=text, bg=COLORS['card_bg'], fg=COLORS['text_main'],
+                     font=FONTS['small']).grid(row=0, column=col, padx=10, sticky='w')
+            header_frame.grid_columnconfigure(col, weight=1 if col > 0 else 0)
+
+        rows_frame = tk.Frame(dlg, bg=COLORS['card_bg'])
+        rows_frame.pack(fill=tk.X, padx=20, pady=6)
+
+        for row_idx, (key, label) in enumerate(level_labels):
+            current = self._level_font_styles.get(key, self.LEVEL_STYLE_DEFAULTS[key])
+            tk.Label(rows_frame, text=label, bg=COLORS['card_bg'], fg=COLORS['text_main'],
+                     font=FONTS['body'], width=8, anchor='w').grid(row=row_idx, column=0, padx=10, pady=6, sticky='w')
+
+            font_var = tk.StringVar(value=current.get('font', '宋体'))
+            font_cb = ttk.Combobox(rows_frame, textvariable=font_var, values=list(self.WORD_CN_FONT_FAMILIES),
+                                   state='readonly', width=12)
+            font_cb.grid(row=row_idx, column=1, padx=10, pady=6, sticky='ew')
+
+            font_en_var = tk.StringVar(value=current.get('font_en', 'Times New Roman'))
+            font_en_cb = ttk.Combobox(rows_frame, textvariable=font_en_var, values=list(self.WORD_EN_FONT_FAMILIES),
+                                      state='readonly', width=16)
+            font_en_cb.grid(row=row_idx, column=2, padx=10, pady=6, sticky='ew')
+
+            size_var = tk.StringVar(value=current.get('size_name', '小四'))
+            size_cb = ttk.Combobox(rows_frame, textvariable=size_var, values=size_names,
+                                   state='readonly', width=8)
+            size_cb.grid(row=row_idx, column=3, padx=10, pady=6, sticky='ew')
+
+            combos[key] = (font_var, font_en_var, size_var)
+        rows_frame.grid_columnconfigure(1, weight=1)
+        rows_frame.grid_columnconfigure(2, weight=1)
+        rows_frame.grid_columnconfigure(3, weight=1)
+
+        size_map = {name: pt for name, pt in self.WORD_FONT_SIZES}
+
+        def apply_settings():
+            for key, (fv, fev, sv) in combos.items():
+                font_name = fv.get()
+                font_en_name = fev.get()
+                size_name = sv.get()
+                size_pt = size_map.get(size_name, 12)
+                self._level_font_styles[key] = {'font': font_name, 'font_en': font_en_name, 'size_name': size_name, 'size_pt': size_pt}
+            self._outline_level_fonts = {}
+            self._apply_level_font_to_editor()
+            if getattr(self, '_outline_row_widgets', None):
+                self._refresh_outline_list()
+            self._schedule_workspace_state_save()
+            dlg.destroy()
+
+        def reset_defaults():
+            for key, (fv, fev, sv) in combos.items():
+                defaults = self.LEVEL_STYLE_DEFAULTS[key]
+                fv.set(defaults['font'])
+                fev.set(defaults['font_en'])
+                sv.set(defaults['size_name'])
+
+        btn_frame = tk.Frame(dlg, bg=COLORS['card_bg'])
+        btn_frame.pack(fill=tk.X, padx=20, pady=(10, 20))
+        ModernButton(btn_frame, '重置为默认', style='ghost', command=reset_defaults,
+                     font=FONTS['small']).pack(side=tk.LEFT, padx=6)
+        ModernButton(btn_frame, '应用', style='primary', command=apply_settings,
+                     font=FONTS['small']).pack(side=tk.RIGHT, padx=6)
+
+        dlg.update_idletasks()
+        dlg_w = max(dlg.winfo_reqwidth(), 560)
+        dlg_h = max(dlg.winfo_reqheight(), 300)
+        rx = root.winfo_x()
+        ry = root.winfo_y()
+        rw = root.winfo_width()
+        rh = root.winfo_height()
+        x = rx + (rw - dlg_w) // 2
+        y = ry + (rh - dlg_h) // 2
+        dlg.geometry(f'{dlg_w}x{dlg_h}+{x}+{y}')
+        dlg.resizable(False, False)
+        dlg.deiconify()
+        dlg.grab_set()
+        dlg.focus_force()
+
+    def _apply_level_font_to_editor(self):
+        style = self._level_font_styles.get('body', self.LEVEL_STYLE_DEFAULTS.get('body', {}))
+        self._current_cn_font = style.get('font', '宋体')
+        self._current_en_font = style.get('font_en', 'Times New Roman')
+        self._current_size_pt = int(style.get('size_pt', 12))
+        apply_mixed_fonts(self.edit_text, self._current_cn_font, self._current_en_font, self._current_size_pt)
+        self._configure_editor_render_fonts()
+        self._refresh_editor_font_render_tags()
+
+    def _refresh_mixed_font_tags(self):
+        if not getattr(self, '_current_cn_font', None):
+            return
+        apply_mixed_fonts(self.edit_text, self._current_cn_font, self._current_en_font, self._current_size_pt)
+
+    def _get_level_key_for_section(self, section_title):
+        level = self._section_levels.get(section_title, self._infer_outline_level(section_title)) if section_title else 1
+        return {1: 'h1', 2: 'h2', 3: 'h3'}.get(level, 'body')
+
+    def _open_color_palette(self, mode):
+        label = '字色' if mode == 'fg' else '底色'
+        title = '选择字色' if mode == 'fg' else '选择底色'
+        attr_name = '_editor_palette_window'
+        window = self._create_toolbar_popup(label, attr_name, title, borderless=True, close_on_outside_click=True)
+        if window is None:
+            return
+
+        palette = self.FOREGROUND_FORMAT_COLORS if mode == 'fg' else self.BACKGROUND_FORMAT_COLORS
+        shell = tk.Frame(
+            window,
+            bg=COLORS['card_bg'],
+            padx=6,
+            pady=6,
+            highlightbackground=COLORS['card_border'],
+            highlightthickness=1,
+        )
+        shell.pack(fill=tk.BOTH, expand=True)
+
+        for index, (button_text, tag_name, color) in enumerate(palette):
+            row = index // 3
+            column = index % 3
+            color_value = color or COLORS['card_bg']
+            button = tk.Button(
+                shell,
+                text='',
+                width=2,
+                height=1,
+                bg=color_value,
+                activebackground=color_value,
+                relief=tk.FLAT,
+                bd=0,
+                highlightthickness=1,
+                highlightbackground=COLORS['card_border'],
+                highlightcolor=COLORS['primary'],
+                cursor='hand2',
+                command=lambda tag=tag_name, action_mode=mode, color_choice=color: self._apply_palette_choice(action_mode, tag, color_choice, attr_name),
+            )
+            if not color:
+                none_image = self._get_background_swatch_image(self.DEFAULT_BG_SWATCH_COLOR)
+                button.configure(image=none_image, compound='center', bg=COLORS['card_bg'], activebackground=COLORS['card_bg'])
+                button.image = none_image
+            button.grid(row=row, column=column, padx=3, pady=3, sticky='nsew')
+            shell.grid_columnconfigure(column, weight=1, uniform=f'palette_{mode}')
+        for row_index in range(max(2, (len(palette) + 2) // 3)):
+            shell.grid_rowconfigure(row_index, weight=1, uniform=f'palette_row_{mode}')
+        window.update_idletasks()
+        window.lift()
+
+    def _insert_single_numbering(self):
+        self._apply_numbering_to_selected_lines('decimal', capture_selection=False)
+
+    def _batch_number_selected_lines(self):
+        self._apply_numbering_to_selected_lines('decimal')
+
+    def _get_selected_line_range(self):
+        stored = self._editor_selection_range or {}
+        if (
+            stored.get('section') == self.section_entry.get().strip()
+            and stored.get('context_revision') == self._context_revision
+            and stored.get('start')
+            and stored.get('end')
+        ):
+            start = stored['start']
+            end = stored['end']
+        else:
+            ranges = self.edit_text.tag_ranges(tk.SEL)
+            if len(ranges) == 2:
+                start = self.edit_text.index(ranges[0])
+                end = self.edit_text.index(ranges[1])
+            else:
+                line = int(self.edit_text.index(tk.INSERT).split('.')[0])
+                return line, line
+
+        start_line = int(start.split('.')[0])
+        end_line = int(end.split('.')[0])
+        if end.endswith('.0') and end_line > start_line:
+            end_line -= 1
+        return start_line, max(start_line, end_line)
+
+    def _format_list_debug_value(self, value):
+        if isinstance(value, str):
+            return ascii(value)
+        if isinstance(value, dict):
+            items = ', '.join(
+                f'{key}:{self._format_list_debug_value(val)}'
+                for key, val in value.items()
+            )
+            return '{' + items + '}'
+        if isinstance(value, tuple):
+            items = ', '.join(self._format_list_debug_value(item) for item in value)
+            if len(value) == 1:
+                items += ','
+            return '(' + items + ')'
+        if isinstance(value, list):
+            items = ', '.join(self._format_list_debug_value(item) for item in value)
+            return '[' + items + ']'
+        if isinstance(value, set):
+            items = ', '.join(self._format_list_debug_value(item) for item in sorted(value, key=repr))
+            return '{' + items + '}'
+        return repr(value)
+
+    def _write_list_debug_log(self, event, **fields):
+        if not self.app_bridge or not hasattr(self.app_bridge, 'write_app_log'):
+            return
+        try:
+            parts = [f'[paper_write.list_debug] {event}']
+            for key, value in fields.items():
+                parts.append(f'{key}={self._format_list_debug_value(value)}')
+            self.app_bridge.write_app_log(' '.join(parts), level='DEBUG')
+        except Exception:
+            pass
+
+    def _get_list_debug_selection_ranges(self):
+        try:
+            ranges = self.edit_text.tag_ranges(tk.SEL)
+        except Exception as exc:
+            return [f'<selection-error:{exc}>']
+        resolved = []
+        for item in ranges:
+            try:
+                resolved.append(self.edit_text.index(item))
+            except Exception as exc:
+                resolved.append(f'<index-error:{exc}>')
+        return resolved
+
+    def _get_line_text_for_debug(self, line_no):
+        try:
+            return self.edit_text.get(f'{line_no}.0', f'{line_no}.0 lineend')
+        except Exception as exc:
+            return f'<line-error:{exc}>'
+
+    def _log_list_debug_selection_context(self, action, **extra_fields):
+        try:
+            insert_index = self.edit_text.index(tk.INSERT)
+        except Exception as exc:
+            insert_index = f'<insert-error:{exc}>'
+        fields = {
+            'action': action,
+            'stored_selection': dict(self._editor_selection_range or {}),
+            'tk_selection': self._get_list_debug_selection_ranges(),
+            'insert_index': insert_index,
+        }
+        fields.update(extra_fields)
+        self._write_list_debug_log('selection_context', **fields)
+
+    def _log_list_debug_line_window(self, action, start_line, end_line, limit=12):
+        if start_line > end_line:
+            return
+        total = end_line - start_line + 1
+        sample_end = min(end_line, start_line + max(1, limit) - 1)
+        self._write_list_debug_log(
+            'selection_window',
+            action=action,
+            start_line=start_line,
+            end_line=end_line,
+            sampled_lines=sample_end - start_line + 1,
+            total_lines=total,
+        )
+        for line_no in range(start_line, sample_end + 1):
+            line_text = self._get_line_text_for_debug(line_no)
+            self._write_list_debug_log(
+                'selection_line',
+                action=action,
+                line_no=line_no,
+                meaningful=self._line_has_meaningful_text(line_text),
+                text=line_text,
+            )
+        if sample_end < end_line:
+            self._write_list_debug_log(
+                'selection_window_truncated',
+                action=action,
+                omitted_start=sample_end + 1,
+                omitted_end=end_line,
+            )
+
+    def _remove_existing_bullet_prefix(self, line_no):
+        line_start = f'{line_no}.0'
+        line_end = f'{line_no}.0 lineend'
+        line_text = self.edit_text.get(line_start, line_end)
+        match = re.match(r'^(\s*)([○●■▼▶])\s+', line_text)
+        if not match:
+            return line_start
+        bullet_start = f'{line_no}.{len(match.group(1))}'
+        bullet_end = f'{line_no}.{len(match.group(0))}'
+        self.edit_text.delete(bullet_start, bullet_end)
+        self._write_list_debug_log(
+            'remove_existing_bullet_prefix',
+            line_no=line_no,
+            removed_prefix=match.group(0),
+            before_text=line_text,
+            after_text=self._get_line_text_for_debug(line_no),
+        )
+        return bullet_start
+
+    def _collect_nonempty_line_numbers(self, start_line, end_line):
+        lines = []
+        for line_no in range(start_line, end_line + 1):
+            line_text = self.edit_text.get(f'{line_no}.0', f'{line_no}.0 lineend')
+            if self._line_has_meaningful_text(line_text):
+                lines.append(line_no)
+        return lines
+
+    @staticmethod
+    def _line_has_meaningful_text(line_text):
+        normalized = re.sub(r'[\s\u3000\u200b\ufeff\u2060]+', '', line_text or '')
+        return bool(normalized)
+
+    @staticmethod
+    def _first_meaningful_text_char(line_text):
+        normalized = re.sub(r'^[\s\u3000\u200b\ufeff\u2060]+', '', line_text or '')
+        return normalized[0] if normalized else ''
+
+    def _list_marker_separator_for_text(self, line_text):
+        first_char = self._first_meaningful_text_char(line_text)
+        if not first_char:
+            return ' '
+        if first_char.isascii() and (first_char.isalnum() or first_char in '"\'([{'):
+            return ' '
+        return ''
+
+    def _list_marker_separator_for_line(self, line_no):
+        return self._list_marker_separator_for_text(self._get_line_text_for_debug(line_no))
+
+    def _match_attached_bullet_prefix(self, line_text):
+        symbols = ''.join(re.escape(symbol) for _label, symbol in self.BULLET_MENU_OPTIONS if symbol)
+        if not symbols:
+            return None
+        return re.match(rf'^(\s*)([{symbols}])(?=\S)', line_text or '')
+
+    @staticmethod
+    def _match_attached_numbering_prefix(line_text):
+        return re.match(
+            r'^(\s*)((?:'
+            r'[0-9]+\.'
+            r'|[a-zA-Z]+\.'
+            r'|[ivxlcdmIVXLCDM]+\.'
+            r'|[\u2460-\u2473]'
+            r'))(?=\S)',
+            line_text or '',
+        )
+
+    def _match_bullet_marker_token(self, line_text):
+        symbols = ''.join(re.escape(symbol) for _label, symbol in self.BULLET_MENU_OPTIONS if symbol)
+        if not symbols:
+            return None
+        return re.match(rf'^(\s*)([{symbols}])', line_text or '')
+
+    @staticmethod
+    def _match_numbering_marker_token(line_text):
+        return re.match(
+            r'^(\s*)((?:'
+            r'[0-9]+\.'
+            r'|[a-zA-Z]+\.'
+            r'|[ivxlcdmIVXLCDM]+\.'
+            r'|[\u4e00-\u9fa5]+、'
+            r'|（[\u4e00-\u9fa5]+）'
+            r'|[\u2460-\u2473]'
+            r'))',
+            line_text or '',
+        )
+
+    def _remove_attached_bullet_prefix(self, line_no):
+        line_start = f'{line_no}.0'
+        line_end = f'{line_no}.0 lineend'
+        line_text = self.edit_text.get(line_start, line_end)
+        match = self._match_attached_bullet_prefix(line_text)
+        if not match:
+            return line_start
+        bullet_start = f'{line_no}.{len(match.group(1))}'
+        bullet_end = f'{line_no}.{len(match.group(0))}'
+        self.edit_text.delete(bullet_start, bullet_end)
+        self._write_list_debug_log(
+            'remove_attached_bullet_prefix',
+            line_no=line_no,
+            removed_prefix=match.group(0),
+            before_text=line_text,
+            after_text=self._get_line_text_for_debug(line_no),
+        )
+        return bullet_start
+
+    def _remove_attached_numbering_prefix(self, line_no):
+        line_start = f'{line_no}.0'
+        line_end = f'{line_no}.0 lineend'
+        line_text = self.edit_text.get(line_start, line_end)
+        match = self._match_attached_numbering_prefix(line_text)
+        if not match:
+            return line_start
+        prefix_start = f'{line_no}.{len(match.group(1))}'
+        prefix_end = f'{line_no}.{len(match.group(0))}'
+        self.edit_text.delete(prefix_start, prefix_end)
+        self._write_list_debug_log(
+            'remove_attached_numbering_prefix',
+            line_no=line_no,
+            removed_prefix=match.group(0),
+            before_text=line_text,
+            after_text=self._get_line_text_for_debug(line_no),
+        )
+        return prefix_start
+
+    def _resolve_list_target_lines(self, start_line, end_line):
+        target_lines = self._collect_nonempty_line_numbers(start_line, end_line)
+        self._write_list_debug_log(
+            'resolve_targets_initial',
+            start_line=start_line,
+            end_line=end_line,
+            selected_nonempty_lines=target_lines,
+        )
+        if target_lines:
+            return target_lines
+
+        try:
+            last_line = int(self.edit_text.index('end-1c').split('.')[0])
+        except Exception:
+            last_line = end_line
+
+        for line_no in range(min(end_line + 1, last_line), last_line + 1):
+            line_text = self.edit_text.get(f'{line_no}.0', f'{line_no}.0 lineend')
+            if self._line_has_meaningful_text(line_text):
+                self._write_list_debug_log(
+                    'resolve_targets_forward_hit',
+                    start_line=start_line,
+                    end_line=end_line,
+                    target_line=line_no,
+                    text=line_text,
+                )
+                return [line_no]
+
+        for line_no in range(max(start_line - 1, 1), 0, -1):
+            line_text = self.edit_text.get(f'{line_no}.0', f'{line_no}.0 lineend')
+            if self._line_has_meaningful_text(line_text):
+                self._write_list_debug_log(
+                    'resolve_targets_backward_hit',
+                    start_line=start_line,
+                    end_line=end_line,
+                    target_line=line_no,
+                    text=line_text,
+                )
+                return [line_no]
+
+        self._write_list_debug_log(
+            'resolve_targets_fallback',
+            start_line=start_line,
+            end_line=end_line,
+            fallback_line=start_line,
+        )
+        return [start_line]
+
+    def _collapse_blank_lines_before_target(self, start_line, target_line):
+        if target_line <= start_line:
+            self._write_list_debug_log(
+                'collapse_blank_lines_skip',
+                start_line=start_line,
+                target_line=target_line,
+                reason='target_not_after_start',
+            )
+            return target_line
+        blank_lines = []
+        for line_no in range(start_line, target_line):
+            line_text = self.edit_text.get(f'{line_no}.0', f'{line_no}.0 lineend')
+            if self._line_has_meaningful_text(line_text):
+                self._write_list_debug_log(
+                    'collapse_blank_lines_abort',
+                    start_line=start_line,
+                    target_line=target_line,
+                    blocking_line=line_no,
+                    blocking_text=line_text,
+                )
+                return target_line
+            blank_lines.append({'line_no': line_no, 'text': line_text})
+        self._write_list_debug_log(
+            'collapse_blank_lines_delete',
+            start_line=start_line,
+            target_line=target_line,
+            blank_lines=blank_lines,
+        )
+        self.edit_text.delete(f'{start_line}.0', f'{target_line}.0')
+        self._write_list_debug_log(
+            'collapse_blank_lines_deleted',
+            resulting_line=start_line,
+            resulting_text=self._get_line_text_for_debug(start_line),
+        )
+        return start_line
+
+    def _remove_leading_paragraph_indent(self, line_no):
+        line_start = f'{line_no}.0'
+        line_end = f'{line_no}.0 lineend'
+        line_text = self.edit_text.get(line_start, line_end)
+        removed = ''
+        removed_text = ''
+        removed_from = 'none'
+
+        def match_indent(start_col):
+            segment = (line_text or '')[start_col:]
+            if segment.startswith(self.PARAGRAPH_INDENT):
+                return start_col, self.PARAGRAPH_INDENT, 'paragraph_indent'
+            if segment.startswith('  '):
+                return start_col, '  ', 'double_space'
+            if segment.startswith('\t'):
+                return start_col, '\t', 'tab'
+            return None, '', ''
+
+        start_col, removed_text, removed = match_indent(0)
+
+        if removed_text:
+            removed_from = 'line_start'
+        else:
+            marker_match = self._match_bullet_marker_token(line_text) or self._match_numbering_marker_token(line_text)
+            if marker_match:
+                marker_end = len(marker_match.group(0))
+                for offset in (marker_end, marker_end + 1):
+                    if offset > len(line_text):
+                        continue
+                    if offset == marker_end + 1 and line_text[marker_end:marker_end + 1] != ' ':
+                        continue
+                    start_col, removed_text, removed = match_indent(offset)
+                    if removed_text:
+                        removed_from = 'after_list_prefix'
+                        break
+
+        if removed_text:
+            self.edit_text.delete(
+                f'{line_no}.{start_col}',
+                f'{line_no}.{start_col + len(removed_text)}',
+            )
+        self._write_list_debug_log(
+            'remove_leading_paragraph_indent',
+            line_no=line_no,
+            removed=removed or 'none',
+            removed_text=removed_text,
+            removed_from=removed_from,
+            before_text=line_text,
+            after_text=self._get_line_text_for_debug(line_no),
+        )
+        return removed_text
+
+    def _prepare_list_target_line(self, start_line, target_line):
+        self._write_list_debug_log(
+            'prepare_target_begin',
+            start_line=start_line,
+            target_line=target_line,
+            target_text=self._get_line_text_for_debug(target_line),
+        )
+        resolved_line = self._collapse_blank_lines_before_target(start_line, target_line)
+        indent_text = self._remove_leading_paragraph_indent(resolved_line)
+        self._remove_attached_bullet_prefix(resolved_line)
+        self._remove_attached_numbering_prefix(resolved_line)
+        self._remove_existing_bullet_prefix(resolved_line)
+        self._remove_existing_numbering_prefix(resolved_line)
+        self._write_list_debug_log(
+            'prepare_target_end',
+            start_line=start_line,
+            target_line=target_line,
+            resolved_line=resolved_line,
+            preserved_indent=indent_text,
+            resolved_text=self._get_line_text_for_debug(resolved_line),
+        )
+        return resolved_line, f'{resolved_line}.0', indent_text
+
+    def _to_alpha_sequence(self, number, uppercase=False):
+        result = []
+        value = max(1, int(number))
+        while value > 0:
+            value -= 1
+            result.append(chr((value % 26) + (65 if uppercase else 97)))
+            value //= 26
+        return ''.join(reversed(result))
+
+    def _to_roman_sequence(self, number, uppercase=False):
+        value = max(1, int(number))
+        numerals = (
+            (1000, 'M'), (900, 'CM'), (500, 'D'), (400, 'CD'),
+            (100, 'C'), (90, 'XC'), (50, 'L'), (40, 'XL'),
+            (10, 'X'), (9, 'IX'), (5, 'V'), (4, 'IV'), (1, 'I'),
+        )
+        result = []
+        for arabic, roman in numerals:
+            while value >= arabic:
+                result.append(roman)
+                value -= arabic
+        text = ''.join(result)
+        return text if uppercase else text.lower()
+
+    def _to_chinese_numeral(self, number):
+        value = max(1, int(number))
+        digits = '零一二三四五六七八九'
+        if value < 10:
+            return digits[value]
+        if value == 10:
+            return '十'
+        if value < 20:
+            return f'十{digits[value % 10]}'
+        if value < 100:
+            tens, ones = divmod(value, 10)
+            return f'{digits[tens]}十{digits[ones] if ones else ""}'
+        return str(value)
+
+    def _to_circled_digit(self, number):
+        value = max(1, int(number))
+        if 1 <= value <= 20:
+            return chr(9311 + value)
+        return str(value)
+
+    def _to_greek_sequence(self, number):
+        value = max(1, int(number))
+        letters = self.LOWER_GREEK_LETTERS
+        if value <= len(letters):
+            return letters[value - 1]
+        quotient, remainder = divmod(value - 1, len(letters))
+        return f'{letters[quotient - 1]}{letters[remainder]}'
+
+    def _format_numbering_prefix(self, style_key, number, separator=' '):
+        value = max(1, int(number))
+        if style_key == 'decimal':
+            return f'{value}.{separator}'
+        if style_key == 'lower_alpha':
+            return f'{self._to_alpha_sequence(value)}.{separator}'
+        if style_key == 'lower_roman':
+            return f'{self._to_roman_sequence(value)}.{separator}'
+        if style_key == 'upper_alpha':
+            return f'{self._to_alpha_sequence(value, uppercase=True)}.{separator}'
+        if style_key == 'upper_roman':
+            return f'{self._to_roman_sequence(value, uppercase=True)}.{separator}'
+        if style_key == 'cn_comma':
+            return f'{self._to_chinese_numeral(value)}、'
+        if style_key == 'cn_paren':
+            return f'（{self._to_chinese_numeral(value)}）'
+        if style_key == 'circled_digit':
+            return f'{self._to_circled_digit(value)}{separator}'
+        if style_key == 'lower_greek':
+            return f'{self._to_greek_sequence(value)}.{separator}'
+        return f'{value}.{separator}'
+
+    def _line_has_supported_list_prefix(self, text):
+        return bool(re.match(
+            r'^(?:'
+            r'[-*•○●■▼▶]\s+'
+            r'|[0-9]+\.\s+'
+            r'|[a-zA-Z]+\.\s+'
+            r'|[ivxlcdmIVXLCDM]+\.\s+'
+            r'|[α-ω]+\.\s+'
+            r'|[一二三四五六七八九十百]+、'
+            r'|（[一二三四五六七八九十百]+）'
+            r'|[①-⑳]\s*'
+            r')',
+            text or '',
+        ))
+
+    def _remove_existing_numbering_prefix(self, line_no):
+        line_start = f'{line_no}.0'
+        line_end = f'{line_no}.0 lineend'
+        line_text = self.edit_text.get(line_start, line_end)
+        match = re.match(
+            r'^(\s*)((?:'
+            r'[0-9]+\.\s+'
+            r'|[a-zA-Z]+\.\s+'
+            r'|[ivxlcdmIVXLCDM]+\.\s+'
+            r'|[α-ω]+\.\s+'
+            r'|[一二三四五六七八九十百]+、'
+            r'|（[一二三四五六七八九十百]+）'
+            r'|[①-⑳]\s*'
+            r'))',
+            line_text,
+        )
+        if not match:
+            return line_start
+        prefix_start = f'{line_no}.{len(match.group(1))}'
+        prefix_end = f'{line_no}.{len(match.group(0))}'
+        self.edit_text.delete(prefix_start, prefix_end)
+        self._write_list_debug_log(
+            'remove_existing_numbering_prefix',
+            line_no=line_no,
+            removed_prefix=match.group(0),
+            before_text=line_text,
+            after_text=self._get_line_text_for_debug(line_no),
+        )
+        return prefix_start
+
+    def _apply_bullets_to_selected_lines(self, symbol):
+        start_line, end_line = self._get_selected_line_range()
+        self._log_list_debug_selection_context(
+            'bullet',
+            symbol=symbol,
+            start_line=start_line,
+            end_line=end_line,
+        )
+        self._log_list_debug_line_window('bullet', start_line, end_line)
+        target_lines = self._resolve_list_target_lines(start_line, end_line)
+        self._write_list_debug_log(
+            'apply_bullets_targets',
+            symbol=symbol,
+            start_line=start_line,
+            end_line=end_line,
+            target_lines=target_lines,
+        )
+        self.edit_text.edit_separator()
+        for line_no in target_lines:
+            self._write_list_debug_log(
+                'apply_bullets_before_prepare',
+                symbol=symbol,
+                requested_line=line_no,
+                requested_text=self._get_line_text_for_debug(line_no),
+            )
+            _resolved_line, insert_pos, indent_text = self._prepare_list_target_line(start_line, line_no)
+            separator = '' if indent_text else self._list_marker_separator_for_line(_resolved_line)
+            self._write_list_debug_log(
+                'apply_bullets_before_insert',
+                symbol=symbol,
+                requested_line=line_no,
+                resolved_line=_resolved_line,
+                indent_text=indent_text,
+                separator=separator,
+                insert_pos=insert_pos,
+                line_text=self._get_line_text_for_debug(_resolved_line),
+            )
+            self.edit_text.insert(insert_pos, f'{symbol}{separator}{indent_text}')
+            self._write_list_debug_log(
+                'apply_bullets_after_insert',
+                symbol=symbol,
+                resolved_line=_resolved_line,
+                indent_text=indent_text,
+                separator=separator,
+                insert_pos=insert_pos,
+                line_text=self._get_line_text_for_debug(_resolved_line),
+            )
+        self.edit_text.edit_separator()
+        self._sync_editor_state()
+        self.edit_text.focus_set()
+
+    def _apply_numbering_to_selected_lines(self, style_key, capture_selection=True):
+        start_line, end_line = self._get_selected_line_range()
+        self._log_list_debug_selection_context(
+            'numbering',
+            style_key=style_key,
+            capture_selection=capture_selection,
+            start_line=start_line,
+            end_line=end_line,
+        )
+        self._log_list_debug_line_window('numbering', start_line, end_line)
+        target_lines = self._resolve_list_target_lines(start_line, end_line)
+        self._write_list_debug_log(
+            'apply_numbering_targets',
+            style_key=style_key,
+            capture_selection=capture_selection,
+            start_line=start_line,
+            end_line=end_line,
+            target_lines=target_lines,
+        )
+        self.edit_text.edit_separator()
+        for offset, line_no in enumerate(target_lines, start=1):
+            raw_prefix = self._format_numbering_prefix(style_key, offset)
+            self._write_list_debug_log(
+                'apply_numbering_before_prepare',
+                style_key=style_key,
+                requested_line=line_no,
+                sequence=offset,
+                prefix=raw_prefix,
+                requested_text=self._get_line_text_for_debug(line_no),
+            )
+            _resolved_line, insert_pos, indent_text = self._prepare_list_target_line(start_line, line_no)
+            separator = '' if indent_text else self._list_marker_separator_for_line(_resolved_line)
+            prefix = self._format_numbering_prefix(style_key, offset, separator=separator)
+            self._write_list_debug_log(
+                'apply_numbering_before_insert',
+                style_key=style_key,
+                requested_line=line_no,
+                resolved_line=_resolved_line,
+                sequence=offset,
+                prefix=prefix,
+                indent_text=indent_text,
+                separator=separator,
+                insert_pos=insert_pos,
+                line_text=self._get_line_text_for_debug(_resolved_line),
+            )
+            self.edit_text.insert(insert_pos, f'{prefix}{indent_text}')
+            self._write_list_debug_log(
+                'apply_numbering_after_insert',
+                style_key=style_key,
+                resolved_line=_resolved_line,
+                sequence=offset,
+                prefix=prefix,
+                indent_text=indent_text,
+                separator=separator,
+                insert_pos=insert_pos,
+                line_text=self._get_line_text_for_debug(_resolved_line),
+            )
+        self.edit_text.edit_separator()
+        self._sync_editor_state(capture_selection=capture_selection)
+        self.edit_text.focus_set()
+
+    def _find_text_start_in_line(self, line_no):
+        """返回该行第一个非空白字符的位置，保留缩进。"""
+        line_text = self.edit_text.get(f'{line_no}.0', f'{line_no}.0 lineend')
+        match = re.match(r'^[\s\u3000]*', line_text)
+        offset = len(match.group(0)) if match else 0
+        return f'{line_no}.{offset}'
+
+    def _indent_selected_paragraphs(self):
+        start_line, end_line = self._get_selected_line_range()
+        self.edit_text.edit_separator()
+        for line_no in range(start_line, end_line + 1):
+            line_start = f'{line_no}.0'
+            self.edit_text.insert(line_start, self.PARAGRAPH_INDENT)
+        self.edit_text.edit_separator()
+        self._sync_editor_state()
+        self.edit_text.focus_set()
+
+    def _unindent_selected_paragraphs(self):
+        start_line, end_line = self._get_selected_line_range()
+        self.edit_text.edit_separator()
+        for line_no in range(start_line, end_line + 1):
+            line_start = f'{line_no}.0'
+            line_text = self.edit_text.get(line_start, f'{line_no}.0 lineend')
+            if line_text.startswith(self.PARAGRAPH_INDENT):
+                self.edit_text.delete(line_start, f'{line_no}.2')
+            elif line_text.startswith('  '):
+                self.edit_text.delete(line_start, f'{line_no}.2')
+        self.edit_text.edit_separator()
+        self._sync_editor_state()
+        self.edit_text.focus_set()
+
+    def _insert_heading_template(self, level):
+        hashes = '#' * max(1, min(int(level), 6))
+        template = f'{hashes} '
+        self._insert_block_template(template)
+
+    def _insert_block_template(self, template):
+        insert_index = self.edit_text.index(tk.INSERT)
+        line_start = self.edit_text.index(f'{insert_index} linestart')
+        line_end = self.edit_text.index(f'{insert_index} lineend')
+        before = self.edit_text.get(line_start, insert_index)
+        after = self.edit_text.get(insert_index, line_end)
+
+        prefix = '\n' if before.strip() else ''
+        suffix = '\n' if after.strip() else ''
+        self.edit_text.insert(tk.INSERT, f'{prefix}{template}{suffix}')
+        self.edit_text.mark_set(tk.INSERT, f'{insert_index}+{len(prefix) + len(template)}c')
+        self.edit_text.edit_separator()
+        self._sync_editor_state()
+        self.edit_text.focus_set()
+
+    def _insert_citation_template(self):
+        insert_index = self.edit_text.index(tk.INSERT)
+        self.edit_text.insert(tk.INSERT, '[]')
+        self.edit_text.mark_set(tk.INSERT, f'{insert_index}+1c')
+        self.edit_text.edit_separator()
+        self._sync_editor_state(capture_selection=False)
+        self.edit_text.focus_set()
+
+    def _insert_reference_template(self):
+        template = '[1] 作者. 题名[J]. 期刊, 年, 卷(期): 页码.'
+        insert_index = self.edit_text.index(tk.INSERT)
+        self.edit_text.insert(tk.INSERT, template)
+        self.edit_text.mark_set(tk.INSERT, f'{insert_index}+4c')
+        self.edit_text.edit_separator()
+        self._sync_editor_state(capture_selection=False)
+        self.edit_text.focus_set()
+
+    def _open_find_dialog(self):
+        if self._find_window is not None and self._find_window.winfo_exists():
+            self._find_window.deiconify()
+            self._find_window.lift()
+            self._find_window.focus_set()
+            return
+
+        self._find_query_var = tk.StringVar(value='')
+        self._replace_query_var = tk.StringVar(value='')
+        window = tk.Toplevel(self.frame)
+        window.title('查找与替换')
+        window.transient(self.frame.winfo_toplevel())
+        window.resizable(False, False)
+        window.configure(bg=COLORS['card_bg'])
+        self._find_window = window
+
+        shell = tk.Frame(window, bg=COLORS['card_bg'], padx=12, pady=12)
+        shell.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            shell,
+            text='查找内容',
+            font=FONTS['small'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['card_bg'],
+        ).pack(anchor='w')
+        entry = tk.Entry(
+            shell,
+            textvariable=self._find_query_var,
+            font=FONTS['body'],
+            bg=COLORS['input_bg'],
+            fg=COLORS['text_main'],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=COLORS['input_border'],
+            width=28,
+        )
+        entry.pack(fill=tk.X, pady=(6, 10), ipady=4)
+        entry.bind('<Return>', lambda _event: self._find_next())
+
+        tk.Label(
+            shell,
+            text='替换为',
+            font=FONTS['small'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['card_bg'],
+        ).pack(anchor='w')
+        replace_entry = tk.Entry(
+            shell,
+            textvariable=self._replace_query_var,
+            font=FONTS['body'],
+            bg=COLORS['input_bg'],
+            fg=COLORS['text_main'],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=COLORS['input_border'],
+            width=28,
+        )
+        replace_entry.pack(fill=tk.X, pady=(6, 10), ipady=4)
+        replace_entry.bind('<Return>', lambda _event: self._replace_current())
+
+        button_row = tk.Frame(shell, bg=COLORS['card_bg'])
+        button_row.pack(fill=tk.X)
+        ModernButton(button_row, '上一个', style='ghost', command=self._find_previous, padx=10, pady=6, font=FONTS['small']).pack(side=tk.LEFT)
+        ModernButton(button_row, '下一个', style='ghost', command=self._find_next, padx=10, pady=6, font=FONTS['small']).pack(side=tk.LEFT, padx=(6, 0))
+        ModernButton(button_row, '替换', style='ghost', command=self._replace_current, padx=10, pady=6, font=FONTS['small']).pack(side=tk.LEFT, padx=(6, 0))
+        ModernButton(button_row, '全部替换', style='ghost', command=self._replace_all, padx=10, pady=6, font=FONTS['small']).pack(side=tk.LEFT, padx=(6, 0))
+        ModernButton(button_row, '关闭', style='secondary', command=self._close_find_dialog, padx=10, pady=6, font=FONTS['small']).pack(side=tk.RIGHT)
+
+        window.protocol('WM_DELETE_WINDOW', self._close_find_dialog)
+        entry.focus_set()
+        entry.select_range(0, tk.END)
+
+    def _close_find_dialog(self):
+        if self._find_window is not None and self._find_window.winfo_exists():
+            self._find_window.destroy()
+        self._find_window = None
+        self._find_query_var = None
+        self._replace_query_var = None
+        self.edit_text.tag_remove('find_match', '1.0', tk.END)
+
+    def _find_next(self):
+        self._find_text(backwards=False)
+
+    def _find_previous(self):
+        self._find_text(backwards=True)
+
+    def _find_text(self, backwards=False):
+        if self._find_query_var is None:
+            return
+        needle = self._find_query_var.get().strip()
+        if not needle:
+            self.set_status('请输入要查找的内容', COLORS['warning'])
+            return
+
+        self.edit_text.tag_remove('find_match', '1.0', tk.END)
+        start = self.edit_text.index(tk.INSERT)
+        active_start, active_end = self._get_active_find_match()
+        if backwards:
+            search_from = self.edit_text.index(f'{active_start} -1c') if active_start else start
+            match_index = self.edit_text.search(needle, search_from, stopindex='1.0', backwards=True, nocase=True)
+            if not match_index:
+                match_index = self.edit_text.search(needle, tk.END, stopindex='1.0', backwards=True, nocase=True)
+        else:
+            search_from = active_end or start
+            match_index = self.edit_text.search(needle, search_from, stopindex=tk.END, nocase=True)
+            if not match_index:
+                match_index = self.edit_text.search(needle, '1.0', stopindex=tk.END, nocase=True)
+
+        if not match_index:
+            self.set_status('未找到匹配内容', COLORS['warning'])
+            return
+
+        match_end = f'{match_index}+{len(needle)}c'
+        self.edit_text.tag_add('find_match', match_index, match_end)
+        self.edit_text.tag_remove(tk.SEL, '1.0', tk.END)
+        self.edit_text.tag_add(tk.SEL, match_index, match_end)
+        self.edit_text.mark_set(tk.INSERT, match_end)
+        self.edit_text.see(match_index)
+        self.edit_text.focus_set()
+
+    def _get_active_find_match(self):
+        ranges = self.edit_text.tag_ranges('find_match')
+        if len(ranges) == 2:
+            return self.edit_text.index(ranges[0]), self.edit_text.index(ranges[1])
+        return None, None
+
+    def _replace_current(self):
+        if self._find_query_var is None or self._replace_query_var is None:
+            return
+        needle = self._find_query_var.get().strip()
+        if not needle:
+            self.set_status('请输入要查找的内容', COLORS['warning'])
+            return
+
+        start, end = self._get_active_find_match()
+        if not start or not end:
+            self._find_next()
+            start, end = self._get_active_find_match()
+            if not start or not end:
+                return
+
+        current_text = self.edit_text.get(start, end)
+        if current_text.lower() != needle.lower():
+            self._find_next()
+            start, end = self._get_active_find_match()
+            if not start or not end:
+                return
+
+        replace_text = self._replace_query_var.get()
+        self.edit_text.edit_separator()
+        new_end = self._replace_range_text_preserving_formats(start, end, replace_text)
+        self.edit_text.tag_remove('find_match', '1.0', tk.END)
+        if replace_text:
+            self.edit_text.tag_add('find_match', start, new_end)
+        self.edit_text.mark_set(tk.INSERT, new_end if replace_text else start)
+        self.edit_text.edit_separator()
+        self._sync_editor_state(capture_selection=False)
+        self.edit_text.focus_set()
+        self.set_status('已替换当前匹配内容')
+
+    def _replace_all(self):
+        if self._find_query_var is None or self._replace_query_var is None:
+            return
+        needle = self._find_query_var.get().strip()
+        if not needle:
+            self.set_status('请输入要查找的内容', COLORS['warning'])
+            return
+
+        replace_text = self._replace_query_var.get()
+        count = 0
+        start = '1.0'
+        self.edit_text.tag_remove('find_match', '1.0', tk.END)
+        self.edit_text.edit_separator()
+        while True:
+            match_index = self.edit_text.search(needle, start, stopindex=tk.END, nocase=True)
+            if not match_index:
+                break
+            match_end = f'{match_index}+{len(needle)}c'
+            new_end = self._replace_range_text_preserving_formats(match_index, match_end, replace_text)
+            start = new_end if replace_text else match_index
+            count += 1
+        self.edit_text.edit_separator()
+        self._sync_editor_state(capture_selection=False)
+        self.edit_text.focus_set()
+        if count:
+            self.set_status(f'已替换 {count} 处内容')
+        else:
+            self.set_status('未找到可替换的内容', COLORS['warning'])
+
+    def _update_advice(self, total, cn, en, chapter_total, chapter_cn):
+        advice = []
+        if chapter_total == 0:
+            advice.append('当前章节还没有内容，可以开始撰写。')
+        elif chapter_total < 100:
+            advice.append('当前章节内容较少，建议继续补充。')
+        elif chapter_total < 300:
+            advice.append('当前章节篇幅偏短，可再补充论述。')
+        if chapter_cn > 0 and en > 0 and en / max(cn + en, 1) > 0.3:
+            advice.append('英文占比较高，注意中英文表达平衡。')
+        if total >= 1200 and chapter_total > 0 and chapter_total / max(total, 1) < 0.08:
+            advice.append('当前章节占全文比例偏低，可适当扩展。')
+        if chapter_cn >= 800:
+            advice.append('当前章节篇幅较长，建议关注层次与分段。')
+        if not advice:
+            advice.append('当前章节结构良好，可以继续完善细节。')
+        self.advice_label.configure(text='\n'.join(advice))
+
+    def _touch_context_revision(self):
+        self._context_revision += 1
+
+    def _capture_selection_snapshot(self):
+        try:
+            ranges = self.edit_text.tag_ranges(tk.SEL)
+        except tk.TclError:
+            self._editor_selection_range = None
+            return
+
+        if len(ranges) != 2:
+            self._editor_selection_range = None
+            return
+
+        start_index = self.edit_text.index(ranges[0])
+        end_index = self.edit_text.index(ranges[1])
+        selected_text = self._normalize_editor_block_text(self.edit_text.get(ranges[0], ranges[1]))
+        if not selected_text.strip():
+            self._editor_selection_range = None
+            return
+
+        self._editor_selection_range = {
+            'start': start_index,
+            'end': end_index,
+            'section': self.section_entry.get().strip(),
+            'context_revision': self._context_revision,
+        }
+        self._selection_snapshot = {
+            'text': selected_text,
+            'section': self.section_entry.get().strip(),
+            'context_revision': self._context_revision,
+            'source': 'paper_write_selection',
+            'paper_title': self.topic_entry.get().strip(),
+        }
+
+    def _store_current_editor_content(self):
+        title = self._editor_section_source or self.section_entry.get().strip()
+        if not title:
+            return
+        if title not in self._sections:
+            return
+        self._sections[title] = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        self._section_formats[title] = self._serialize_editor_format_spans()
+
+    def export_polish_context(self):
+        current_section = self.section_entry.get().strip()
+        current_content = self._normalize_editor_block_text(self.edit_text.get('1.0', tk.END))
+        outline_text = self.outline_text.get('1.0', tk.END).strip()
+        return {
+            'paper_title': self.topic_entry.get().strip(),
+            'current_section': current_section,
+            'current_content': current_content,
+            'outline_text': outline_text,
+            'context_revision': self._context_revision,
+            'level_font_styles': {k: dict(v) for k, v in self._level_font_styles.items()},
+        }
+
+    def export_selection_snapshot(self):
+        self._capture_selection_snapshot()
+        snapshot = self._selection_snapshot or {}
+        if snapshot.get('context_revision') != self._context_revision:
+            return None
+        result = dict(snapshot)
+        result['paper_title'] = self.topic_entry.get().strip()
+        result['level_font_styles'] = {k: dict(v) for k, v in self._level_font_styles.items()}
+        return result
+
+    def _get_outline_section_body(self, title):
+        target_title = (title or '').strip()
+        if not target_title:
+            return ''
+        self._store_current_editor_content()
+        if self._editor_section_source == target_title or self.section_entry.get().strip() == target_title:
+            return self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        return self._normalize_section_body(self._sections.get(target_title, ''))
+
+    def _build_outline_send_payload(self, title, page_id):
+        section_title = (title or '').strip()
+        body_text = self._get_outline_section_body(section_title)
+        if not body_text:
+            return None
+        return {
+            'text': body_text,
+            'paper_title': self.topic_entry.get().strip(),
+            'section': section_title,
+            'section_level': self._section_levels.get(section_title, self._infer_outline_level(section_title)),
+            'context_revision': self._context_revision,
+            'source_kind': 'paper_section',
+            'source_desc': f'来自论文写作页面主动发送 / {section_title}',
+            'target_page_id': page_id,
+            'level_font_styles': {k: dict(v) for k, v in self._level_font_styles.items()},
+        }
+
+    def _send_outline_section_to_page(self, title, page_id, page_label):
+        payload = self._build_outline_send_payload(title, page_id)
+        if not payload:
+            messagebox.showwarning('提示', '当前标题下暂无可发送的正文内容。', parent=self.frame)
+            return
+        if not self.app_bridge:
+            messagebox.showwarning('提示', '当前版本未连接章节内容发送桥接。', parent=self.frame)
+            return
+
+        outcome = self.app_bridge.send_paper_write_content(page_id, payload)
+        if not outcome or not outcome.get('ok'):
+            messagebox.showwarning('发送失败', (outcome or {}).get('message', '无法发送到目标页面'), parent=self.frame)
+            return
+
+        self.set_status(f'已将“{payload["section"]}”的正文发送到{page_label}')
+        if messagebox.askyesno('发送成功', f'已将当前章节正文发送到“{page_label}”。\n\n是否立即跳转到该页面？', parent=self.frame):
+            if callable(self.navigate_page):
+                self.navigate_page(page_id)
+            elif self.app_bridge:
+                self.app_bridge.navigate_to_page(page_id)
+
+    def apply_external_result(self, result, target_mode='smart', write_mode='replace', section_hint='', task_type=''):
+        result = self._normalize_editor_block_text(result)
+        if not result.strip():
+            return {'ok': False, 'message': '没有可写回的内容'}
+
+        resolved_target = target_mode
+        if resolved_target == 'smart':
+            resolved_target = 'outline' if task_type == '论文大纲' else 'body'
+
+        if resolved_target == 'outline':
+            existing_outline = self.outline_text.get('1.0', tk.END).strip()
+            if write_mode == 'append' and existing_outline:
+                merged_outline = existing_outline + '\n\n' + result
+            else:
+                merged_outline = result
+            self._parse_and_show_outline(merged_outline)
+            self._touch_context_revision()
+            self._schedule_workspace_state_save()
+            return {
+                'ok': True,
+                'target': 'outline',
+                'message': '已写回论文大纲',
+                'section': '',
+            }
+
+        section_name = (section_hint or '').strip() or self.section_entry.get().strip()
+        existing_content = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        existing_formats = []
+        current_source = self._editor_section_source or self.section_entry.get().strip()
+        if current_source and current_source == section_name:
+            existing_formats = self._serialize_editor_format_spans()
+        elif section_name:
+            existing_formats = self._copy_section_formats(section_name)
+        if write_mode == 'append' and existing_content:
+            new_content = existing_content + '\n\n' + self._normalize_section_body(result)
+        else:
+            new_content = self._normalize_section_body(result)
+        new_formats = self._preserve_existing_formats(
+            section_name,
+            existing_content,
+            new_content,
+            source_spans=existing_formats,
+        ) if section_name else []
+
+        if section_name:
+            self.section_entry.delete(0, tk.END)
+            self.section_entry.insert(0, section_name)
+        self._set_editor_content(new_content, new_formats)
+        self._editor_section_source = section_name or ''
+        self._update_stats()
+        self._touch_context_revision()
+        self.frame.after_idle(self._capture_selection_snapshot)
+        self._schedule_workspace_state_save()
+
+        if section_name:
+            self._sections[section_name] = new_content
+            self._section_formats[section_name] = new_formats
+            if section_name not in self._section_order:
+                self._section_order.append(section_name)
+                self._section_formats.setdefault(section_name, [])
+                self._section_levels[section_name] = self._infer_outline_level(section_name)
+                self._section_parent[section_name] = self._find_parent_for_insert(len(self._section_order) - 1, self._section_levels[section_name])
+                self._rebuild_section_children()
+                self._sync_outline_text_from_sections()
+                self._refresh_outline_list()
+
+        return {
+            'ok': True,
+            'target': 'body',
+            'message': f'已写回当前章节：{section_name or "未命名章节"}',
+            'section': section_name,
+        }
+
+    # ──────────────────────────────────────────────
+    # 工具栏功能
+    # ──────────────────────────────────────────────
+
+    def _gen_outline(self):
+        topic = self.topic_entry.get().strip()
+        if not topic:
+            messagebox.showwarning('提示', '请输入论文标题', parent=self.frame)
+            return
+        if not self._ensure_prompt_ready('paper_write.outline'):
+            return
+
+        subject = self.subject_entry.get().strip()
+        style = self.style_var.get()
+        ref = self.ref_var.get()
+
+        def on_start():
+            self.outline_text.delete('1.0', tk.END)
+            self.outline_text.insert(tk.END, '生成中，请稍候...')
+
+        def on_success(result):
+            self.outline_text.delete('1.0', tk.END)
+            self.outline_text.insert(tk.END, result)
+            self._parse_and_show_outline(result)
+            self._schedule_workspace_state_save()
+            self._add_history_version(
+                '生成大纲',
+                topic,
+                result,
+                extra={'paper_title': topic},
+            )
+            self.set_status('大纲生成完成')
+
+        def on_error(exc):
+            self.outline_text.delete('1.0', tk.END)
+            self.outline_text.insert(tk.END, f'错误：{exc}')
+            self.set_status('生成失败', COLORS['error'])
+
+        self.task_runner.run(
+            work=lambda: self.writer.generate_outline(topic, style, ref, subject=subject),
+            on_success=on_success,
+            on_error=on_error,
+            on_start=on_start,
+            loading_text='正在生成论文大纲...',
+            status_text='正在生成大纲...',
+            status_color=COLORS['warning'],
+        )
+
+    def _add_history_version(self, operation, input_text, output_text, extra=None):
+        self.history.add(
+            operation,
+            input_text,
+            output_text,
+            MODULE_PAPER_WRITE,
+            extra=extra,
+            page_state_id=self.PAGE_STATE_ID,
+            workspace_state=self.capture_workspace_state_snapshot(save_to_disk=False),
+        )
+
+    @staticmethod
+    def _normalize_import_title_text(text):
+        value = re.sub(r'\s+', ' ', str(text or '').strip())
+        if not value:
+            return '', False
+
+        stripped_by_prefix = False
+        prefix_patterns = (
+            r'^(?:论文标题|论文题目|论文名称)\s*[:：]?\s*(.+)$',
+            r'^(?:标题|题目|主题)\s*[:：]?\s*(.+)$',
+            r'^(?:中文标题|中文题目|英文标题|英文题目)\s*[:：]?\s*(.+)$',
+            r'^(?:title)\s*[:：]?\s*(.+)$',
+        )
+        for pattern in prefix_patterns:
+            match = re.match(pattern, value, re.IGNORECASE)
+            if not match:
+                continue
+            candidate = re.sub(r'\s+', ' ', match.group(1).strip())
+            if candidate:
+                value = candidate
+                stripped_by_prefix = True
+                break
+
+        return value.strip(' \t\r\n-—_:：'), stripped_by_prefix
+
+    def _evaluate_import_title_candidate(self, text, *, source='body'):
+        normalized, stripped_by_prefix = self._normalize_import_title_text(text)
+        if not normalized:
+            return None
+
+        plain = self._heading_plain_text(normalized)
+        if not plain:
+            return None
+        if self._parse_outline_heading(normalized):
+            return None
+
+        exact_blacklist = {
+            '摘要', 'abstract', '摘要与关键词', 'abstract and keywords',
+            '关键词', '关键字', 'keywords',
+            '参考文献', 'references', 'bibliography',
+            '附录', 'appendix',
+            '目录', 'contents', 'table of contents',
+            '致谢', 'acknowledgements', 'acknowledgments',
+            '本科毕业论文', '毕业论文', '学位论文', '论文',
+        }
+        if plain in exact_blacklist:
+            return None
+
+        if len(normalized) < 4 or len(normalized) > 80:
+            return None
+        if re.search(r'[\\/]', normalized):
+            return None
+
+        score = {
+            'body': 42,
+            'current': 30,
+            'filename': 12,
+        }.get(source, 0)
+
+        length = len(normalized)
+        if 8 <= length <= 36:
+            score += 18
+        elif 6 <= length <= 48:
+            score += 12
+        else:
+            score += 4
+
+        if stripped_by_prefix:
+            score += 18
+        if re.search(r'[\u4e00-\u9fffA-Za-z]', normalized):
+            score += 8
+
+        punctuation_count = len(re.findall(r'[，。！？：；,.!?;:_\-—/]', normalized))
+        if punctuation_count <= 2:
+            score += 6
+        else:
+            score -= min(punctuation_count * 2, 14)
+
+        digit_count = len(re.findall(r'\d', normalized))
+        if digit_count and digit_count / max(length, 1) > 0.35:
+            score -= 20
+        if re.search(r'\.[A-Za-z0-9]{1,5}$', normalized):
+            score -= 24
+        if re.search(r'[_/\\]', normalized):
+            score -= 16
+
+        meta_prefixes = (
+            '学号', '作者', '姓名', '学生', '班级', '专业', '院系',
+            '指导教师', '指导老师', '完成时间', '完成日期', '日期',
+            '目录', '摘要', '关键词', '关键字',
+            'abstract', 'keywords', 'references', 'bibliography',
+            'appendix', 'contents', 'acknowledgements', 'acknowledgments',
+        )
+        if plain.startswith(meta_prefixes):
+            score -= 36
+        if re.search(r'(?:^|[\s(（【\[])本科毕业论文(?:[)）】\]]|$)', normalized):
+            score -= 30
+        if re.search(r'(?:^|[\s(（【\[])学位论文(?:[)）】\]]|$)', normalized):
+            score -= 24
+        if length <= 20 and normalized.endswith(('大学', '学院', '学校')):
+            score -= 30
+        if normalized.startswith(('本文', '本研究', '本论文', '为了', '通过', '随着', '针对', '根据', '由于', '这是', '该文', '我们')):
+            score -= 28
+
+        return {
+            'text': normalized,
+            'source': source,
+            'score': score,
+        }
+
+    def _is_import_title_boundary_line(self, text):
+        if self._parse_outline_heading(text):
+            return True
+
+        plain = self._heading_plain_text(text)
+        return plain in {
+            '摘要', 'abstract', '摘要与关键词', 'abstract and keywords',
+            '关键词', '关键字', 'keywords',
+            '目录', 'contents', 'table of contents',
+            '参考文献', 'references', 'bibliography',
+            '附录', 'appendix',
+            '致谢', 'acknowledgements', 'acknowledgments',
+        }
+
+    def _extract_body_title_candidate(self, text):
+        lines = [line.strip() for line in str(text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n') if line.strip()]
+        if not lines:
+            return None
+
+        search_lines = lines[:24]
+        for index, line in enumerate(lines[:40]):
+            if self._is_import_title_boundary_line(line):
+                if index > 0:
+                    search_lines = lines[:min(index, 24)]
+                else:
+                    search_lines = []
+                break
+
+        best_candidate = None
+        for line in search_lines:
+            candidate = self._evaluate_import_title_candidate(line, source='body')
+            if not candidate or candidate['score'] < 46:
+                continue
+            if best_candidate is None or candidate['score'] > best_candidate['score']:
+                best_candidate = candidate
+        return best_candidate
+
+    def _extract_import_title_candidate(self, text, path):
+        candidate = self._extract_body_title_candidate(text)
+        if candidate:
+            return candidate
+
+        file_stem = os.path.splitext(os.path.basename(path or ''))[0].strip()
+        fallback = self._evaluate_import_title_candidate(file_stem, source='filename')
+        if fallback and fallback['score'] >= 24:
+            return fallback
+        return None
+
+    def _should_replace_import_title(self, current_title, candidate):
+        if not candidate:
+            return False
+
+        current_text = str(current_title or '').strip()
+        if not current_text:
+            return True
+        if current_text == candidate['text']:
+            return False
+
+        current_candidate = self._evaluate_import_title_candidate(current_text, source='current')
+        if not current_candidate:
+            return True
+        if candidate['source'] == 'body':
+            return candidate['score'] >= current_candidate['score']
+        return candidate['score'] > current_candidate['score']
+
+    def _apply_imported_paper_title(self, text, path):
+        candidate = self._extract_import_title_candidate(text, path)
+        if not candidate:
+            return ''
+
+        source_label = '正文' if candidate['source'] == 'body' else '文件名'
+        current_title = self.topic_entry.get().strip()
+        if not self._should_replace_import_title(current_title, candidate):
+            if current_title and current_title != candidate['text']:
+                return f'已识别论文标题候选（{source_label}）：{candidate["text"]}，已保留当前论文标题'
+            return ''
+
+        self.topic_entry.delete(0, tk.END)
+        self.topic_entry.insert(0, candidate['text'])
+        return f'已自动识别论文标题（{source_label}）：{candidate["text"]}'
+
+    def _import_file(self):
+        path = filedialog.askopenfilename(
+            filetypes=[('Word文档', '*.docx'), ('文本文件', '*.txt'), ('所有文件', '*.*')],
+            parent=self.frame,
+        )
+        if not path:
+            return
+        try:
+            if path.lower().endswith('.docx'):
+                text = self.aux.import_docx(path)
+            else:
+                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                    text = f.read()
+            title_feedback = self._apply_imported_paper_title(text, path)
+            # 先解析大纲，不把全文直接填入编辑区
+            self._parse_and_show_outline(text)
+            # 清空编辑区，等待用户点击章节
+            self.edit_text.delete('1.0', tk.END)
+            self.section_entry.delete(0, tk.END)
+            self._editor_section_source = ''
+            self._touch_context_revision()
+            self._schedule_workspace_state_save()
+            status_text = f'已导入: {path}，请点击左侧大纲章节查看内容'
+            if title_feedback:
+                status_text = f'{status_text}；{title_feedback}'
+            self.set_status(status_text)
+            self._update_stats()
+            if self.config and hasattr(self.config, 'clear_home_last_import_failure'):
+                self.config.clear_home_last_import_failure()
+                self.config.save()
+        except Exception as e:
+            if self.config and hasattr(self.config, 'set_home_last_import_failure'):
+                self.config.set_home_last_import_failure('paper_write', os.path.basename(path), str(e))
+                self.config.save()
+            messagebox.showerror('导入失败', str(e), parent=self.frame)
+
+    def _parse_and_show_outline(self, text):
+        """从文本中解析章节标题，填充左侧大纲列表"""
+        lines = text.split('\n')
+        headings = []
+        stack = []
+        for index, line in enumerate(lines):
+            parsed = self._parse_outline_heading(line)
+            if not parsed:
+                continue
+            title, level = parsed
+            while stack and stack[-1]['level'] >= level:
+                stack.pop()
+            parent_title = stack[-1]['title'] if stack else ''
+            heading = {'title': title, 'start': index, 'level': level, 'parent': parent_title}
+            headings.append(heading)
+            stack.append(heading)
+
+        self._sections = {}
+        self._section_formats = {}
+        self._section_order = []
+        self._section_levels = {}
+        self._section_parent = {}
+        self._collapsed_sections = set()
+        for idx, heading in enumerate(headings):
+            next_start = headings[idx + 1]['start'] if idx + 1 < len(headings) else len(lines)
+            body_lines = []
+            for candidate in lines[heading['start'] + 1:next_start]:
+                if self._parse_outline_heading(candidate):
+                    continue
+                body_lines.append(candidate)
+            content = self._normalize_section_body('\n'.join(body_lines))
+            self._sections[heading['title']] = content
+            self._section_formats[heading['title']] = []
+            self._section_order.append(heading['title'])
+            self._section_levels[heading['title']] = heading['level']
+            self._section_parent[heading['title']] = heading.get('parent', '')
+        self._merge_keyword_section_into_abstract()
+        self._rebuild_section_children()
+
+        self._sync_outline_text_from_sections()
+        self._refresh_outline_list()
+        self._editor_section_source = ''
+        self.section_entry.delete(0, tk.END)
+        if self._section_order:
+            self._select_section(self._section_order[0], touch_context=False)
+        else:
+            self.edit_text.delete('1.0', tk.END)
+            self._editor_section_source = ''
+        self._touch_context_revision()
+
+    def _normalize_section_body(self, text):
+        lines = []
+        for raw_line in (text or '').splitlines():
+            if self._parse_outline_heading(raw_line):
+                continue
+            lines.append(raw_line.rstrip())
+        # Preserve first-line indentation while still trimming blank lines
+        # introduced by the Tk text widget around the stored section body.
+        return '\n'.join(lines).strip('\n')
+
+    @staticmethod
+    def _normalize_editor_block_text(text):
+        return str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip('\n')
+
+    def _compose_outline_text(self):
+        return '\n'.join(self._section_order).strip()
+
+    def _sync_outline_text_from_sections(self):
+        self.outline_text.delete('1.0', tk.END)
+        outline_text = self._compose_outline_text()
+        if outline_text:
+            self.outline_text.insert('1.0', outline_text)
+
+    def _heading_plain_text(self, title):
+        return self._editable_title_text(title).replace('：', ':').strip().lower()
+
+    def _is_abstract_section_title(self, title):
+        plain = self._heading_plain_text(title)
+        return plain in {'摘要', 'abstract', '摘要与关键词', 'abstract and keywords'}
+
+    def _is_keyword_section_title(self, title):
+        plain = self._heading_plain_text(title)
+        return plain in {'关键词', '关键字', 'keywords'}
+
+    def _find_abstract_section_title(self):
+        for title in self._section_order:
+            if self._is_abstract_section_title(title):
+                return title
+        return ''
+
+    def _is_reference_section_title(self, title):
+        plain = self._heading_plain_text(title)
+        return plain in {'参考文献', 'references', 'bibliography'}
+
+    def _is_appendix_section_title(self, title):
+        plain = self._heading_plain_text(title)
+        return plain.startswith('附录') or plain.startswith('appendix')
+
+    def _find_reference_section_title(self):
+        for title in self._section_order:
+            if self._is_reference_section_title(title):
+                return title
+        return ''
+
+    def _keyword_line_from_content(self, content):
+        text = (content or '').strip()
+        if not text:
+            return ''
+        collapsed = re.sub(r'\s+', ' ', text).strip('；;,.， ')
+        return f'关键词：{collapsed}' if collapsed else ''
+
+    def _merge_abstract_parts(self, abstract_content, keyword_content):
+        abstract_text = self._normalize_section_body(abstract_content or '')
+        keyword_text = self._normalize_section_body(keyword_content or '')
+        parts = []
+        if abstract_text:
+            parts.append(abstract_text)
+        keyword_line = self._keyword_line_from_content(keyword_text)
+        if keyword_line:
+            parts.append(keyword_line)
+        return '\n\n'.join(parts).strip()
+
+    def _merge_keyword_section_into_abstract(self):
+        if not self._section_order:
+            return
+
+        abstract_title = self._find_abstract_section_title()
+        keyword_titles = [title for title in self._section_order if self._is_keyword_section_title(title)]
+        if not keyword_titles:
+            return
+
+        primary_keyword_title = keyword_titles[0]
+        if not abstract_title:
+            keyword_level = self._section_levels.get(primary_keyword_title, 2)
+            abstract_title = self._format_title_for_level(primary_keyword_title, '摘要', level=keyword_level)
+            if abstract_title in self._sections and abstract_title != primary_keyword_title:
+                abstract_title = self._make_unique_title(abstract_title, exclude_title=primary_keyword_title)
+            self._sections[abstract_title] = ''
+            self._section_formats[abstract_title] = []
+            self._section_levels[abstract_title] = keyword_level
+            self._section_parent[abstract_title] = self._section_parent.get(primary_keyword_title, '')
+            insert_index = self._section_order.index(primary_keyword_title)
+            self._section_order.insert(insert_index, abstract_title)
+
+        merged_content = self._sections.get(abstract_title, '')
+        for keyword_title in keyword_titles:
+            merged_content = self._merge_abstract_parts(merged_content, self._sections.get(keyword_title, ''))
+            self._sections.pop(keyword_title, None)
+            self._section_formats.pop(keyword_title, None)
+            self._section_levels.pop(keyword_title, None)
+            self._section_parent.pop(keyword_title, None)
+            self._collapsed_sections.discard(keyword_title)
+            if keyword_title in self._section_order:
+                self._section_order.remove(keyword_title)
+            if getattr(self, '_outline_selected', None) is not None and self._outline_selected.get() == keyword_title:
+                self._outline_selected.set(abstract_title)
+            if self._editor_section_source == keyword_title:
+                self._editor_section_source = abstract_title
+            if self.section_entry.get().strip() == keyword_title:
+                self.section_entry.delete(0, tk.END)
+                self.section_entry.insert(0, abstract_title)
+
+        self._sections[abstract_title] = merged_content
+        self._section_formats.setdefault(abstract_title, [])
+
+    def _ensure_abstract_section(self):
+        abstract_title = self._find_abstract_section_title()
+        if abstract_title:
+            return abstract_title
+
+        if self._section_order:
+            first_title = self._section_order[0]
+            first_level = self._section_levels.get(first_title, self._infer_outline_level(first_title))
+            insert_index = 1 if first_level == 1 and len(self._section_order) >= 1 else 0
+            parent = first_title if first_level < 2 and insert_index == 1 else ''
+        else:
+            insert_index = 0
+            parent = ''
+
+        abstract_title = '## 摘要'
+        if abstract_title in self._sections:
+            abstract_title = self._make_unique_title(abstract_title)
+        self._section_order.insert(insert_index, abstract_title)
+        self._sections[abstract_title] = ''
+        self._section_formats[abstract_title] = []
+        self._section_levels[abstract_title] = 2
+        self._section_parent[abstract_title] = parent
+        self._rebuild_section_children()
+        self._sync_outline_text_from_sections()
+        self._refresh_outline_list()
+        return abstract_title
+
+    def _collect_full_text_for_abstract(self):
+        self._store_current_editor_content()
+
+        parts = []
+        topic = self.topic_entry.get().strip()
+        if topic:
+            parts.append(f'# {topic}')
+
+        for title in self._section_order:
+            if self._is_abstract_section_title(title) or self._is_keyword_section_title(title):
+                continue
+            body = self._normalize_section_body(self._sections.get(title, ''))
+            if not body:
+                continue
+            parts.append(f'{title}\n{body}')
+
+        if not parts:
+            current_text = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+            if current_text:
+                current_title = self._editor_section_source or self.section_entry.get().strip() or '正文'
+                parts.append(f'{current_title}\n{current_text}')
+
+        return '\n\n'.join(part for part in parts if part).strip()
+
+    def _parse_abstract_result(self, text):
+        raw = (text or '').strip()
+        if not raw:
+            return '', ''
+
+        normalized = raw.replace('\r\n', '\n').replace('\r', '\n')
+        keyword_match = re.search(
+            r'(?:^|\n)\s*[【\[]?(?:关键词|关键字|keywords)[】\]]?\s*(?:[:：]\s*)?(.+)$',
+            normalized,
+            re.IGNORECASE | re.DOTALL,
+        )
+        keyword_text = ''
+        abstract_part = normalized
+        if keyword_match:
+            abstract_part = normalized[:keyword_match.start()].strip()
+            keyword_text = keyword_match.group(1).strip()
+
+        abstract_part = re.sub(
+            r'^\s*[【\[]?(?:摘要|abstract)[】\]]?\s*(?:[:：]\s*)?',
+            '',
+            abstract_part,
+            flags=re.IGNORECASE,
+        )
+        keyword_text = re.sub(r'\s+', ' ', keyword_text).strip('；;,.， ')
+        return abstract_part.strip(), keyword_text
+
+    def _format_generated_abstract(self, text):
+        abstract_text, keyword_text = self._parse_abstract_result(text)
+        if not abstract_text and not keyword_text:
+            return self._normalize_section_body(text)
+
+        parts = []
+        if abstract_text:
+            parts.append(abstract_text)
+        if keyword_text:
+            parts.append(f'关键词：{keyword_text}')
+        return '\n\n'.join(parts).strip()
+
+    def _write_abstract_to_section(self, content):
+        abstract_title = self._ensure_abstract_section()
+        self._merge_keyword_section_into_abstract()
+        self._sections[abstract_title] = self._normalize_section_body(content)
+        self._section_formats[abstract_title] = []
+        self._rebuild_section_children()
+        self._sync_outline_text_from_sections()
+        self._refresh_outline_list()
+        self._select_section(abstract_title, touch_context=False)
+        self._touch_context_revision()
+        self._update_stats()
+        self.frame.after_idle(self._capture_selection_snapshot)
+        self._schedule_workspace_state_save()
+        return abstract_title
+
+    def _strip_reference_heading(self, text):
+        normalized = (text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+        if not normalized:
+            return ''
+
+        single_line_match = re.match(
+            r'^\s*(?:#{1,6}\s*)?(?:[【\[]\s*)?(?:参考文献|references|bibliography)(?:\s*[】\]])?\s*(?:[:：]\s*(.*))?$',
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if single_line_match:
+            inline_rest = (single_line_match.group(1) or '').strip()
+            return inline_rest
+
+        lines = normalized.split('\n')
+        first_line = lines[0].strip()
+        if re.match(
+            r'^(?:#{1,6}\s*)?(?:[【\[]\s*)?(?:参考文献|references|bibliography)(?:\s*[】\]])?\s*$',
+            first_line,
+            flags=re.IGNORECASE,
+        ):
+            return '\n'.join(lines[1:]).strip()
+        return normalized
+
+    def _extract_references_from_section_result(self, text):
+        normalized = (text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+        if not normalized:
+            return '', ''
+
+        heading_match = re.search(
+            r'(?im)^\s*(?:#{1,6}\s*)?(?:[【\[]\s*)?(?:参考文献|references|bibliography)(?:\s*[】\]])?\s*(?:[:：].*)?$',
+            normalized,
+        )
+        if not heading_match:
+            return self._normalize_section_body(normalized), ''
+
+        body_part = normalized[:heading_match.start()].strip()
+        references_part = normalized[heading_match.start():].strip()
+        references_text = self._strip_reference_heading(references_part)
+        return self._normalize_section_body(body_part), self._normalize_section_body(references_text)
+
+    def _ensure_reference_section(self):
+        reference_title = self._find_reference_section_title()
+        if reference_title:
+            return reference_title
+
+        insert_index = len(self._section_order)
+        parent = ''
+        appendix_title = next((title for title in self._section_order if self._is_appendix_section_title(title)), '')
+        if appendix_title:
+            insert_index = self._section_order.index(appendix_title)
+            parent = self._section_parent.get(appendix_title, '')
+        elif self._section_order:
+            first_title = self._section_order[0]
+            first_level = self._section_levels.get(first_title, self._infer_outline_level(first_title))
+            if first_level == 1:
+                parent = first_title
+
+        reference_title = '## 参考文献'
+        if reference_title in self._sections:
+            reference_title = self._make_unique_title(reference_title)
+        self._section_order.insert(insert_index, reference_title)
+        self._sections[reference_title] = ''
+        self._section_formats[reference_title] = []
+        self._section_levels[reference_title] = 2
+        self._section_parent[reference_title] = parent
+        self._rebuild_section_children()
+        self._sync_outline_text_from_sections()
+        self._refresh_outline_list()
+        return reference_title
+
+    def _write_references_to_section(self, references_text):
+        clean_references = self._normalize_section_body(self._strip_reference_heading(references_text))
+        if not clean_references:
+            return ''
+
+        reference_title = self._ensure_reference_section()
+        existing_references = self._normalize_section_body(self._sections.get(reference_title, ''))
+        if existing_references:
+            merged_references = f'{existing_references}\n\n{clean_references}'
+        else:
+            merged_references = clean_references
+        self._sections[reference_title] = merged_references
+        self._section_formats[reference_title] = self._preserve_existing_formats(
+            reference_title,
+            existing_references,
+            merged_references,
+        )
+        self._rebuild_section_children()
+        self._sync_outline_text_from_sections()
+        self._refresh_outline_list()
+        self._schedule_workspace_state_save()
+        return reference_title
+
+    def _parse_outline_heading(self, line):
+        text = (line or '').strip()
+        if not text or len(text) > 120:
+            return None
+
+        markdown = re.match(r'^(#{1,6})\s+(.+)$', text)
+        if markdown:
+            return text, len(markdown.group(1))
+
+        chapter = re.match(r'^第[一二三四五六七八九十百千]+[章节部分]\s*.+$', text)
+        if chapter:
+            return text, 1
+
+        chinese = re.match(r'^[一二三四五六七八九十百千]+[、．.]\s*.+$', text)
+        if chinese:
+            return text, 2
+
+        numbered = re.match(r'^(?:[-*•]\s*)?((?:\d+\.)+\d+)\s+(.+)$', text)
+        if numbered:
+            number_label = numbered.group(1).strip()
+            title_text = numbered.group(2).strip()
+            level = number_label.count('.') + 2
+            return f'{number_label} {title_text}', level
+
+        simple_numbered = re.match(r'^(\d+)[、．.]\s*(.+)$', text)
+        if simple_numbered:
+            return f'{simple_numbered.group(1)}. {simple_numbered.group(2).strip()}', 2
+
+        return None
+
+    def _infer_outline_level(self, title):
+        parsed = self._parse_outline_heading(title)
+        if parsed:
+            return parsed[1]
+        return 2
+
+    def _default_title_for_level(self, level):
+        if level <= 1:
+            return '# 新一级标题'
+        if level == 2:
+            return '## 新二级标题'
+        return '### 新三级标题'
+
+    def _editable_title_text(self, title):
+        text = (title or '').strip()
+        markdown = re.match(r'^#{1,6}\s+(.+)$', text)
+        if markdown:
+            return markdown.group(1).strip()
+
+        numbered = re.match(r'^(?:\d+\.)+\d+\s+(.+)$', text)
+        if numbered:
+            return numbered.group(1).strip()
+
+        chapter = re.match(r'^第[一二三四五六七八九十百千万\d]+[章节部分]\s*(.+)$', text)
+        if chapter:
+            return chapter.group(1).strip()
+
+        chinese = re.match(r'^[一二三四五六七八九十百千万\d]+[、.．]\s*(.+)$', text)
+        if chinese:
+            return chinese.group(1).strip()
+        return text
+
+    def _format_title_for_level(self, original_title, new_text, level=None):
+        target_level = max(1, int(level or self._section_levels.get(original_title, self._infer_outline_level(original_title)) or 1))
+        label_text = (new_text or '').strip()
+        if not label_text:
+            return original_title
+
+        markdown = re.match(r'^(#{1,6})\s+(.+)$', original_title)
+        if markdown:
+            hashes = '#' * min(target_level, 6)
+            return f'{hashes} {label_text}'
+
+        numbered = re.match(r'^((?:\d+\.)+\d+)\s+(.+)$', original_title)
+        if numbered:
+            return f'{numbered.group(1)} {label_text}'
+
+        chapter = re.match(r'^(第[一二三四五六七八九十百千万\d]+[章节部分])\s*(.+)$', original_title)
+        if chapter:
+            return f'{chapter.group(1)} {label_text}'
+
+        chinese = re.match(r'^([一二三四五六七八九十百千万\d]+[、.．])\s*(.+)$', original_title)
+        if chinese:
+            return f'{chinese.group(1)} {label_text}'
+
+        default_title = self._default_title_for_level(target_level)
+        prefix_match = re.match(r'^(#{1,6})\s+', default_title)
+        if prefix_match:
+            return f'{prefix_match.group(1)} {label_text}'
+        return label_text
+
+    def _make_unique_title(self, proposed_title, exclude_title=''):
+        candidate = (proposed_title or '').strip()
+        if not candidate:
+            return exclude_title or proposed_title
+
+        taken = {title for title in self._section_order if title != exclude_title}
+        if candidate not in taken:
+            return candidate
+
+        suffix = 2
+        while True:
+            retry = f'{candidate} ({suffix})'
+            if retry not in taken:
+                return retry
+            suffix += 1
+
+    def _is_descendant_of(self, title, ancestor):
+        parent = self._section_parent.get(title, '')
+        while parent:
+            if parent == ancestor:
+                return True
+            parent = self._section_parent.get(parent, '')
+        return False
+
+    def _get_section_subtree_titles(self, title):
+        if title not in self._section_order:
+            return []
+
+        start = self._section_order.index(title)
+        result = [title]
+        for candidate in self._section_order[start + 1:]:
+            if not self._is_descendant_of(candidate, title):
+                break
+            result.append(candidate)
+        return result
+
+    def _subtree_end_index(self, title):
+        subtree = self._get_section_subtree_titles(title)
+        if not subtree:
+            return -1
+        return self._section_order.index(subtree[-1])
+
+    def _find_parent_for_insert(self, anchor_index, level):
+        for index in range(anchor_index - 1, -1, -1):
+            candidate = self._section_order[index]
+            candidate_level = self._section_levels.get(candidate, self._infer_outline_level(candidate))
+            if candidate_level < level:
+                return candidate
+        return ''
+
+    def _rename_section_title(self, old_title, new_title):
+        if old_title not in self._sections or not new_title:
+            return False
+        unique_title = self._make_unique_title(new_title, exclude_title=old_title)
+        if unique_title == old_title:
+            return False
+
+        self._sections[unique_title] = self._sections.pop(old_title)
+        self._section_formats[unique_title] = self._section_formats.pop(old_title, [])
+        self._section_levels[unique_title] = self._section_levels.pop(old_title, self._infer_outline_level(unique_title))
+        self._section_parent[unique_title] = self._section_parent.pop(old_title, '')
+
+        index = self._section_order.index(old_title)
+        self._section_order[index] = unique_title
+
+        for title in list(self._section_parent.keys()):
+            if self._section_parent.get(title) == old_title:
+                self._section_parent[title] = unique_title
+
+        if old_title in self._collapsed_sections:
+            self._collapsed_sections.remove(old_title)
+            self._collapsed_sections.add(unique_title)
+
+        if hasattr(self, '_outline_selected') and self._outline_selected.get() == old_title:
+            self._outline_selected.set(unique_title)
+        if self._editor_section_source == old_title:
+            self._editor_section_source = unique_title
+        if self.section_entry.get().strip() == old_title:
+            self.section_entry.delete(0, tk.END)
+            self.section_entry.insert(0, unique_title)
+
+        self._rebuild_section_children()
+        self._sync_outline_text_from_sections()
+        self._refresh_outline_list()
+        self._select_section(unique_title, touch_context=False)
+        self._touch_context_revision()
+        self._schedule_workspace_state_save()
+        return True
+
+    def _insert_outline_title(self, reference_title, position, level):
+        if reference_title not in self._section_order:
+            return
+
+        if position == 'below':
+            anchor_index = self._subtree_end_index(reference_title) + 1
+        else:
+            anchor_index = self._section_order.index(reference_title)
+
+        parent = self._find_parent_for_insert(anchor_index, level)
+        new_title = self._make_unique_title(self._default_title_for_level(level))
+
+        self._section_order.insert(anchor_index, new_title)
+        self._sections[new_title] = ''
+        self._section_formats[new_title] = []
+        self._section_levels[new_title] = level
+        self._section_parent[new_title] = parent
+        if parent in self._collapsed_sections:
+            self._collapsed_sections.remove(parent)
+
+        self._rebuild_section_children()
+        self._sync_outline_text_from_sections()
+        self._refresh_outline_list()
+        self._select_section(new_title, touch_context=False)
+        self._begin_outline_title_edit(new_title)
+        self._touch_context_revision()
+        self._schedule_workspace_state_save()
+        self.set_status('已插入新标题，请直接输入标题名称')
+        return new_title
+
+    def _change_outline_level(self, title, target_level):
+        if title not in self._section_order:
+            return False
+
+        try:
+            target_level = int(target_level)
+        except Exception:
+            return False
+        target_level = max(1, min(target_level, 3))
+
+        current_level = self._section_levels.get(title, self._infer_outline_level(title))
+        delta = target_level - current_level
+        if delta == 0:
+            return False
+
+        subtree = self._get_section_subtree_titles(title)
+        if not subtree:
+            return False
+
+        updated_levels = {}
+        for candidate in subtree:
+            candidate_level = self._section_levels.get(candidate, self._infer_outline_level(candidate))
+            next_level = candidate_level + delta
+            if next_level < 1 or next_level > 3:
+                messagebox.showwarning(
+                    '提示',
+                    '调整后会超出当前支持的三级大纲范围，请先调整下级标题。',
+                    parent=self.frame,
+                )
+                return False
+            updated_levels[candidate] = next_level
+
+        for candidate, next_level in updated_levels.items():
+            self._section_levels[candidate] = next_level
+
+        self._infer_section_relationships_from_order()
+        self._collapsed_sections = {
+            candidate
+            for candidate in self._collapsed_sections
+            if self._section_levels.get(candidate, self._infer_outline_level(candidate)) == 2
+            and self._section_children.get(candidate)
+        }
+        self._sync_outline_text_from_sections()
+        self._refresh_outline_list()
+        self._select_section(title, touch_context=False)
+        self._touch_context_revision()
+        self._schedule_workspace_state_save()
+        self.set_status('已调整大纲级别')
+        return True
+
+    def _move_section_to_target(self, moving_title, target_title, place_after=False):
+        if moving_title == target_title:
+            return False
+        if moving_title not in self._section_order or target_title not in self._section_order:
+            return False
+
+        moving_level = self._section_levels.get(moving_title, self._infer_outline_level(moving_title))
+        target_level = self._section_levels.get(target_title, self._infer_outline_level(target_title))
+        moving_parent = self._section_parent.get(moving_title, '')
+        target_parent = self._section_parent.get(target_title, '')
+        if moving_level != target_level or moving_parent != target_parent:
+            return False
+
+        moving_block = self._get_section_subtree_titles(moving_title)
+        if target_title in moving_block:
+            return False
+
+        target_block = self._get_section_subtree_titles(target_title)
+        moving_start = self._section_order.index(moving_title)
+        target_start = self._section_order.index(target_title)
+
+        remaining_order = [title for title in self._section_order if title not in moving_block]
+        if place_after:
+            last_target = target_block[-1]
+            insert_index = remaining_order.index(last_target) + 1
+        else:
+            insert_index = remaining_order.index(target_title)
+
+        self._section_order = remaining_order[:insert_index] + moving_block + remaining_order[insert_index:]
+        if moving_start != target_start:
+            self._sync_outline_text_from_sections()
+            self._refresh_outline_list()
+            self._select_section(moving_title, touch_context=False)
+            self._touch_context_revision()
+            self._schedule_workspace_state_save()
+        return True
+
+    def _rebuild_section_children(self):
+        self._section_children = {title: [] for title in self._section_order}
+        for title in self._section_order:
+            parent = self._section_parent.get(title, '')
+            if parent in self._section_children:
+                self._section_children[parent].append(title)
+
+    def _infer_section_relationships_from_order(self):
+        stack = []
+        self._section_parent = {}
+        for title in self._section_order:
+            level = self._section_levels.get(title, self._infer_outline_level(title))
+            while stack and stack[-1][1] >= level:
+                stack.pop()
+            self._section_parent[title] = stack[-1][0] if stack else ''
+            stack.append((title, level))
+        self._rebuild_section_children()
+
+    def _get_visible_section_titles(self):
+        visible = []
+        for title in self._section_order:
+            if self._is_section_visible(title):
+                visible.append(title)
+        return visible
+
+    def _is_section_visible(self, title):
+        parent = self._section_parent.get(title, '')
+        while parent:
+            if parent in self._collapsed_sections:
+                return False
+            parent = self._section_parent.get(parent, '')
+        return True
+
+    def _outline_font_for_level(self, level):
+        level_key = {1: 'h1', 2: 'h2', 3: 'h3'}.get(max(1, int(level or 1)), 'body')
+        style = self._level_font_styles.get(level_key, self.LEVEL_STYLE_DEFAULTS.get(level_key, {}))
+        family = style.get('font', self.LEVEL_STYLE_DEFAULTS.get(level_key, {}).get('font', '宋体'))
+        size = max(8, int(style.get('size_pt', self.LEVEL_STYLE_DEFAULTS.get(level_key, {}).get('size_pt', 12))))
+        weight = 'bold' if level_key in {'h1', 'h2'} else 'normal'
+        font_key = (level_key, family, size, weight)
+        cached = self._outline_level_fonts.get(font_key)
+        if cached is not None:
+            return cached
+        font = tkfont.Font(root=self.frame, family=family, size=size, weight=weight)
+        self._outline_level_fonts[font_key] = font
+        return font
+
+    def _set_outline_row_visual(self, title, hovered=False):
+        row_info = getattr(self, '_outline_row_widgets', {}).get(title)
+        if not row_info:
+            return
+
+        selected = bool(getattr(self, '_outline_selected', None) and self._outline_selected.get() == title)
+        bg = COLORS['primary'] if selected else COLORS['primary_light'] if hovered else COLORS['surface_alt']
+        fg = '#FFFFFF' if selected else COLORS['text_main']
+        toggle_fg = '#FFFFFF' if selected else COLORS['text_sub']
+
+        row_info['row'].configure(bg=bg)
+        row_info['title'].configure(bg=bg, fg=fg)
+        row_info['toggle'].configure(bg=bg, fg=toggle_fg)
+        if row_info['show_toggle']:
+            row_info['toggle'].configure(text='▸' if title in self._collapsed_sections else '▾')
+
+    def _toggle_outline_branch(self, title):
+        if title in self._collapsed_sections:
+            self._collapsed_sections.remove(title)
+        else:
+            self._collapsed_sections.add(title)
+        self._refresh_outline_list()
+        self._select_record_in_outline_if_visible(title)
+        self._schedule_workspace_state_save()
+
+    def _select_record_in_outline_if_visible(self, title):
+        if title not in getattr(self, '_outline_row_widgets', {}):
+            return
+        self._set_outline_row_visual(title)
+
+    def _ensure_section_visible_in_outline(self, title):
+        changed = False
+        parent = self._section_parent.get(title, '')
+        while parent:
+            if parent in self._collapsed_sections:
+                self._collapsed_sections.remove(parent)
+                changed = True
+            parent = self._section_parent.get(parent, '')
+        if changed:
+            self._refresh_outline_list()
+
+    def _scroll_outline_selection_into_view(self, title):
+        row_info = getattr(self, '_outline_row_widgets', {}).get(title)
+        if not row_info:
+            return
+
+        self._outline_canvas.update_idletasks()
+        row = row_info['row']
+        row_top = row.winfo_y()
+        row_bottom = row_top + max(row.winfo_height(), 1)
+        canvas_top = self._outline_canvas.canvasy(0)
+        canvas_height = max(self._outline_canvas.winfo_height(), 1)
+        canvas_bottom = canvas_top + canvas_height
+        content_height = max(self._outline_list.winfo_height(), 1)
+
+        if row_top < canvas_top:
+            self._outline_canvas.yview_moveto(max(row_top / content_height, 0))
+        elif row_bottom > canvas_bottom:
+            target_top = max(row_bottom - canvas_height, 0)
+            self._outline_canvas.yview_moveto(min(target_top / content_height, 1))
+
+    def _resolve_editor_display_source(self, title):
+        return title
+
+    def _load_section_into_editor(self, source_title, scroll_target=''):
+        content = self._normalize_section_body(self._sections.get(source_title, ''))
+        self._editor_section_source = source_title
+        self._set_editor_content(content, self._section_formats.get(source_title, []), reset_undo=True)
+        self._apply_level_font_to_editor()
+
+    def _scroll_editor_to_heading(self, title):
+        self.edit_text.see('1.0')
+
+    def _cancel_outline_drag_job(self):
+        if not self._outline_drag_job:
+            return
+        try:
+            self.frame.after_cancel(self._outline_drag_job)
+        except Exception:
+            pass
+        self._outline_drag_job = None
+
+    def _on_outline_press(self, title, event=None):
+        if self._outline_editing_title:
+            return 'break'
+        self._cancel_outline_drag_job()
+        self._outline_drag_data = {
+            'title': title,
+            'start_y_root': getattr(event, 'y_root', 0),
+            'armed': False,
+            'dragging': False,
+            'target': title,
+            'place_after': False,
+        }
+        self._outline_drag_job = self.frame.after(260, lambda t=title: self._arm_outline_drag(t))
+        return 'break'
+
+    def _arm_outline_drag(self, title):
+        self._outline_drag_job = None
+        if not self._outline_drag_data or self._outline_drag_data.get('title') != title:
+            return
+        self._outline_drag_data['armed'] = True
+
+    def _find_outline_drop_target(self, moving_title, y_root):
+        moving_level = self._section_levels.get(moving_title, self._infer_outline_level(moving_title))
+        moving_parent = self._section_parent.get(moving_title, '')
+        candidates = []
+        for title, row_info in getattr(self, '_outline_row_widgets', {}).items():
+            if title == moving_title:
+                continue
+            if self._section_levels.get(title, self._infer_outline_level(title)) != moving_level:
+                continue
+            if self._section_parent.get(title, '') != moving_parent:
+                continue
+            row = row_info['row']
+            top = row.winfo_rooty()
+            height = max(row.winfo_height(), 1)
+            mid = top + height / 2
+            bottom = top + height
+            candidates.append((title, top, mid, bottom))
+
+        if not candidates:
+            return '', False
+
+        for title, top, mid, bottom in candidates:
+            if top <= y_root <= bottom:
+                return title, y_root >= mid
+
+        target, _top, mid, _bottom = min(candidates, key=lambda item: abs(item[2] - y_root))
+        return target, y_root >= mid
+
+    def _on_outline_motion(self, title, event=None):
+        if not self._outline_drag_data or self._outline_drag_data.get('title') != title:
+            return 'break'
+        if not self._outline_drag_data.get('armed'):
+            return 'break'
+
+        delta = abs(getattr(event, 'y_root', 0) - self._outline_drag_data.get('start_y_root', 0))
+        if delta < 4 and not self._outline_drag_data.get('dragging'):
+            return 'break'
+
+        self._outline_drag_data['dragging'] = True
+        target, place_after = self._find_outline_drop_target(title, getattr(event, 'y_root', 0))
+        if target:
+            self._outline_drag_data['target'] = target
+            self._outline_drag_data['place_after'] = place_after
+        return 'break'
+
+    def _finish_outline_drag(self):
+        self._cancel_outline_drag_job()
+        data = self._outline_drag_data or {}
+        self._outline_drag_data = None
+        return data
+
+    def _on_outline_release(self, title, event=None):
+        if self._outline_editing_title == title:
+            return 'break'
+        data = self._finish_outline_drag()
+        if not data or data.get('title') != title:
+            return 'break'
+
+        if data.get('dragging') and data.get('target'):
+            if self._move_section_to_target(title, data['target'], place_after=data.get('place_after', False)):
+                self.set_status('已调整标题顺序')
+                return 'break'
+
+        self._select_section(title)
+        return 'break'
+
+    def _show_outline_context_menu(self, title, event=None):
+        self._outline_context_title = title
+        menu = tk.Menu(self.frame, tearoff=0)
+
+        for label, position in (('在上方插入标题', 'above'), ('在下方插入标题', 'below')):
+            sub_menu = tk.Menu(menu, tearoff=0)
+            sub_menu.add_command(label='一级标题', command=lambda t=title, p=position: self._insert_outline_title(t, p, 1))
+            sub_menu.add_command(label='二级标题', command=lambda t=title, p=position: self._insert_outline_title(t, p, 2))
+            sub_menu.add_command(label='三级标题', command=lambda t=title, p=position: self._insert_outline_title(t, p, 3))
+            menu.add_cascade(label=label, menu=sub_menu)
+
+        menu.add_separator()
+        level_menu = tk.Menu(menu, tearoff=0)
+        level_menu.add_command(label='一级标题', command=lambda t=title: self._change_outline_level(t, 1))
+        level_menu.add_command(label='二级标题', command=lambda t=title: self._change_outline_level(t, 2))
+        level_menu.add_command(label='三级标题', command=lambda t=title: self._change_outline_level(t, 3))
+        menu.add_cascade(label='调整大纲级别', menu=level_menu)
+
+        menu.add_separator()
+        send_menu = tk.Menu(menu, tearoff=0)
+        send_menu.add_command(label='降AI检测', command=lambda t=title: self._send_outline_section_to_page(t, 'ai_reduce', '降AI检测'))
+        send_menu.add_command(label='降查重率', command=lambda t=title: self._send_outline_section_to_page(t, 'plagiarism', '降查重率'))
+        send_menu.add_command(label='学术润色', command=lambda t=title: self._send_outline_section_to_page(t, 'polish', '学术润色'))
+        send_menu.add_command(label='智能纠错', command=lambda t=title: self._send_outline_section_to_page(t, 'correction', '智能纠错'))
+        menu.add_cascade(label='发送', menu=send_menu)
+        menu.add_separator()
+        menu.add_command(label='重命名标题', command=lambda t=title: self._begin_outline_title_edit(t))
+
+        try:
+            menu.tk_popup(getattr(event, 'x_root', 0), getattr(event, 'y_root', 0))
+        finally:
+            menu.grab_release()
+        return 'break'
+
+    def _begin_outline_title_edit(self, title):
+        row_info = getattr(self, '_outline_row_widgets', {}).get(title)
+        if not row_info:
+            return
+        if self._outline_editing_title and self._outline_editing_title != title:
+            self._cancel_outline_title_edit(self._outline_editing_title)
+            row_info = getattr(self, '_outline_row_widgets', {}).get(title)
+            if not row_info:
+                return
+
+        existing = row_info.get('editor')
+        if existing and existing.winfo_exists():
+            existing.focus_set()
+            existing.select_range(0, tk.END)
+            return
+
+        title_label = row_info['title']
+        title_label.pack_forget()
+        entry = tk.Entry(
+            row_info['row'],
+            font=self._outline_font_for_level(row_info['level']),
+            bg=COLORS['input_bg'],
+            fg=COLORS['text_main'],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=COLORS['primary'],
+        )
+        entry.insert(0, self._editable_title_text(title))
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6), pady=4, ipady=3)
+        entry.focus_set()
+        entry.select_range(0, tk.END)
+        entry.bind('<Return>', lambda _event, t=title: self._commit_outline_title_edit(t))
+        entry.bind('<Escape>', lambda _event, t=title: self._cancel_outline_title_edit(t))
+        entry.bind('<FocusOut>', lambda _event, t=title: self._commit_outline_title_edit(t))
+        row_info['editor'] = entry
+        self._outline_editing_title = title
+
+    def _cancel_outline_title_edit(self, title):
+        row_info = getattr(self, '_outline_row_widgets', {}).get(title)
+        if not row_info:
+            self._outline_editing_title = ''
+            return
+
+        entry = row_info.pop('editor', None)
+        if entry and entry.winfo_exists():
+            entry.destroy()
+        row_info['title'].pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=6)
+        self._outline_editing_title = ''
+
+    def _commit_outline_title_edit(self, title):
+        row_info = getattr(self, '_outline_row_widgets', {}).get(title)
+        if not row_info:
+            self._outline_editing_title = ''
+            return
+
+        entry = row_info.get('editor')
+        if not entry or not entry.winfo_exists():
+            self._outline_editing_title = ''
+            return
+
+        new_text = entry.get().strip()
+        self._cancel_outline_title_edit(title)
+        if not new_text:
+            return
+        self._rename_section_title(title, self._format_title_for_level(title, new_text))
+
+    def _refresh_outline_list(self):
+        """重建左侧大纲按钮列表"""
+        previous_selected = ''
+        if hasattr(self, '_outline_selected') and self._outline_selected is not None:
+            previous_selected = self._outline_selected.get().strip()
+        for w in self._outline_list.winfo_children():
+            w.destroy()
+        self._outline_empty_label = None
+        self._outline_row_widgets = {}
+
+        if not self._section_order:
+            self._outline_empty_label = tk.Label(
+                self._outline_list,
+                text='暂无大纲，请导入文件或生成大纲',
+                font=FONTS['small'],
+                fg=COLORS['text_muted'],
+                bg=COLORS['surface_alt'],
+                wraplength=220,
+                justify='left',
+                anchor='w',
+            )
+            self._outline_empty_label.pack(fill=tk.X, pady=20, padx=10)
+            self.frame.after_idle(self._sync_outline_list_width)
+            return
+
+        self._outline_selected = tk.StringVar(value=previous_selected if previous_selected in self._section_order else '')
+        for title in self._get_visible_section_titles():
+            level = max(1, int(self._section_levels.get(title, self._infer_outline_level(title)) or 1))
+            row = tk.Frame(self._outline_list, bg=COLORS['surface_alt'], cursor='hand2')
+            row.pack(fill=tk.X)
+
+            indent = 8 + max(level - 1, 0) * 18
+            branch = self._section_children.get(title, [])
+            show_toggle = level == 2 and bool(branch)
+            toggle_text = '▸' if title in self._collapsed_sections else '▾'
+            toggle = tk.Label(
+                row,
+                text=toggle_text if show_toggle else ' ',
+                font=FONTS['body_bold'],
+                fg=COLORS['text_sub'],
+                bg=COLORS['surface_alt'],
+                width=2,
+                anchor='center',
+                cursor='hand2' if show_toggle else 'arrow',
+            )
+            toggle.pack(side=tk.LEFT, padx=(indent, 0))
+
+            title_label = tk.Label(
+                row,
+                text=title,
+                font=self._outline_font_for_level(level),
+                fg=COLORS['text_main'],
+                bg=COLORS['surface_alt'],
+                anchor='w',
+                cursor='hand2',
+                wraplength=220,
+                justify='left',
+                padx=6,
+                pady=6,
+            )
+            title_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            if show_toggle:
+                toggle.bind('<Button-1>', lambda e, t=title: self._toggle_outline_branch(t))
+            for widget in (row, title_label):
+                widget.bind('<Enter>', lambda e, t=title: self._set_outline_row_visual(t, hovered=True))
+                widget.bind('<Leave>', lambda e, t=title: self._set_outline_row_visual(t, hovered=False))
+                widget.bind('<ButtonPress-1>', lambda e, t=title: self._on_outline_press(t, e))
+                widget.bind('<B1-Motion>', lambda e, t=title: self._on_outline_motion(t, e))
+                widget.bind('<ButtonRelease-1>', lambda e, t=title: self._on_outline_release(t, e))
+                widget.bind('<Double-Button-1>', lambda e, t=title: self._begin_outline_title_edit(t))
+                widget.bind('<Button-3>', lambda e, t=title: self._show_outline_context_menu(t, e))
+
+            self._outline_row_widgets[title] = {
+                'row': row,
+                'toggle': toggle,
+                'title': title_label,
+                'level': level,
+                'show_toggle': show_toggle,
+                'editor': None,
+            }
+            self._set_outline_row_visual(title)
+
+        self._outline_canvas.yview_moveto(0)
+        self.frame.after_idle(self._sync_outline_list_width)
+
+    def _select_section(self, title, touch_context=True):
+        """点击标题时，仅显示该标题对应的正文内容。"""
+        self._store_current_editor_content()
+        self._ensure_section_visible_in_outline(title)
+        self._outline_selected.set(title)
+        for candidate in list(getattr(self, '_outline_row_widgets', {}).keys()):
+            self._set_outline_row_visual(candidate)
+        self.section_entry.delete(0, tk.END)
+        self.section_entry.insert(0, title)
+        display_source = self._resolve_editor_display_source(title)
+        self._load_section_into_editor(display_source)
+        self.frame.after_idle(lambda target=title: self._scroll_outline_selection_into_view(target))
+        if touch_context:
+            self._touch_context_revision()
+        self._update_stats()
+        self.frame.after_idle(self._capture_selection_snapshot)
+
+    def _new_doc(self):
+        if not messagebox.askyesno(
+            '新建空白',
+            '此操作会清空当前论文写作页面的全部内容，包括写作设置、论文大纲、所有章节正文与当前编辑区内容。\n\n确定继续吗？',
+            parent=self.frame,
+        ):
+            return
+
+        self.topic_entry.delete(0, tk.END)
+        self.style_var.set('学术论文')
+        self.subject_entry.delete(0, tk.END)
+        self.ref_var.set('GB/T 7714')
+        self.wcount_var.set('1000')
+
+        self.outline_text.delete('1.0', tk.END)
+        self._sections = {}
+        self._section_formats = {}
+        self._section_order = []
+        self._section_levels = {}
+        self._section_parent = {}
+        self._section_children = {}
+        self._collapsed_sections = set()
+        if hasattr(self, '_outline_selected') and self._outline_selected is not None:
+            self._outline_selected.set('')
+        self._refresh_outline_list()
+
+        self.edit_text.delete('1.0', tk.END)
+        self.section_entry.delete(0, tk.END)
+        self._editor_section_source = ''
+        self._editor_bg_indicator_color = self.DEFAULT_BG_SWATCH_COLOR
+        self._refresh_editor_toolbar_icons()
+        self._snapshots = []
+        self._selection_snapshot = None
+        self._reset_editor_undo_stack()
+        self._touch_context_revision()
+        self._schedule_workspace_state_save()
+        self.set_status('已新建空白文档，整页内容已清空')
+        self._update_stats()
+
+    def on_show(self):
+        self._refresh_editor_selection_style()
+        self._refresh_editor_toolbar_icons()
+
+    def _snapshot_has_meaningful_content(self, state):
+        if not isinstance(state, dict):
+            return False
+
+        text_fields = [
+            state.get('topic', ''),
+            state.get('subject', ''),
+            state.get('outline_text', ''),
+            state.get('current_section', ''),
+            state.get('editor_text', ''),
+        ]
+        if any(str(value or '').strip() for value in text_fields):
+            return True
+
+        sections = state.get('sections', {})
+        if isinstance(sections, dict):
+            for title, content in sections.items():
+                if str(title or '').strip() or str(content or '').strip():
+                    return True
+
+        return False
+
+    def _build_snapshot_record(self, state, ts):
+        snapshot_state = dict(state or {})
+        snapshot_state['snapshots'] = []
+
+        sections = snapshot_state.get('sections', {})
+        section_count = len(sections) if isinstance(sections, dict) else 0
+        topic = str(snapshot_state.get('topic', '') or '').strip()
+        current_section = str(snapshot_state.get('current_section', '') or '').strip()
+
+        summary_parts = ['已保存完整工作区快照']
+        if topic:
+            summary_parts.append(f'标题：{topic}')
+        if current_section:
+            summary_parts.append(f'当前章节：{current_section}')
+        if section_count:
+            summary_parts.append(f'章节数：{section_count}')
+
+        return {
+            'time': ts,
+            'topic': topic,
+            'current_section': current_section,
+            'section_count': section_count,
+            'summary': ' | '.join(summary_parts),
+            'workspace_state': snapshot_state,
+        }
+
+    @staticmethod
+    def _build_full_document_text(state):
+        if not isinstance(state, dict):
+            return ''
+        section_order = state.get('section_order', [])
+        sections = state.get('sections', {})
+        if not isinstance(sections, dict) or not sections:
+            return ''
+        parts = []
+        for title in (section_order or list(sections.keys())):
+            body = str(sections.get(title, '') or '').strip()
+            if title.strip():
+                parts.append(title.strip())
+            if body:
+                parts.append(body)
+            parts.append('')
+        return '\n'.join(parts).strip()
+
+    def _save_snapshot(self):
+        state = self.capture_workspace_state_snapshot(save_to_disk=False)
+        if not self._snapshot_has_meaningful_content(state):
+            messagebox.showwarning('提示', '当前页面还没有可保存的内容', parent=self.frame)
+            return
+        import datetime
+        now = datetime.datetime.now()
+        ts = now.strftime('%H:%M:%S')
+        full_ts = now.strftime('%Y-%m-%d %H:%M:%S')
+        snapshot = self._build_snapshot_record(state, ts)
+        self._snapshots.append(snapshot)
+        self.save_workspace_state_now(save_to_disk=True)
+
+        if self.history:
+            snapshot_state = snapshot.get('workspace_state', {})
+            topic = snapshot.get('topic') or self.topic_entry.get().strip()
+            full_text = self._build_full_document_text(snapshot_state)
+            outline_text = str(snapshot_state.get('outline_text', '') or '').strip()
+            section_count = snapshot.get('section_count', 0)
+
+            self.history.add(
+                '保存快照',
+                topic or '论文写作快照',
+                full_text or snapshot.get('summary', '已保存完整工作区快照'),
+                MODULE_PAPER_WRITE,
+                extra={
+                    'paper_title': topic,
+                    'topic': snapshot.get('current_section', ''),
+                    'snapshot_time': full_ts,
+                    'snapshot_type': 'workspace',
+                    'section_count': section_count,
+                    'outline_summary': outline_text[:200] if outline_text else '',
+                    'style': str(snapshot_state.get('style', '') or '').strip(),
+                    'subject': str(snapshot_state.get('subject', '') or '').strip(),
+                    'reference_style': str(snapshot_state.get('reference_style', '') or '').strip(),
+                },
+                page_state_id=self.PAGE_STATE_ID,
+                workspace_state=snapshot_state,
+            )
+
+        self.set_status(f'完整快照已保存 [{ts}]，共 {len(self._snapshots)} 个')
+        messagebox.showinfo(
+            '快照已保存',
+            f'已保存完整工作区快照 [{ts}]\n'
+            f'包含写作设置、大纲、所有章节内容与格式样式\n'
+            f'当前共 {len(self._snapshots)} 个快照',
+            parent=self.frame,
+        )
+
+    def _open_prompt_manager(self):
+        if not self.app_bridge:
+            return
+        self.app_bridge.show_prompt_manager(page_id='paper_write', compact=True)
+
+    def _ensure_prompt_ready(self, scene_id):
+        if not ensure_model_configured(self.config, self.frame, self.app_bridge):
+            return False
+        if self.prompt_center.scene_has_active_prompt(scene_id):
+            return True
+        messagebox.showwarning('提示', '当前页面没有可用的提示词，请先创建或选择一条提示词。', parent=self.frame)
+        if self.app_bridge:
+            self.app_bridge.show_prompt_manager(page_id='paper_write', compact=True, scene_id=scene_id)
+        return False
+
+    def _write_section(self):
+        section = self.section_entry.get().strip()
+        outline = self.outline_text.get('1.0', tk.END).strip()
+        if not section:
+            messagebox.showwarning('提示', '请输入当前章节名称', parent=self.frame)
+            return
+        if not self._ensure_prompt_ready('paper_write.section'):
+            return
+        existing = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+
+        def on_success(result):
+            reference_section_title = ''
+            if self._is_reference_section_title(section):
+                clean_result = ''
+                references_text = self._normalize_section_body(self._strip_reference_heading(result))
+            else:
+                clean_result, references_text = self._extract_references_from_section_result(result)
+            existing_formats = self._serialize_editor_format_spans() if self._editor_section_source == section else self._copy_section_formats(section)
+            if existing and clean_result:
+                merged = f'{existing}\n\n{clean_result}'
+            else:
+                merged = clean_result or existing
+            merged_formats = self._preserve_existing_formats(section, existing, merged, source_spans=existing_formats)
+            self._set_editor_content(merged, merged_formats)
+            self._sections[section] = merged
+            self._section_formats[section] = merged_formats
+            self._editor_section_source = section
+            if references_text:
+                reference_section_title = self._write_references_to_section(references_text)
+            if section not in self._section_order:
+                self._section_order.append(section)
+                self._section_formats.setdefault(section, [])
+                self._section_levels[section] = self._infer_outline_level(section)
+                self._section_parent[section] = self._find_parent_for_insert(len(self._section_order) - 1, self._section_levels[section])
+                self._rebuild_section_children()
+                self._sync_outline_text_from_sections()
+                self._refresh_outline_list()
+            self._touch_context_revision()
+            self._update_stats()
+            self._add_history_version(
+                '写作章节',
+                section,
+                clean_result,
+                extra={
+                    'paper_title': self.topic_entry.get().strip() or section,
+                    'references_section': reference_section_title,
+                },
+            )
+            self._schedule_workspace_state_save()
+            if reference_section_title:
+                self.set_status(f'章节写作完成，参考文献已写入 {reference_section_title}')
+            else:
+                self.set_status('章节写作完成')
+
+        def on_error(exc):
+            self.set_status(f'写作失败: {exc}', COLORS['error'])
+
+        self.task_runner.run(
+            work=lambda: self.writer.write_section(
+                outline,
+                section,
+                existing,
+                int(self.wcount_var.get()),
+                self.ref_var.get(),
+            ),
+            on_success=on_success,
+            on_error=on_error,
+            loading_text='正在撰写章节...',
+            status_text='正在撰写章节...',
+            status_color=COLORS['warning'],
+        )
+
+    def _gen_abstract(self):
+        full_text = self._collect_full_text_for_abstract()
+        if not full_text:
+            messagebox.showwarning('提示', '请先完善论文正文内容，再生成全文摘要', parent=self.frame)
+            return
+        if not self._ensure_prompt_ready('paper_write.abstract'):
+            return
+
+        def on_success(result):
+            formatted_result = self._format_generated_abstract(result)
+            abstract_title = self._write_abstract_to_section(formatted_result)
+            self._add_history_version(
+                '生成摘要',
+                full_text[:200],
+                formatted_result,
+                extra={
+                    'paper_title': self.topic_entry.get().strip(),
+                    'topic': abstract_title,
+                },
+            )
+            self.set_status('摘要已生成并写入摘要区')
+
+        def on_error(exc):
+            self.set_status(f'失败: {exc}', COLORS['error'])
+
+        self.task_runner.run(
+            work=lambda: self.writer.write_abstract(full_text),
+            on_success=on_success,
+            on_error=on_error,
+            loading_text='正在生成摘要...',
+            status_text='正在生成摘要...',
+            status_color=COLORS['warning'],
+        )
