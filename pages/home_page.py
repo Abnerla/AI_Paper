@@ -912,7 +912,7 @@ class HomePage:
         shell.grid_columnconfigure(0, weight=1)
         return tree
 
-    def _relayout_usage_summary(self):
+    def _relayout_usage_summary(self, _event=None):
         if not self.usage_summary_row:
             return
         cards = list(self.usage_summary_cards or [])

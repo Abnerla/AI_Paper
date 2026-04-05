@@ -400,6 +400,7 @@ class SmartPaperTool:
             ('scaling', self._configure_scaling),
             ('services', self._initialize_runtime_services),
             ('theme', self._initialize_window_theme),
+            ('shell_chrome', self._build_window_chrome),
             ('shell_nav', self._build_top_nav),
             ('shell_content', self._build_content_area),
             ('shell_status', self._build_status_bar),
@@ -497,7 +498,7 @@ class SmartPaperTool:
         self._ensure_page(self._startup_page_id)
 
     def _show_startup_page(self):
-        self._show_page(self._startup_page_id)
+        self._show_page(self._startup_page_id, invoke_on_show=False)
 
     def _resolve_startup_page(self):
         startup_page = 'home'
@@ -544,32 +545,30 @@ class SmartPaperTool:
                 startup_page._relayout_hero()
             if hasattr(startup_page, '_relayout_dashboard'):
                 startup_page._relayout_dashboard()
-            if hasattr(startup_page, 'refresh_dashboard'):
-                startup_page.refresh_dashboard()
         self.root.update_idletasks()
         self.root.update()
         # 布局完成后先关闭加载窗，再把主窗口切到最大化窗口状态
         self._close_loading_screen()
         self._maximize_window(remember_restore=False)
         self.root.update_idletasks()
+        self._rebuild_window_chrome_after_show()
         if hasattr(self, 'content_view'):
             canvas = self.content_view.canvas
             w = canvas.winfo_width()
             if w > 1:
                 canvas.itemconfigure(self.content_view.window_id, width=w)
         self.root.update_idletasks()
-        if startup_page and hasattr(startup_page, 'on_show'):
-            self.root.after(40, startup_page.on_show)
-            self.root.after(160, startup_page.on_show)
-        self._rebuild_window_chrome_after_show()
-        self._rebuild_top_nav_after_show()
         self._startup_complete = True
+        if startup_page and hasattr(startup_page, 'on_show'):
+            self.root.after(40, lambda page_id=self._startup_page_id: self._invoke_page_on_show(page_id))
+        self.root.after(120, self._repair_shell_after_map)
         self._startup_metrics['show'] = time.perf_counter() - started_at
         self._write_app_log(
             f'[startup] fonts={self._startup_metrics.get("fonts", 0.0):.3f}s '
             f'scaling={self._startup_metrics.get("scaling", 0.0):.3f}s '
             f'services={self._startup_metrics.get("services", 0.0):.3f}s '
             f'theme={self._startup_metrics.get("theme", 0.0):.3f}s '
+            f'shell_chrome={self._startup_metrics.get("shell_chrome", 0.0):.3f}s '
             f'shell_nav={self._startup_metrics.get("shell_nav", 0.0):.3f}s '
             f'shell_content={self._startup_metrics.get("shell_content", 0.0):.3f}s '
             f'shell_status={self._startup_metrics.get("shell_status", 0.0):.3f}s '
@@ -585,7 +584,7 @@ class SmartPaperTool:
             if page_id not in {self._startup_page_id, 'api_config'}
         ]
         if self._page_warmup_queue:
-            self.root.after(120, self._warmup_remaining_pages)
+            self.root.after(1200, self._warmup_remaining_pages)
         if self.launch_silently:
             self.root.after(180, self._apply_silent_launch)
         self.root.after(500, self._prefetch_announcement)
@@ -621,17 +620,17 @@ class SmartPaperTool:
             return
 
         page_id = self._page_warmup_queue.pop(0)
-        if page_id not in self.pages:
+        if page_id not in self._page_class_cache:
             started_at = time.perf_counter()
             try:
-                self._create_page(page_id)
+                self._load_page_class(page_id)
             except Exception as exc:
                 self._write_app_log(f'[page_preload] {page_id} failed: {exc}', level='WARN')
             else:
-                self._write_app_log(f'[page_preload] {page_id}={time.perf_counter() - started_at:.3f}s')
+                self._write_app_log(f'[page_preload] {page_id} class={time.perf_counter() - started_at:.3f}s')
 
         if self._page_warmup_queue:
-            self.root.after(200, self._warmup_remaining_pages)
+            self.root.after(450, self._warmup_remaining_pages)
 
     def _load_page_class(self, page_id):
         if page_id not in self._page_specs:
@@ -2037,20 +2036,26 @@ class SmartPaperTool:
                 except Exception as exc:
                     self._write_app_log(f'workspace_state save failed: {exc}', level='WARN')
 
-    def _show_page(self, page_id):
+    def _show_page(self, page_id, *, invoke_on_show=True):
         # 若页面已创建则立即切换，否则先切换占位再异步完成创建
         if page_id in self.pages:
-            self._switch_to_page(page_id)
+            self._switch_to_page(page_id, invoke_on_show=invoke_on_show)
         else:
-            self.root.after(0, lambda: self._ensure_and_show_page(page_id))
+            self.root.after(
+                0,
+                lambda pid=page_id, should_invoke=invoke_on_show: self._ensure_and_show_page(
+                    pid,
+                    invoke_on_show=should_invoke,
+                ),
+            )
 
-    def _ensure_and_show_page(self, page_id):
+    def _ensure_and_show_page(self, page_id, *, invoke_on_show=True):
         page = self._ensure_page(page_id)
         if not page:
             return
-        self._switch_to_page(page_id)
+        self._switch_to_page(page_id, invoke_on_show=invoke_on_show)
 
-    def _switch_to_page(self, page_id):
+    def _switch_to_page(self, page_id, *, invoke_on_show=True):
         page = self.pages.get(page_id)
         if not page:
             return
@@ -2063,11 +2068,18 @@ class SmartPaperTool:
 
         self.current_page_id = page_id
         page.frame.pack(fill=tk.BOTH, expand=True)
-        if hasattr(page, 'on_show'):
+        if invoke_on_show and hasattr(page, 'on_show'):
             page.on_show()
         if hasattr(self, 'content_view'):
             self.content_view.scroll_to_top()
         self._write_app_log(f'页面切换: {page_id}')
+
+    def _invoke_page_on_show(self, page_id):
+        if self.current_page_id != page_id:
+            return
+        page = self.pages.get(page_id)
+        if page and hasattr(page, 'on_show'):
+            page.on_show()
 
     def _create_dialog_shell(self, title, geometry='1600x1200'):
         window = tk.Toplevel(self.root)
