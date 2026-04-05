@@ -354,6 +354,9 @@ class SmartPaperTool:
         self._prompt_compact_window = None
         self._prompt_compact_panel = None
         self._remote_content = None
+        self._version_check_anim_job = None
+        self._version_check_button = None
+        self._version_check_busy = False
         self.bell_button = None
         self.app_bridge = self._build_app_bridge()
         self.task_runner = TaskRunner(self.root, set_status=self._set_status)
@@ -1110,54 +1113,227 @@ class SmartPaperTool:
         except Exception:
             pass
 
-    def _check_version_update(self, parent):
-        self._write_app_log('检查版本更新')
+    @staticmethod
+    def _widget_exists(widget):
+        try:
+            return bool(widget) and bool(widget.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _cancel_version_check_animation(self):
+        if self._version_check_anim_job is None:
+            return
+        try:
+            self.root.after_cancel(self._version_check_anim_job)
+        except Exception:
+            pass
+        self._version_check_anim_job = None
+
+    def _reset_version_check_button(self, button=None, *, text='检查更新', style='primary', delay_ms=0):
+        target_button = button or self._version_check_button
+
+        def apply():
+            self._cancel_version_check_animation()
+            self._version_check_busy = False
+            self._version_check_button = None
+            if not self._widget_exists(target_button):
+                return
+            try:
+                if hasattr(target_button, 'set_style'):
+                    target_button.set_style(style)
+                target_button.configure(
+                    text=text,
+                    state=tk.NORMAL,
+                    cursor='hand2',
+                    disabledforeground=COLORS['text_main'],
+                )
+            except tk.TclError:
+                pass
+
+        if delay_ms > 0:
+            self.root.after(delay_ms, apply)
+        else:
+            apply()
+
+    def _start_version_check_animation(self, button):
+        if not self._widget_exists(button):
+            return
+
+        self._cancel_version_check_animation()
+        self._version_check_button = button
+        self._version_check_busy = True
+
+        frames = ('检查中', '检查中.', '检查中..', '检查中...')
+        state = {'index': 0}
+
+        try:
+            if hasattr(button, 'set_style'):
+                button.set_style('warning')
+            button.configure(
+                state=tk.DISABLED,
+                cursor='arrow',
+                disabledforeground=COLORS['text_main'],
+            )
+        except tk.TclError:
+            pass
+
+        def tick():
+            if not self._widget_exists(button):
+                self._cancel_version_check_animation()
+                self._version_check_busy = False
+                self._version_check_button = None
+                return
+            try:
+                button.configure(text=frames[state['index']])
+            except tk.TclError:
+                self._cancel_version_check_animation()
+                self._version_check_busy = False
+                self._version_check_button = None
+                return
+            state['index'] = (state['index'] + 1) % len(frames)
+            self._version_check_anim_job = self.root.after(260, tick)
+
+        tick()
+
+    def _show_version_update_dialog(self, data):
         window, content, footer = self._create_info_dialog_shell('版本更新', '760x580', min_width=620, min_height=460)
 
-        tk.Label(content, text=f'当前版本：{APP_NAME} {APP_VERSION}', font=FONTS['title'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w', fill=tk.X, pady=(0, 8))
+        tk.Label(
+            content,
+            text=f'当前版本：{APP_NAME} {APP_VERSION}',
+            font=FONTS['title'],
+            fg=COLORS['text_main'],
+            bg=COLORS['card_bg'],
+        ).pack(anchor='w', fill=tk.X, pady=(0, 10))
 
-        loading_label = tk.Label(content, text='正在检查最新版本...', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w')
-        loading_label.pack(anchor='w', fill=tk.X)
+        latest = data.get('latest_version', APP_VERSION)
+        cmp = compare_versions(APP_VERSION, latest)
 
-        def _safe_exists():
-            try:
-                return window.winfo_exists()
-            except tk.TclError:
-                return False
+        if cmp < 0:
+            banner = tk.Frame(
+                content,
+                bg=COLORS['primary_light'],
+                highlightbackground=COLORS['primary'],
+                highlightthickness=1,
+                bd=0,
+            )
+            banner.pack(fill=tk.X, pady=(0, 12))
+            tk.Label(
+                banner,
+                text=f'发现新版本：{latest}',
+                font=FONTS['subtitle'],
+                fg=COLORS['primary_dark'],
+                bg=COLORS['primary_light'],
+                anchor='center',
+                justify='center',
+            ).pack(fill=tk.X, padx=14, pady=(10, 10))
+
+            update_msg = data.get('update_message', '')
+            if update_msg:
+                msg_label = tk.Label(
+                    content,
+                    text=update_msg,
+                    font=FONTS['body'],
+                    fg=COLORS['text_sub'],
+                    bg=COLORS['card_bg'],
+                    anchor='w',
+                    justify='left',
+                )
+                msg_label.pack(anchor='w', fill=tk.X, pady=(0, 8))
+                bind_adaptive_wrap(msg_label, content, padding=8, min_width=320)
+
+            for entry in data.get('changelog', []):
+                ver = entry.get('version', '')
+                date = entry.get('date', '')
+                tk.Label(
+                    content,
+                    text=f'{ver}（{date}）',
+                    font=FONTS['body_bold'],
+                    fg=COLORS['text_main'],
+                    bg=COLORS['card_bg'],
+                    anchor='w',
+                ).pack(anchor='w', fill=tk.X, pady=(6, 2))
+                for change in entry.get('changes', []):
+                    tk.Label(
+                        content,
+                        text=f'  · {change}',
+                        font=FONTS['body'],
+                        fg=COLORS['text_sub'],
+                        bg=COLORS['card_bg'],
+                        anchor='w',
+                    ).pack(anchor='w', fill=tk.X)
+
+            download_url = data.get('download_url', '')
+            if download_url:
+                btn_frame = tk.Frame(content, bg=COLORS['card_bg'])
+                btn_frame.pack(fill=tk.X, pady=(16, 0))
+                ModernButton(
+                    btn_frame,
+                    '前往下载',
+                    style='primary',
+                    command=lambda: webbrowser.open(download_url),
+                ).pack(side=tk.RIGHT)
+        else:
+            tk.Label(
+                content,
+                text='当前已是最新版本',
+                font=FONTS['body'],
+                fg=COLORS['primary'],
+                bg=COLORS['card_bg'],
+                anchor='center',
+                justify='center',
+            ).pack(fill=tk.X)
+
+        ModernButton(footer, '关闭', style='secondary', command=lambda: self._close_dialog(window)).pack(side=tk.RIGHT)
+
+    def _check_version_update(self, button=None):
+        if self._version_check_busy:
+            return
+
+        self._write_app_log('检查版本更新')
+        self._set_status('正在检查版本更新...', COLORS['warning'])
+
+        if not self._remote_content:
+            self._set_status('更新服务尚未初始化', COLORS['error'])
+            self._reset_version_check_button(button, text='检查失败', style='danger', delay_ms=1200)
+            return
+
+        if self._widget_exists(button):
+            self._start_version_check_animation(button)
 
         def on_loaded(data):
-            if not _safe_exists():
-                return
-            loading_label.destroy()
             latest = data.get('latest_version', APP_VERSION)
             cmp = compare_versions(APP_VERSION, latest)
 
             if cmp < 0:
-                tk.Label(content, text=f'发现新版本：{latest}', font=FONTS['body_bold'], fg=COLORS['primary'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(0, 4))
-                update_msg = data.get('update_message', '')
-                if update_msg:
-                    msg_label = tk.Label(content, text=update_msg, font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
-                    msg_label.pack(anchor='w', fill=tk.X, pady=(0, 8))
-                    bind_adaptive_wrap(msg_label, content, padding=8, min_width=320)
-                for entry in data.get('changelog', []):
-                    ver = entry.get('version', '')
-                    date = entry.get('date', '')
-                    tk.Label(content, text=f'{ver}（{date}）', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(6, 2))
-                    for change in entry.get('changes', []):
-                        tk.Label(content, text=f'  · {change}', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X)
-                download_url = data.get('download_url', '')
-                if download_url:
-                    ModernButton(footer, '前往下载', style='primary', command=lambda: webbrowser.open(download_url)).pack(side=tk.RIGHT, padx=(8, 0))
-            else:
-                tk.Label(content, text='当前已是最新版本', font=FONTS['body'], fg=COLORS['primary'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X)
+                if self._widget_exists(button):
+                    try:
+                        if hasattr(button, 'set_style'):
+                            button.set_style('accent')
+                        button.configure(
+                            text='发现新版本',
+                            state=tk.DISABLED,
+                            cursor='arrow',
+                            disabledforeground=COLORS['text_main'],
+                        )
+                    except tk.TclError:
+                        pass
+                self._cancel_version_check_animation()
+                self._version_check_busy = False
+                self._version_check_button = None
+                self._set_status(f'发现新版本 {latest}', COLORS['warning'])
+                self._show_version_update_dialog(data)
+                self._reset_version_check_button(button, delay_ms=1200)
+                return
+
+            self._set_status('当前已是最新版本', COLORS['success'])
+            self._reset_version_check_button(button, text='已是最新版本', style='secondary', delay_ms=1200)
 
         def on_error(exc):
-            if not _safe_exists():
-                return
-            loading_label.configure(text='无法连接到更新服务器，请检查网络连接。\n如需升级，请访问 GitHub 获取最新版本。')
-            ModernButton(footer, '打开 GitHub', style='secondary', command=lambda: webbrowser.open('https://github.com/Abnerla/AI_paper/releases')).pack(side=tk.RIGHT, padx=(8, 0))
+            self._write_app_log(f'检查版本更新失败: {exc}', level='WARN')
+            self._set_status('检查更新失败，请检查网络连接', COLORS['error'])
+            self._reset_version_check_button(button, text='检查失败', style='danger', delay_ms=1200)
 
-        ModernButton(footer, '关闭', style='secondary', command=lambda: self._close_dialog(window)).pack(side=tk.RIGHT)
         self._remote_content.fetch('version', on_success=on_loaded, on_error=on_error, force=True)
 
     def _get_root_hwnd(self):
@@ -1905,13 +2081,6 @@ class SmartPaperTool:
 
         tk.Label(content, text='纸研社', font=FONTS['title'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w', fill=tk.X, pady=(0, 8))
 
-        info_text = '当前版本：{ver}\n当前模型服务：{model}\n当前主题：{theme}'.format(
-            ver=APP_VERSION,
-            model=self._get_active_model_label(),
-            theme={'light': '浅色模式', 'dark': '深色模式'}.get(resolve_theme_mode(self.config_mgr.get_setting('theme_mode', 'light')), '浅色模式'),
-        )
-        tk.Label(content, text=info_text, justify='left', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(0, 12))
-
         loading_label = tk.Label(content, text='正在加载公告内容...', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w')
         loading_label.pack(anchor='w', fill=tk.X)
 
@@ -1997,19 +2166,7 @@ class SmartPaperTool:
     def _show_about_dialog(self):
         window, content, footer = self._create_info_dialog_shell('关于纸研社', '760x620', min_width=620, min_height=500)
 
-        startup_display = {
-            'home': '首页',
-            'api_config': '模型配置',
-            **{page_id: label for page_id, label in TOP_NAV_ITEMS if page_id != 'home'},
-        }
         tk.Label(content, text='纸研社', font=FONTS['title'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w', fill=tk.X, pady=(0, 8))
-
-        # 本地信息始终显示
-        local_info = '当前用户名：{0}\n默认启动页：{1}'.format(
-            os.getenv('USERNAME') or 'Local User',
-            startup_display.get(self.config_mgr.get_setting('startup_page', 'home'), '首页'),
-        )
-        tk.Label(content, text=local_info, justify='left', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(0, 12))
 
         loading_label = tk.Label(content, text='正在加载...', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w')
         loading_label.pack(anchor='w', fill=tk.X)
@@ -3212,15 +3369,19 @@ class SmartPaperTool:
             bg=COLORS['card_bg'],
         ).pack(anchor='w', pady=(0, 16))
 
-        add_actions(
+        version_button_specs = [
+            {'text': '检查更新', 'style': 'primary', 'command': lambda: None},
+        ]
+        _version_note_label, version_button_specs = add_actions(
             about_page,
             '版本更新',
             '查看当前版本状态，并使用本地离线更新说明了解如何替换新版程序。',
-            [
-                {'text': '检查更新', 'style': 'primary', 'command': lambda: self._check_version_update(window)},
-            ],
+            version_button_specs,
             inline_buttons=True,
         )
+        check_update_button = version_button_specs[0].get('widget')
+        if check_update_button is not None:
+            check_update_button.configure(command=lambda current=check_update_button: self._check_version_update(current))
 
         add_actions(
             about_page,
