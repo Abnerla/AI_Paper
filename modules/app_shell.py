@@ -514,15 +514,15 @@ class SmartPaperTool:
 
     def _finish_startup_sequence(self):
         started_at = time.perf_counter()
-        # 计算最终窗口位置（但先不移过去）
-        self._restore_or_center_window()
-        # 读取目标位置
-        self.root.update_idletasks()
-        final_geometry = self.root.winfo_geometry()  # e.g. '1920x1080+100+50'
+        # 先恢复普通窗口尺寸，作为启动后“还原”时的目标几何
+        restore_geometry = self._restore_or_center_window()
+        if restore_geometry:
+            self._window_restore_geometry = dict(restore_geometry)
+        self._window_is_maximized = False
         # 把主窗口移到屏幕外，让 Tkinter 在不可见位置完成真实布局计算
-        try:
-            size_part = final_geometry.split('+')[0]  # '1920x1080'
-        except Exception:
+        if restore_geometry:
+            size_part = f'{restore_geometry["width"]}x{restore_geometry["height"]}'
+        else:
             size_part = f'{self.min_window_width}x{self.min_window_height}'
         self.root.geometry(f'{size_part}+99999+99999')
         self._loading_running = False
@@ -548,9 +548,9 @@ class SmartPaperTool:
                 startup_page.refresh_dashboard()
         self.root.update_idletasks()
         self.root.update()
-        # 布局完成后先关闭加载窗，再把主窗口移回目标位置显示
+        # 布局完成后先关闭加载窗，再把主窗口切到最大化窗口状态
         self._close_loading_screen()
-        self.root.geometry(final_geometry)
+        self._maximize_window(remember_restore=False)
         self.root.update_idletasks()
         if hasattr(self, 'content_view'):
             canvas = self.content_view.canvas
@@ -941,9 +941,11 @@ class SmartPaperTool:
 
     def _restore_or_center_window(self):
         """恢复上次窗口位置，若无记录则居中显示。"""
+        geometry = None
         if self.config_mgr is None:
-            self._center_window()
-            return
+            geometry = self._get_centered_root_geometry()
+            self._apply_window_geometry(geometry)
+            return geometry
 
         saved_x = self.config_mgr.get_setting('window_x', None)
         saved_y = self.config_mgr.get_setting('window_y', None)
@@ -958,12 +960,91 @@ class SmartPaperTool:
                 h = max(int(saved_h), self.min_window_height)
                 x = max(0, min(int(saved_x), sw - w))
                 y = max(0, min(int(saved_y), sh - h))
-                self.root.geometry(f'{w}x{h}+{x}+{y}')
-                return
+                geometry = {'x': x, 'y': y, 'width': w, 'height': h}
+                self._apply_window_geometry(geometry)
+                return geometry
             except Exception:
                 pass
 
-        self._center_window()
+        geometry = self._get_centered_root_geometry()
+        self._apply_window_geometry(geometry)
+        return geometry
+
+    def _get_centered_root_geometry(self):
+        width = self.min_window_width
+        height = self.min_window_height
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = max(0, (screen_width - width) // 2)
+        y = max(0, (screen_height - height) // 2)
+        return {
+            'x': x,
+            'y': y,
+            'width': width,
+            'height': height,
+        }
+
+    def _maximize_window(self, remember_restore=True):
+        if self._window_is_maximized:
+            return
+        if remember_restore or self._window_restore_geometry is None:
+            self._window_restore_geometry = self._capture_window_geometry()
+        x, y, width, height = self._get_work_area()
+        frame_width, frame_height = self._get_window_frame_size()
+        target_width = max(1, width - frame_width)
+        target_height = max(1, height - frame_height)
+        self.root.geometry(f'{target_width}x{target_height}+{x}+{y}')
+        self.root.update_idletasks()
+        self._fit_window_to_work_area(x, y, width, height)
+        self._window_is_maximized = True
+        self._refresh_window_chrome()
+
+    def _get_window_frame_size(self):
+        if sys.platform != 'win32':
+            return 0, 0
+        try:
+            hwnd = self._get_root_hwnd()
+            if not hwnd:
+                return 0, 0
+            rect = wintypes.RECT()
+            if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return 0, 0
+            self.root.update_idletasks()
+            outer_width = rect.right - rect.left
+            outer_height = rect.bottom - rect.top
+            inner_width = self.root.winfo_width()
+            inner_height = self.root.winfo_height()
+            return (
+                max(0, outer_width - inner_width),
+                max(0, outer_height - inner_height),
+            )
+        except Exception:
+            return 0, 0
+
+    def _fit_window_to_work_area(self, x, y, width, height):
+        if sys.platform != 'win32':
+            return
+        try:
+            hwnd = self._get_root_hwnd()
+            if not hwnd:
+                return
+            rect = wintypes.RECT()
+            if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return
+            actual_width = rect.right - rect.left
+            actual_height = rect.bottom - rect.top
+            if (
+                rect.left == x and
+                rect.top == y and
+                actual_width == width and
+                actual_height == height
+            ):
+                return
+            corrected_width = max(1, self.root.winfo_width() - (actual_width - width))
+            corrected_height = max(1, self.root.winfo_height() - (actual_height - height))
+            self.root.geometry(f'{corrected_width}x{corrected_height}+{x}+{y}')
+        except Exception:
+            return
 
     def _ensure_runtime_dirs(self):
         os.makedirs(self.logs_dir, exist_ok=True)
@@ -1500,10 +1581,8 @@ class SmartPaperTool:
             self._window_is_maximized = False
             self._apply_window_geometry(self._window_restore_geometry)
         else:
-            self._window_restore_geometry = self._capture_window_geometry()
-            x, y, width, height = self._get_work_area()
-            self.root.geometry(f'{width}x{height}+{x}+{y}')
-            self._window_is_maximized = True
+            self._maximize_window()
+            return
         self._refresh_window_chrome()
 
     def _start_window_drag(self, event):

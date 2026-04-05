@@ -23,14 +23,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [3/5] 生成程序图标...
-"%PYTHON_EXE%" .\tools\generate_logo_icon.py
-if errorlevel 1 (
-    echo 图标生成失败！
+echo [3/5] 检查程序图标...
+if exist logo.ico (
+    echo 图标文件已存在，跳过生成
+) else (
+    echo 图标文件 logo.ico 不存在，请手动准备！
     pause
     exit /b 1
 )
-echo 图标文件已同步
 echo.
 
 echo [4/5] 开始打包...
