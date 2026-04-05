@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "app_name": "纸研社",
+  "description": "面向论文写作、模型配置与学术处理的本地桌面工具。",
+  "features": [
+    "论文写作与大纲生成",
+    "降AI检测与降查重率",
+    "学术润色与智能纠错"
+  ],
+  "links": [
+    {"label": "GitHub 仓库", "url": "https://github.com/Abnerla/AI_paper"},
+    {"label": "问题反馈", "url": "https://github.com/Abnerla/AI_paper/issues"}
+  ],
+  "copyright": "© 2026 纸研社"
+}

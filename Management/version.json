@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "latest_version": "v1.0",
+  "min_supported_version": "v1.0",
+  "release_date": "2026-04-05",
+  "download_url": "https://github.com/Abnerla/AI_paper/releases",
+  "changelog": [
+    {
+      "version": "v1.0",
+      "date": "2026-04-05",
+      "changes": [
+        "初始发布版本",
+        "支持论文写作、降AI检测、降查重率、学术润色、智能纠错"
+      ]
+    }
+  ],
+  "update_message": ""
+}

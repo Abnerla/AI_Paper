@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import threading
 import time
+import webbrowser
 from ctypes import wintypes
 from datetime import datetime
 import tkinter as tk
@@ -61,6 +62,7 @@ from modules.config import ConfigManager
 from modules.api_client import APIClient
 from modules.app_bridge import AppBridge
 from modules.history import HistoryManager
+from modules.remote_content import RemoteContentManager, compare_versions
 from modules.runtime_logging import RuntimeLogStream, format_exception_trace
 from modules.task_runner import TaskRunner
 from modules.ui_components import (
@@ -351,6 +353,8 @@ class SmartPaperTool:
         self._prompt_manager_panel = None
         self._prompt_compact_window = None
         self._prompt_compact_panel = None
+        self._remote_content = None
+        self.bell_button = None
         self.app_bridge = self._build_app_bridge()
         self.task_runner = TaskRunner(self.root, set_status=self._set_status)
 
@@ -445,6 +449,7 @@ class SmartPaperTool:
         self._reset_runtime_log_file()
         self._install_runtime_log_hooks()
         self.api_client = APIClient(self.config_mgr, log_callback=self._write_app_log)
+        self._remote_content = RemoteContentManager(self.root, log_callback=self._write_app_log)
         self._write_app_log(
             '[session_start] '
             f'pid={os.getpid()} '
@@ -580,6 +585,7 @@ class SmartPaperTool:
             self.root.after(120, self._warmup_remaining_pages)
         if self.launch_silently:
             self.root.after(180, self._apply_silent_launch)
+        self.root.after(500, self._prefetch_announcement)
 
     def _finish_startup_render(self):
         """已不再使用，保留以防其他引用。"""
@@ -1106,13 +1112,53 @@ class SmartPaperTool:
 
     def _check_version_update(self, parent):
         self._write_app_log('检查版本更新')
-        messagebox.showinfo(
-            '版本更新',
-            f'当前版本：{APP_NAME} {APP_VERSION}\n\n'
-            '当前为本地离线构建版本，暂未接入在线更新源。\n'
-            f'如需升级，请使用新版安装包或直接替换程序目录中的“{APP_NAME}.exe”后重新启动。',
-            parent=parent,
-        )
+        window, content, footer = self._create_info_dialog_shell('版本更新', '760x580', min_width=620, min_height=460)
+
+        tk.Label(content, text=f'当前版本：{APP_NAME} {APP_VERSION}', font=FONTS['title'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w', fill=tk.X, pady=(0, 8))
+
+        loading_label = tk.Label(content, text='正在检查最新版本...', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w')
+        loading_label.pack(anchor='w', fill=tk.X)
+
+        def _safe_exists():
+            try:
+                return window.winfo_exists()
+            except tk.TclError:
+                return False
+
+        def on_loaded(data):
+            if not _safe_exists():
+                return
+            loading_label.destroy()
+            latest = data.get('latest_version', APP_VERSION)
+            cmp = compare_versions(APP_VERSION, latest)
+
+            if cmp < 0:
+                tk.Label(content, text=f'发现新版本：{latest}', font=FONTS['body_bold'], fg=COLORS['primary'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(0, 4))
+                update_msg = data.get('update_message', '')
+                if update_msg:
+                    msg_label = tk.Label(content, text=update_msg, font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
+                    msg_label.pack(anchor='w', fill=tk.X, pady=(0, 8))
+                    bind_adaptive_wrap(msg_label, content, padding=8, min_width=320)
+                for entry in data.get('changelog', []):
+                    ver = entry.get('version', '')
+                    date = entry.get('date', '')
+                    tk.Label(content, text=f'{ver}（{date}）', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(6, 2))
+                    for change in entry.get('changes', []):
+                        tk.Label(content, text=f'  · {change}', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X)
+                download_url = data.get('download_url', '')
+                if download_url:
+                    ModernButton(footer, '前往下载', style='primary', command=lambda: webbrowser.open(download_url)).pack(side=tk.RIGHT, padx=(8, 0))
+            else:
+                tk.Label(content, text='当前已是最新版本', font=FONTS['body'], fg=COLORS['primary'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X)
+
+        def on_error(exc):
+            if not _safe_exists():
+                return
+            loading_label.configure(text='无法连接到更新服务器，请检查网络连接。\n如需升级，请访问 GitHub 获取最新版本。')
+            ModernButton(footer, '打开 GitHub', style='secondary', command=lambda: webbrowser.open('https://github.com/Abnerla/AI_paper/releases')).pack(side=tk.RIGHT, padx=(8, 0))
+
+        ModernButton(footer, '关闭', style='secondary', command=lambda: self._close_dialog(window)).pack(side=tk.RIGHT)
+        self._remote_content.fetch('version', on_success=on_loaded, on_error=on_error, force=True)
 
     def _get_root_hwnd(self):
         if sys.platform != 'win32':
@@ -1396,6 +1442,8 @@ class SmartPaperTool:
             self.tool_buttons.append(button)
             if tip == '模式切换':
                 self.theme_tool_button = button
+            if tip == '公告':
+                self.bell_button = button
 
         self.user_box = tk.Frame(self.right_tools, bg=COLORS['shadow'])
 
@@ -1824,26 +1872,95 @@ class SmartPaperTool:
         model = (cfg.get('model', '') or '').strip()
         return f'{name} / {model}' if model else name
 
+    def _prefetch_announcement(self):
+        """启动后预拉取公告，用于红点提示"""
+        if not self._remote_content:
+            return
+        self._remote_content.fetch('announcement', on_success=self._on_announcement_prefetch)
+
+    def _on_announcement_prefetch(self, data):
+        last_seen = self.config_mgr.get_setting('last_seen_announcement_id', '')
+        current_id = data.get('id', '')
+        if current_id and current_id != last_seen:
+            self._show_bell_badge()
+        else:
+            self._clear_bell_badge()
+
+    def _show_bell_badge(self):
+        if self.bell_button:
+            try:
+                self.bell_button.configure(text='\U0001f514\u2022')
+            except tk.TclError:
+                pass
+
+    def _clear_bell_badge(self):
+        if self.bell_button:
+            try:
+                self.bell_button.configure(text='\U0001f514')
+            except tk.TclError:
+                pass
+
     def _show_announcement(self):
         window, content, footer = self._create_info_dialog_shell('系统公告', '860x680', min_width=720, min_height=560)
 
         tk.Label(content, text='纸研社', font=FONTS['title'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w', fill=tk.X, pady=(0, 8))
-        body_label = tk.Label(
-            content,
-            text='当前版本：v1.0\n当前模型服务：{0}\n当前主题：{1}\n\n公告：\n1. 首页已升级为纸研社统一视觉风格。\n2. 模型配置入口已统一接入首页、导航和设置面板。\n3. 右上角支持公告、教程、模式切换和设置入口。'.format(
-                self._get_active_model_label(),
-                {'light': '浅色模式', 'dark': '深色模式'}.get(resolve_theme_mode(self.config_mgr.get_setting('theme_mode', 'light')), '浅色模式'),
-            ),
-            justify='left',
-            font=FONTS['body'],
-            fg=COLORS['text_sub'],
-            bg=COLORS['card_bg'],
-            anchor='w',
+
+        info_text = '当前版本：{ver}\n当前模型服务：{model}\n当前主题：{theme}'.format(
+            ver=APP_VERSION,
+            model=self._get_active_model_label(),
+            theme={'light': '浅色模式', 'dark': '深色模式'}.get(resolve_theme_mode(self.config_mgr.get_setting('theme_mode', 'light')), '浅色模式'),
         )
-        body_label.pack(anchor='w', fill=tk.X)
-        bind_adaptive_wrap(body_label, content, padding=8, min_width=320)
+        tk.Label(content, text=info_text, justify='left', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(0, 12))
+
+        loading_label = tk.Label(content, text='正在加载公告内容...', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w')
+        loading_label.pack(anchor='w', fill=tk.X)
+
+        def _safe_exists():
+            try:
+                return window.winfo_exists()
+            except tk.TclError:
+                return False
+
+        def _render_content(data, from_cache=False):
+            if not _safe_exists():
+                return
+            loading_label.destroy()
+            for section in data.get('sections', []):
+                heading = section.get('heading', '')
+                if heading:
+                    tk.Label(content, text=heading, font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(8, 4))
+                for item in section.get('items', []):
+                    lbl = tk.Label(content, text=f'  · {item}', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
+                    lbl.pack(anchor='w', fill=tk.X)
+                    bind_adaptive_wrap(lbl, content, padding=8, min_width=320)
+            foot_note = data.get('footer_note', '')
+            if foot_note:
+                fn_label = tk.Label(content, text=foot_note, font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
+                fn_label.pack(anchor='w', fill=tk.X, pady=(10, 0))
+                bind_adaptive_wrap(fn_label, content, padding=8, min_width=320)
+            if from_cache:
+                tk.Label(footer, text='(离线数据)', font=FONTS['small'], fg=COLORS['text_sub'], bg=COLORS['card_bg']).pack(side=tk.LEFT)
+            # 标记已读
+            ann_id = data.get('id', '')
+            if ann_id:
+                self.config_mgr.set_setting('last_seen_announcement_id', ann_id)
+                self.config_mgr.save()
+                self._clear_bell_badge()
+
+        def on_loaded(data):
+            _render_content(data, from_cache=False)
+
+        def on_error(exc):
+            if not _safe_exists():
+                return
+            cached = self._remote_content.get_cached('announcement')
+            if cached:
+                _render_content(cached, from_cache=True)
+            else:
+                loading_label.configure(text='无法加载公告内容，请检查网络连接。')
 
         ModernButton(footer, '我知道了', style='primary', command=lambda: self._close_dialog(window)).pack(anchor='e')
+        self._remote_content.fetch('announcement', on_success=on_loaded, on_error=on_error)
 
     def _show_tutorial(self):
         window, content, footer = self._create_info_dialog_shell('使用教程', '920x720', min_width=760, min_height=600)
@@ -1886,22 +2003,66 @@ class SmartPaperTool:
             **{page_id: label for page_id, label in TOP_NAV_ITEMS if page_id != 'home'},
         }
         tk.Label(content, text='纸研社', font=FONTS['title'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w', fill=tk.X, pady=(0, 8))
-        body_label = tk.Label(
-            content,
-            text='面向论文写作、模型配置与学术处理的本地桌面工具。\n\n当前用户名：{0}\n默认启动页：{1}'.format(
-                os.getenv('USERNAME') or 'Local User',
-                startup_display.get(self.config_mgr.get_setting('startup_page', 'home'), '首页'),
-            ),
-            justify='left',
-            font=FONTS['body'],
-            fg=COLORS['text_sub'],
-            bg=COLORS['card_bg'],
-            anchor='w',
+
+        # 本地信息始终显示
+        local_info = '当前用户名：{0}\n默认启动页：{1}'.format(
+            os.getenv('USERNAME') or 'Local User',
+            startup_display.get(self.config_mgr.get_setting('startup_page', 'home'), '首页'),
         )
-        body_label.pack(anchor='w', fill=tk.X)
-        bind_adaptive_wrap(body_label, content, padding=8, min_width=320)
+        tk.Label(content, text=local_info, justify='left', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(0, 12))
+
+        loading_label = tk.Label(content, text='正在加载...', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w')
+        loading_label.pack(anchor='w', fill=tk.X)
+
+        def _safe_exists():
+            try:
+                return window.winfo_exists()
+            except tk.TclError:
+                return False
+
+        def _render_content(data, from_cache=False):
+            if not _safe_exists():
+                return
+            loading_label.destroy()
+            desc = data.get('description', '')
+            if desc:
+                desc_label = tk.Label(content, text=desc, font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
+                desc_label.pack(anchor='w', fill=tk.X, pady=(0, 8))
+                bind_adaptive_wrap(desc_label, content, padding=8, min_width=320)
+            features = data.get('features', [])
+            if features:
+                tk.Label(content, text='主要功能', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(4, 4))
+                for feat in features:
+                    tk.Label(content, text=f'  · {feat}', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X)
+            links = data.get('links', [])
+            if links:
+                tk.Label(content, text='相关链接', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(10, 4))
+                for link in links:
+                    label_text = link.get('label', '')
+                    url = link.get('url', '')
+                    link_label = tk.Label(content, text=label_text, font=FONTS['body'], fg=COLORS['primary'], bg=COLORS['card_bg'], anchor='w', cursor='hand2')
+                    link_label.pack(anchor='w', fill=tk.X)
+                    link_label.bind('<Button-1>', lambda e, u=url: webbrowser.open(u))
+            copyright_text = data.get('copyright', '')
+            if copyright_text:
+                tk.Label(content, text=copyright_text, font=FONTS['small'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(12, 0))
+            if from_cache:
+                tk.Label(footer, text='(离线数据)', font=FONTS['small'], fg=COLORS['text_sub'], bg=COLORS['card_bg']).pack(side=tk.LEFT)
+
+        def on_loaded(data):
+            _render_content(data, from_cache=False)
+
+        def on_error(exc):
+            if not _safe_exists():
+                return
+            cached = self._remote_content.get_cached('about')
+            if cached:
+                _render_content(cached, from_cache=True)
+            else:
+                loading_label.configure(text='面向论文写作、模型配置与学术处理的本地桌面工具。')
 
         ModernButton(footer, '关闭', style='primary', command=lambda: self._close_dialog(window)).pack(anchor='e')
+        self._remote_content.fetch('about', on_success=on_loaded, on_error=on_error)
 
     def _show_theme_menu(self):
         if self._theme_menu_window and self._theme_menu_window.winfo_exists():
