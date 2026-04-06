@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-纸研社 v1.0
+纸研社 v1.2
 独立运行的 Windows 桌面应用
 """
 
@@ -33,7 +33,7 @@ else:
     BASE_DIR = APP_DIR
 
 APP_NAME = '纸研社'
-APP_VERSION = 'v1.0'
+APP_VERSION = 'v1.2'
 STARTUP_REG_PATH = r'Software\Microsoft\Windows\CurrentVersion\Run'
 STARTUP_VALUE_NAME = APP_NAME
 TOP_NAV_ITEMS = (

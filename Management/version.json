@@ -1,16 +1,26 @@
 {
-  "version": 1,
-  "latest_version": "v1.0",
-  "min_supported_version": "v1.00",
-  "release_date": "2026-04-05",
+  "version": 3,
+  "latest_version": "v1.2",
+  "min_supported_version": "v1.2",
+  "release_date": "2026-04-06",
   "download_url": "https://github.com/Abnerla/AI_paper/releases",
   "changelog": [
     {
-      "version": "v1.0",
-      "date": "2026-04-05",
+      "version": "v1.2",
+      "date": "2026-04-06",
       "changes": [
-        "初始发布版本",
-        "支持论文写作、降AI检测、降查重率、学术润色、智能纠错"
+      "修复 部分分辨率的屏幕不显示全部，只显示3分之2且无法缩小的问题",
+      "修复 通过AI生成的一级、二级、三级目录识别不准确以及目录排序的问题",
+      "修复 模型列表里缺少“选中当前模型”按钮的问题",
+      "修复 内容编辑区无法使用空格的问题",
+      "修复 内容编辑区点击空格键换行的问题",
+      "修复 启动时字体大小和样式重置的问题",
+      "修复 部分UI显示错位、遮挡等问题",
+
+      "优化 模型列表的编辑、删除按钮",
+
+      "添加 启动时自动检测新版本",
+      "添加 一键写完全部章节，同时增加Tokens预警机制"
       ]
     }
   ],
