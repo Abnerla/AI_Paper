@@ -1,48 +1,72 @@
 @echo off
+setlocal
+
 cd /d "%~dp0"
 chcp 65001 >nul
+
+set "SPEC_FILE=build_app.spec"
+set "BUILD_DIR=build"
+set "DIST_DIR=dist"
 set "PYTHON_EXE=py"
-if exist ".venv\Scripts\python.exe" set "PYTHON_EXE=.venv\Scripts\python.exe"
+
+py -V >nul 2>&1
+if errorlevel 1 if exist ".venv\Scripts\python.exe" (
+    set "PYTHON_EXE=.venv\Scripts\python.exe"
+)
 
 echo ========================================
-echo 纸研社 - 打包脚本
+echo PaperLab build script
 echo ========================================
 echo.
 
-echo [1/5] 清理旧产物...
-if exist build rmdir /s /q build
-if exist dist rmdir /s /q dist
-echo 旧产物已清理
+echo [1/5] Cleaning old artifacts...
+if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%"
+if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
+echo Old artifacts cleaned.
 echo.
 
-echo [2/5] 安装依赖...
+echo [2/5] Installing dependencies...
 "%PYTHON_EXE%" -m pip install -r requirements.txt -q
 if errorlevel 1 (
-    echo 依赖安装失败，请检查Python是否正常
-    pause
-    exit /b 1
-)
-
-echo [3/5] 检查程序图标...
-if exist logo.ico (
-    echo 图标文件已存在，跳过生成
-) else (
-    echo 图标文件 logo.ico 不存在，请手动准备！
+    echo Dependency installation failed.
     pause
     exit /b 1
 )
 echo.
 
-echo [4/5] 开始打包...
-"%PYTHON_EXE%" -m PyInstaller --noconfirm 纸研社.spec
+echo [3/5] Checking icon file...
+if not exist "logo.ico" (
+    echo Missing logo.ico.
+    pause
+    exit /b 1
+)
+echo Icon file found.
+echo.
 
+echo [4/5] Running PyInstaller...
+"%PYTHON_EXE%" -m PyInstaller --noconfirm --clean "%SPEC_FILE%"
 if errorlevel 1 (
-    echo 打包失败！
+    echo PyInstaller failed.
+    pause
+    exit /b 1
+)
+echo.
+
+if not exist "%DIST_DIR%" (
+    echo PyInstaller returned success, but the dist directory was not created.
     pause
     exit /b 1
 )
 
-echo [5/5] 打包完成！
-echo 可执行文件位于 dist\纸研社.exe
+dir /b "%DIST_DIR%" | findstr /r /c:".*" >nul
+if errorlevel 1 (
+    echo PyInstaller returned success, but the dist directory is empty.
+    pause
+    exit /b 1
+)
+
+echo [5/5] Build completed.
+echo Output files:
+dir /b "%DIST_DIR%"
 echo.
 pause
