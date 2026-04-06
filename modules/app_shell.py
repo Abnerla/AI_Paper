@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-纸研社 v1.2
+纸研社 v1.2.1
 独立运行的 Windows 桌面应用
 """
 
@@ -33,7 +33,7 @@ else:
     BASE_DIR = APP_DIR
 
 APP_NAME = '纸研社'
-APP_VERSION = 'v1.2'
+APP_VERSION = 'v1.2.1'
 STARTUP_REG_PATH = r'Software\Microsoft\Windows\CurrentVersion\Run'
 STARTUP_VALUE_NAME = APP_NAME
 TOP_NAV_ITEMS = (
@@ -68,7 +68,7 @@ from modules.config import ConfigManager
 from modules.api_client import APIClient
 from modules.app_bridge import AppBridge
 from modules.history import HistoryManager
-from modules.remote_content import RemoteContentManager, compare_versions
+from modules.remote_content import RemoteContentManager, compare_versions, normalize_version
 from modules.runtime_logging import RuntimeLogStream, format_exception_trace
 from modules.task_runner import TaskRunner
 from modules.ui_components import (
@@ -366,6 +366,7 @@ class SmartPaperTool:
         self._api_config_window = None
         self._dialog_api_page = None
         self._api_config_tip = None
+        self._api_config_return_to_model_list = False
         self._theme_menu_window = None
         self._theme_menu_root_click_bind = None
         self._theme_menu_focusout_bind = None
@@ -1322,13 +1323,13 @@ class SmartPaperTool:
         ignored_version = ''
         if self.config_mgr is not None:
             ignored_version = (self.config_mgr.get_setting('ignored_update_version', '') or '').strip()
-        target_version = str(version or '').strip()
+        target_version = normalize_version(version)
         if not ignored_version or not target_version:
             return False
         return compare_versions(ignored_version, target_version) == 0
 
     def _remember_ignored_update(self, version):
-        target_version = str(version or '').strip()
+        target_version = normalize_version(version)
         if not target_version or self.config_mgr is None:
             return False
         self.config_mgr.set_setting('ignored_update_version', target_version)
@@ -1381,8 +1382,10 @@ class SmartPaperTool:
             bg=COLORS['card_bg'],
         ).pack(anchor='w', fill=tk.X, pady=(0, 10))
 
-        latest = data.get('latest_version', APP_VERSION)
+        latest = normalize_version(data.get('latest_version', APP_VERSION))
+        min_supported = normalize_version(data.get('min_supported_version', latest))
         cmp = compare_versions(APP_VERSION, latest)
+        requires_forced_update = compare_versions(APP_VERSION, min_supported) < 0
 
         if cmp < 0:
             banner = tk.Frame(
@@ -1403,6 +1406,17 @@ class SmartPaperTool:
                 justify='center',
             ).pack(fill=tk.X, padx=14, pady=(10, 10))
 
+            if requires_forced_update:
+                tk.Label(
+                    content,
+                    text=f'当前版本过低，最低支持版本为 {min_supported}，需要先完成更新。',
+                    font=FONTS['body'],
+                    fg=COLORS['error'],
+                    bg=COLORS['card_bg'],
+                    anchor='w',
+                    justify='left',
+                ).pack(anchor='w', fill=tk.X, pady=(0, 8))
+
             update_msg = data.get('update_message', '')
             if update_msg:
                 msg_label = tk.Label(
@@ -1418,7 +1432,7 @@ class SmartPaperTool:
                 bind_adaptive_wrap(msg_label, content, padding=8, min_width=320)
 
             for entry in data.get('changelog', []):
-                ver = entry.get('version', '')
+                ver = normalize_version(entry.get('version', ''))
                 date = entry.get('date', '')
                 tk.Label(
                     content,
@@ -1457,12 +1471,13 @@ class SmartPaperTool:
                 style='primary',
                 command=open_update_page,
             ).pack(side=tk.RIGHT)
-            ModernButton(
-                footer,
-                '此版本不再提醒',
-                style='secondary',
-                command=ignore_current_version,
-            ).pack(side=tk.RIGHT, padx=(0, 10))
+            if not requires_forced_update:
+                ModernButton(
+                    footer,
+                    '此版本不再提醒',
+                    style='secondary',
+                    command=ignore_current_version,
+                ).pack(side=tk.RIGHT, padx=(0, 10))
         else:
             tk.Label(
                 content,
@@ -1501,11 +1516,13 @@ class SmartPaperTool:
             self._start_version_check_animation(button)
 
         def on_loaded(data):
-            latest = data.get('latest_version', APP_VERSION)
+            latest = normalize_version(data.get('latest_version', APP_VERSION))
+            min_supported = normalize_version(data.get('min_supported_version', latest))
             cmp = compare_versions(APP_VERSION, latest)
+            requires_forced_update = compare_versions(APP_VERSION, min_supported) < 0
 
             if cmp < 0:
-                if silent and self._is_update_ignored(latest):
+                if silent and (not requires_forced_update) and self._is_update_ignored(latest):
                     self._write_app_log(f'发现新版本 {latest}，但当前版本已设置为不再提醒')
                     self._reset_version_check_button(button)
                     return
@@ -1525,7 +1542,10 @@ class SmartPaperTool:
                 self._version_check_busy = False
                 self._version_check_button = None
                 if not silent:
-                    self._set_status(f'发现新版本 {latest}', COLORS['warning'])
+                    if requires_forced_update:
+                        self._set_status(f'当前版本过低，请更新到 {min_supported} 或更高版本', COLORS['warning'])
+                    else:
+                        self._set_status(f'发现新版本 {latest}', COLORS['warning'])
                 self._show_or_defer_version_update_dialog(data, from_startup=silent)
                 self._reset_version_check_button(button, delay_ms=1200 if self._widget_exists(button) else 0)
                 return
@@ -3155,12 +3175,15 @@ class SmartPaperTool:
                 pass
         self._theme_menu_window = None
 
-    def _show_api_config_dialog(self):
+    def _show_api_config_dialog(self, return_to_model_list=False):
+        if return_to_model_list:
+            self._api_config_return_to_model_list = True
         if hasattr(self, '_api_config_window') and self._api_config_window and self._api_config_window.winfo_exists():
             self._api_config_window.lift()
             self._api_config_window.focus_force()
             return
         self._dialog_api_page = None
+        self._api_config_return_to_model_list = bool(return_to_model_list)
 
         dialog_geometry = '1600x1200'
         window, body = self._create_dialog_shell('模型配置', dialog_geometry)
@@ -3181,6 +3204,9 @@ class SmartPaperTool:
         )
         self._api_config_tip.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
+        action_row = tk.Frame(save_row, bg=COLORS['card_bg'])
+        action_row.pack(side=tk.RIGHT)
+
         # 内容区
         content = tk.Frame(body, bg=COLORS['bg_main'])
         content.pack(fill=tk.BOTH, expand=True)
@@ -3199,27 +3225,59 @@ class SmartPaperTool:
         self._dialog_api_page = dialog_api_page
         dialog_api_page.frame.pack(fill=tk.BOTH, expand=True)
 
-        def _save_and_notify():
-            if not dialog_api_page._save_all():
-                return
-            self._api_config_tip.configure(text='\u2713 配置已保存', fg=COLORS['success'])
-            window.after(3000, lambda: self._api_config_tip.configure(text=''))
-            # 通知 home 页面刷新模型列表
+        save_button = ModernButton(
+            action_row, '保存配置', style='primary',
+            command=lambda: _save_and_notify(), padx=20, pady=10,
+        )
+        save_button.pack(side=tk.RIGHT)
+
+        def _refresh_model_list():
             home = self.pages.get('home')
             if home and hasattr(home, '_model_list_refresh') and callable(home._model_list_refresh):
                 home._model_list_refresh()
 
-        ModernButton(
-            save_row, '\U0001f4be 保存配置', style='primary',
-            command=_save_and_notify, padx=20, pady=10,
-        ).pack(side=tk.RIGHT)
+        def _refresh_footer_actions():
+            if getattr(dialog_api_page, '_current_api_id', None):
+                if not delete_button.winfo_manager():
+                    delete_button.pack(side=tk.RIGHT, padx=(0, 10))
+            elif delete_button.winfo_manager():
+                delete_button.pack_forget()
+
+        def _delete_and_refresh():
+            current_api_id = getattr(dialog_api_page, '_current_api_id', None)
+            dialog_api_page._delete_current()
+            if current_api_id and current_api_id != getattr(dialog_api_page, '_current_api_id', None):
+                _refresh_model_list()
+
+        delete_button = ModernButton(
+            action_row, '删除此记录', style='danger',
+            command=_delete_and_refresh, padx=20, pady=10,
+        )
+
+        dialog_api_page._on_state_change_callback = _refresh_footer_actions
+        _refresh_footer_actions()
+
+        def _save_and_notify():
+            if not dialog_api_page._save_all():
+                return
+            return_to_model_list = self._api_config_return_to_model_list
+            self._set_status('配置已保存')
+            _on_close()
+            if return_to_model_list:
+                self.root.after(120, self._reopen_model_list_dialog)
 
         def _on_close():
             self._api_config_window = None
             self._dialog_api_page = None
+            self._api_config_return_to_model_list = False
             self._close_dialog(window)
 
         window.protocol('WM_DELETE_WINDOW', _on_close)
+
+    def _reopen_model_list_dialog(self):
+        home = self.pages.get('home')
+        if home and hasattr(home, '_show_model_list'):
+            home._show_model_list()
 
     def _switch_api_provider_in_dialog(self, api_id):
         """在已打开的配置弹窗中切换到指定服务商"""

@@ -1,12 +1,12 @@
 {
   "version": 3,
-  "latest_version": "v1.2",
-  "min_supported_version": "v1.2",
+  "latest_version": "v1.2.1",
+  "min_supported_version": "v1.2.1",
   "release_date": "2026-04-06",
   "download_url": "https://github.com/Abnerla/AI_paper/releases",
   "changelog": [
     {
-      "version": "v1.2",
+      "version": "v1.2.1",
       "date": "2026-04-06",
       "changes": [
       "修复 部分分辨率的屏幕不显示全部，只显示3分之2且无法缩小的问题",

@@ -1819,7 +1819,7 @@ class HomePage:
         def _goto_add_new():
             win.destroy()
             if self.app_bridge:
-                self.app_bridge.show_api_config()
+                self.app_bridge.show_api_config(return_to_model_list=True)
 
         action_icon_images = {}
         action_button_size = 48
@@ -2097,7 +2097,7 @@ class HomePage:
         def _open_detail(api_id):
             win.destroy()
             if self.app_bridge:
-                self.app_bridge.show_api_config()
+                self.app_bridge.show_api_config(return_to_model_list=True)
                 self.frame.after(150, lambda aid=api_id: self.app_bridge.switch_api_provider_direct(aid))
 
         _populate()

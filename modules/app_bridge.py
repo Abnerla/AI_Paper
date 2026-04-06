@@ -28,8 +28,8 @@ class AppBridge:
     def show_about(self):
         return self._call('show_about')
 
-    def show_api_config(self):
-        return self._call('show_api_config')
+    def show_api_config(self, return_to_model_list=False):
+        return self._call('show_api_config', return_to_model_list=return_to_model_list)
 
     def show_prompt_manager(self, page_id=None, compact=False, scene_id=None):
         return self._call(

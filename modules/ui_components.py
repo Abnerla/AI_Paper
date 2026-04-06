@@ -850,6 +850,33 @@ class ScrollablePage(tk.Frame):
         self.canvas.bind('<Enter>', self._on_enter_scroll_area, add='+')
         self.canvas.bind('<Leave>', self._on_leave_scroll_area, add='+')
 
+    def _contains_widget(self, widget):
+        current = widget
+        while current is not None:
+            if current is self:
+                return True
+            try:
+                parent_name = current.winfo_parent()
+            except tk.TclError:
+                return False
+            if not parent_name:
+                return False
+            try:
+                current = current.nametowidget(parent_name)
+            except (KeyError, tk.TclError):
+                return False
+        return False
+
+    def _pointer_in_scroll_area(self):
+        try:
+            x, y = self.winfo_pointerxy()
+            widget = self.winfo_containing(x, y)
+        except tk.TclError:
+            return False
+        if widget is None:
+            return False
+        return self._contains_widget(widget)
+
     def _on_enter_scroll_area(self, _event=None):
         try:
             root = self.winfo_toplevel()
@@ -889,6 +916,183 @@ class ScrollablePage(tk.Frame):
 
     def scroll_to_top(self):
         self.canvas.yview_moveto(0)
+
+    def _pointer_in_scroll_area(self):
+        try:
+            x, y = self.winfo_pointerxy()
+            widget = self.winfo_containing(x, y)
+        except tk.TclError:
+            return False
+        if widget is None:
+            return False
+        current = widget
+        while current is not None:
+            if current is self:
+                return True
+            try:
+                parent_name = current.winfo_parent()
+            except tk.TclError:
+                return False
+            if not parent_name:
+                return False
+            try:
+                current = current.nametowidget(parent_name)
+            except (KeyError, tk.TclError):
+                return False
+        return False
+
+    def _on_leave_scroll_area(self, _event=None):
+        try:
+            if self._pointer_in_scroll_area():
+                return
+            root = self.winfo_toplevel()
+            root.unbind_all('<MouseWheel>')
+            root.unbind_all('<Button-4>')
+            root.unbind_all('<Button-5>')
+        except tk.TclError:
+            pass
+
+    def _on_mousewheel(self, event):
+        if not self._pointer_in_scroll_area():
+            return 'break'
+        if event.num == 4:
+            self.canvas.yview_scroll(-1, 'units')
+        elif event.num == 5:
+            self.canvas.yview_scroll(1, 'units')
+        else:
+            delta = int(-1 * (event.delta / 120))
+            if delta == 0 and event.delta:
+                delta = -1 if event.delta > 0 else 1
+            if delta:
+                self.canvas.yview_scroll(delta, 'units')
+        return 'break'
+
+
+def bind_combobox_dropdown_mousewheel(combo):
+    """为 Combobox 下拉列表绑定独立滚轮，避免外层滚动容器接管事件。"""
+    if not isinstance(combo, ttk.Combobox):
+        return
+
+    def _locate_listbox():
+        try:
+            popdown = combo.tk.eval(f'ttk::combobox::PopdownWindow {combo}')
+        except tk.TclError:
+            return None
+
+        if not popdown:
+            return None
+
+        for child_name in (f'{popdown}.f.l', f'{popdown}.l'):
+            try:
+                return combo.nametowidget(child_name)
+            except (KeyError, tk.TclError):
+                continue
+        return None
+
+    def _on_listbox_mousewheel(event):
+        listbox = event.widget
+        if event.num == 4:
+            listbox.yview_scroll(-1, 'units')
+        elif event.num == 5:
+            listbox.yview_scroll(1, 'units')
+        else:
+            delta = int(-1 * (event.delta / 120))
+            if delta == 0 and event.delta:
+                delta = -1 if event.delta > 0 else 1
+            if delta:
+                listbox.yview_scroll(delta, 'units')
+        return 'break'
+
+    def _ensure_binding(_event=None):
+        listbox = _locate_listbox()
+        if listbox is None or getattr(listbox, '_mousewheel_bound_for_combobox', False):
+            return
+        listbox.bind('<MouseWheel>', _on_listbox_mousewheel, add='+')
+        listbox.bind('<Button-4>', _on_listbox_mousewheel, add='+')
+        listbox.bind('<Button-5>', _on_listbox_mousewheel, add='+')
+        listbox._mousewheel_bound_for_combobox = True
+
+    combo.bind('<Button-1>', _ensure_binding, add='+')
+    combo.bind('<Down>', _ensure_binding, add='+')
+    combo.after_idle(_ensure_binding)
+
+
+def bind_combobox_dropdown_mousewheel(combo):
+    """为 Combobox 下拉列表绑定独立滚轮，避免事件继续传递到外层页面。"""
+    if not isinstance(combo, ttk.Combobox):
+        return
+
+    pending_job = {'id': None}
+
+    def _locate_listbox():
+        try:
+            popdown = combo.tk.eval(f'ttk::combobox::PopdownWindow {combo}')
+        except tk.TclError:
+            return None
+
+        if not popdown:
+            return None
+
+        for child_name in (f'{popdown}.f.l', f'{popdown}.l'):
+            try:
+                return combo.nametowidget(child_name)
+            except (KeyError, tk.TclError):
+                continue
+        return None
+
+    def _on_listbox_mousewheel(event):
+        listbox = event.widget
+        if event.num == 4:
+            listbox.yview_scroll(-1, 'units')
+        elif event.num == 5:
+            listbox.yview_scroll(1, 'units')
+        else:
+            delta = int(-1 * (event.delta / 120))
+            if delta == 0 and event.delta:
+                delta = -1 if event.delta > 0 else 1
+            if delta:
+                listbox.yview_scroll(delta, 'units')
+        return 'break'
+
+    def _cancel_pending_job():
+        job_id = pending_job.get('id')
+        if not job_id:
+            return
+        try:
+            combo.after_cancel(job_id)
+        except tk.TclError:
+            pass
+        pending_job['id'] = None
+
+    def _ensure_binding(attempt=0):
+        listbox = _locate_listbox()
+        if listbox is not None:
+            if not getattr(listbox, '_mousewheel_bound_for_combobox', False):
+                listbox.bind('<MouseWheel>', _on_listbox_mousewheel, add='+')
+                listbox.bind('<Button-4>', _on_listbox_mousewheel, add='+')
+                listbox.bind('<Button-5>', _on_listbox_mousewheel, add='+')
+                listbox._mousewheel_bound_for_combobox = True
+            pending_job['id'] = None
+            return
+        if attempt >= 10:
+            pending_job['id'] = None
+            return
+        try:
+            pending_job['id'] = combo.after(20, lambda: _ensure_binding(attempt + 1))
+        except tk.TclError:
+            pending_job['id'] = None
+
+    def _schedule_binding(_event=None):
+        _cancel_pending_job()
+        try:
+            combo.after_idle(lambda: _ensure_binding(0))
+        except tk.TclError:
+            pending_job['id'] = None
+
+    combo.bind('<Button-1>', _schedule_binding, add='+')
+    combo.bind('<Down>', _schedule_binding, add='+')
+    combo.bind('<FocusIn>', _schedule_binding, add='+')
+    _schedule_binding()
 
 
 class ResponsiveButtonBar(tk.Frame):

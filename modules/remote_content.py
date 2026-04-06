@@ -20,11 +20,35 @@ ENDPOINTS = {
 CACHE_TTL = 300  # 5 分钟
 FETCH_TIMEOUT = 10  # 秒
 
+VERSION_SEGMENT_COUNT = 3
+
+
+def normalize_version(version, min_segments=VERSION_SEGMENT_COUNT):
+    """将版本号规范化为至少三段，兼容旧的两段写法。"""
+    raw = str(version or '').strip()
+    prefix = 'v' if raw[:1] in {'v', 'V'} else ''
+    body = raw.lstrip('vV')
+    parts = []
+    for seg in body.split('.'):
+        seg = seg.strip()
+        if not seg:
+            parts.append(0)
+            continue
+        try:
+            parts.append(int(seg))
+        except ValueError:
+            parts.append(0)
+    if not parts:
+        parts = [0]
+    target_len = max(int(min_segments or 0), len(parts))
+    parts.extend([0] * (target_len - len(parts)))
+    return f'{prefix}{".".join(str(part) for part in parts)}'
+
 
 def compare_versions(local, remote):
     """比较两个版本号，返回 -1（本地旧）、0（相同）、1（本地新）"""
     def _parse(v):
-        v = (v or '').strip().lstrip('vV')
+        v = normalize_version(v).lstrip('vV')
         parts = []
         for seg in v.split('.'):
             try:

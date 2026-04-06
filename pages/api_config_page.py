@@ -9,6 +9,7 @@ from tkinter import messagebox, ttk
 
 from modules.task_runner import TaskRunner
 from modules.ui_components import (
+    bind_combobox_dropdown_mousewheel,
     COLORS,
     FONTS,
     LoadingOverlay,
@@ -43,9 +44,10 @@ class APIConfigPage:
         self.set_status = set_status
         self.navigate_page = navigate_page
         self.app_bridge = app_bridge
-        self._force_new = force_new
+        self._default_force_new = bool(force_new)
 
         self._on_save_callback = None
+        self._on_state_change_callback = None
         self.frame = tk.Frame(parent, bg=COLORS['bg_main'])
         self.loading = LoadingOverlay(self.frame, config_mgr, text='正在测试模型连接...')
 
@@ -56,12 +58,13 @@ class APIConfigPage:
         self._current_api_id = None
         self._current_provider_type = 'openai'
         self._current_config = {}
+        self._save_as_new = self._default_force_new
 
         self._initialize_current_form()
         self._build()
 
     def _initialize_current_form(self):
-        if self._force_new:
+        if self._default_force_new:
             self._load_preset_draft('openai', reload=False)
             return
 
@@ -79,11 +82,13 @@ class APIConfigPage:
 
     def _load_preset_draft(self, provider_type, reload=True):
         provider_type = provider_type if provider_type in PRESET_MAP else 'custom'
+        self._save_as_new = True
         self._current_api_id = None
         self._current_provider_type = provider_type
         self._current_config = merge_with_preset_defaults({}, provider_type)
         if reload:
             self._reload_panel()
+        self._notify_state_change()
 
     def _load_saved_record(self, api_id, reload=True):
         cfg = self.config.get_api_config(api_id)
@@ -95,11 +100,17 @@ class APIConfigPage:
         if provider_type not in PRESET_MAP:
             provider_type = 'custom'
 
+        self._save_as_new = False
         self._current_api_id = api_id
         self._current_provider_type = provider_type
         self._current_config = merge_with_preset_defaults(cfg, provider_type)
         if reload:
             self._reload_panel()
+        self._notify_state_change()
+
+    def _notify_state_change(self):
+        if self._on_state_change_callback:
+            self._on_state_change_callback()
 
     def _build(self):
         header = tk.Frame(self.frame, bg=COLORS['bg_main'])
@@ -375,11 +386,22 @@ class APIConfigPage:
             state='readonly',
         )
         combo.pack(side=tk.LEFT)
+        bind_combobox_dropdown_mousewheel(combo)
         self._entries[form_key][key] = var
         return combo, var
 
     def _build_basic_section(self, parent, form_key):
-        _, inner = self._make_card(parent, '基础配置')
+        def make_reset_button(title_row):
+            ModernButton(
+                title_row,
+                '重置当前表单',
+                style='secondary',
+                command=self._reset,
+                padx=16,
+                pady=8,
+            ).pack(side=tk.RIGHT)
+
+        _, inner = self._make_card(parent, '基础配置', right_widget_factory=make_reset_button)
         cfg = self._get_form_config()
         preset = PRESET_MAP.get(self._current_provider_type, PRESET_MAP['custom'])
         preset_defaults = preset.get('defaults', {})
@@ -449,6 +471,7 @@ class APIConfigPage:
             width=32,
         )
         model_combo.pack(side=tk.LEFT)
+        bind_combobox_dropdown_mousewheel(model_combo)
         model_sel_lbl = tk.Label(
             inner,
             text=f'已选择：{model_init}' if model_init else '已选择：（未选择）',
@@ -472,12 +495,6 @@ class APIConfigPage:
                 text=f'已选择：{model_var.get()}' if model_var.get() else '已选择：（未选择）'
             ),
         )
-
-        btn_row = tk.Frame(inner, bg=COLORS['card_bg'])
-        btn_row.pack(fill=tk.X, pady=(10, 0))
-        ModernButton(btn_row, '\u21ba 重置当前表单', style='secondary', command=self._reset, padx=16, pady=8).pack(side=tk.LEFT)
-        if self._current_api_id:
-            ModernButton(btn_row, '\u2716 删除此记录', style='danger', command=self._delete_current, padx=16, pady=8).pack(side=tk.LEFT, padx=(8, 0))
 
         if not hasattr(self, 'tip_label'):
             self.tip_label = tk.Label(
@@ -606,7 +623,7 @@ class APIConfigPage:
 
         test_btn_row = tk.Frame(inner, bg=COLORS['card_bg'])
         test_btn_row.pack(fill=tk.X, pady=(10, 0))
-        ModernButton(test_btn_row, '\U0001f50d 测试连接', style='accent', command=self._test_connection, padx=16, pady=8).pack(side=tk.LEFT)
+        ModernButton(test_btn_row, '测试连接', style='accent', command=self._test_connection, padx=16, pady=8).pack(side=tk.RIGHT)
 
     def _build_params_section(self, parent, form_key):
         self._entry_row(parent, '温度', 'temperature', form_key, placeholder='0.7', width=20)
@@ -760,7 +777,8 @@ class APIConfigPage:
             return False
 
         cfg = self._collect_api_config(FORM_KEY)
-        if self._force_new:
+        save_as_new = self._save_as_new
+        if save_as_new:
             exclude_id = None
         else:
             exclude_id = self._current_api_id
@@ -774,7 +792,7 @@ class APIConfigPage:
             self._show_tip('服务商名称已存在，请更换后再保存。', COLORS['error'], duration_ms=5000)
             return False
 
-        if self._force_new:
+        if save_as_new:
             target_api_id = self.config.generate_api_id()
         else:
             target_api_id = self._current_api_id or self.config.generate_api_id()
@@ -788,10 +806,11 @@ class APIConfigPage:
         self._current_api_id = target_api_id
         self._current_provider_type = cfg.get('provider_type', 'custom')
         self._current_config = self.config.get_api_config(target_api_id)
+        self._save_as_new = False
         self._show_tip('\u2713 配置已保存', COLORS['success'], duration_ms=3000)
         if self._on_save_callback:
             self._on_save_callback()
-        if self._force_new:
+        if self._default_force_new and save_as_new:
             self._load_preset_draft(cfg.get('provider_type', 'openai'), reload=True)
         else:
             self._reload_panel()
@@ -898,6 +917,7 @@ class APIConfigPage:
         self._current_api_id = None
         self._current_provider_type = 'openai'
         self._current_config = {}
+        self._save_as_new = self._default_force_new
 
         self._initialize_current_form()
         self._build()
