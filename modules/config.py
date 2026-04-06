@@ -115,6 +115,7 @@ class ConfigManager:
                 'launch_on_startup': False,
                 'silent_startup': False,
                 'minimize_to_tray_on_close': False,
+                'ignored_update_version': '',
                 'global_test_model': '',
                 'global_test_prompt': 'Who are you?',
                 'global_test_timeout_sec': 45,

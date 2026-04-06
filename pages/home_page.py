@@ -1933,6 +1933,18 @@ class HomePage:
             button.pack(fill=tk.BOTH, expand=True, padx=(2, 4), pady=(2, 4))
             return shell
 
+        def _activate_model(api_id, display_name):
+            if not self.config.get_api_config(api_id):
+                messagebox.showerror('切换失败', '目标模型配置不存在，请刷新后重试。', parent=win)
+                return
+            self.config.active_api = api_id
+            if not self.config.save():
+                messagebox.showerror('切换失败', '当前模型保存失败，请稍后重试。', parent=win)
+                return
+            self.refresh_dashboard()
+            self.set_status(f'已切换当前模型：{display_name}')
+            _populate()
+
         def _populate():
             for w in inner.winfo_children():
                 w.destroy()
@@ -1992,11 +2004,30 @@ class HomePage:
                              wraplength=460, justify='left').pack(anchor='w', pady=(2, 0))
 
                 # 右侧按钮区（垂直居中）
-                btn_col = tk.Frame(row, bg=card_bg, width=92, height=40)
+                btn_col = tk.Frame(row, bg=card_bg, width=248, height=40)
                 btn_col.pack(side=tk.RIGHT, padx=(12, 0), anchor='center')
                 btn_col.pack_propagate(False)
-                btn_col.grid_columnconfigure(0, minsize=42)
+                btn_col.grid_columnconfigure(0, minsize=132)
                 btn_col.grid_columnconfigure(1, minsize=42)
+                btn_col.grid_columnconfigure(2, minsize=42)
+
+                select_shell, select_button = create_home_shell_button(
+                    btn_col,
+                    '当前使用' if is_active else '使用',
+                    command=(lambda: None) if is_active else (lambda aid=api_id, model_name=name: _activate_model(aid, model_name)),
+                    style='secondary' if is_active else 'primary',
+                    padx=10,
+                    pady=6,
+                    font=FONTS['small'],
+                    border_color=COLORS['primary'] if is_active else '#000000',
+                )
+                if is_active:
+                    select_button.configure(
+                        state=tk.DISABLED,
+                        cursor='arrow',
+                        disabledforeground=COLORS['text_main'],
+                    )
+                select_shell.grid(row=0, column=0, padx=(0, 6), sticky='e')
 
                 detail_btn = _create_action_icon(
                     btn_col,
@@ -2006,7 +2037,7 @@ class HomePage:
                     command=lambda aid=api_id: _open_detail(aid),
                     active_bg=COLORS['primary_light'],
                 )
-                detail_btn.grid(row=0, column=0, padx=(0, 6), sticky='e')
+                detail_btn.grid(row=0, column=1, padx=(0, 6), sticky='e')
 
                 if not is_active:
                     _name = name
@@ -2027,7 +2058,7 @@ class HomePage:
                         active_bg=COLORS['error'],
                         active_fg='#FFFFFF',
                     )
-                    del_btn.grid(row=0, column=1, sticky='e')
+                    del_btn.grid(row=0, column=2, sticky='e')
 
             if not any_shown:
                 tk.Label(inner, text='暂无已配置的模型，请前往「模型配置」页面添加。',

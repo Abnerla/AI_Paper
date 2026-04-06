@@ -17,6 +17,7 @@ import webbrowser
 from ctypes import wintypes
 from datetime import datetime
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
 try:
@@ -55,6 +56,11 @@ SWP_NOMOVE = 0x0002
 SWP_NOZORDER = 0x0004
 SWP_FRAMECHANGED = 0x0020
 MONITOR_DEFAULTTONEAREST = 0x00000002
+SPI_GETWORKAREA = 0x0030
+WINDOW_DESIGN_WIDTH = 1600
+WINDOW_DESIGN_HEIGHT = 900
+WINDOW_WORKAREA_MARGIN_X = 96
+WINDOW_WORKAREA_MARGIN_Y = 80
 
 sys.path.insert(0, BASE_DIR)
 
@@ -298,10 +304,14 @@ class SmartPaperTool:
         self.root.withdraw()
         self.root.bind('<Map>', self._handle_root_map, add='+')
         self._loading_win = self._show_loading_screen()
-        self.min_window_width = 1920
-        self.min_window_height = 1080
-        self.root.geometry('1920x1080')
-        self.root.minsize(self.min_window_width, self.min_window_height)
+        self.design_window_width = WINDOW_DESIGN_WIDTH
+        self.design_window_height = WINDOW_DESIGN_HEIGHT
+        self.window_workarea_margin_x = WINDOW_WORKAREA_MARGIN_X
+        self.window_workarea_margin_y = WINDOW_WORKAREA_MARGIN_Y
+        self.min_window_width = self.design_window_width
+        self.min_window_height = self.design_window_height
+        self.startup_window_width = self.design_window_width
+        self.startup_window_height = self.design_window_height
         self.config_mgr = None
         self.history_mgr = None
         self.api_client = None
@@ -320,14 +330,24 @@ class SmartPaperTool:
         self.current_page_id = None
         self.nav_buttons = {}
         self.nav_button_shells = []
+        self.nav_button_borders = []
         self.pages = {}
         self.page_titles = {}
         self.tool_buttons = []
         self.tool_button_shells = []
+        self.tool_button_borders = []
+        self.tool_button_images = {}
         self.theme_tool_button = None
         self.dialogs = []
         self.brand_logo = None
         self.user_logo = None
+        self.user_canvas = None
+        self.user_logo_label = None
+        self.user_content = None
+        self.user_row = None
+        self.username_label = None
+        self.user_arrow = None
+        self._user_display_name = ''
         self.icon_image = None
         self.window_chrome = None
         self.window_chrome_inner = None
@@ -357,7 +377,10 @@ class SmartPaperTool:
         self._version_check_anim_job = None
         self._version_check_button = None
         self._version_check_busy = False
+        self._pending_version_update_data = None
         self.bell_button = None
+        self.bell_badge = None
+        self._bell_badge_visible = False
         self.app_bridge = self._build_app_bridge()
         self.task_runner = TaskRunner(self.root, set_status=self._set_status)
 
@@ -365,22 +388,39 @@ class SmartPaperTool:
 
     def _configure_scaling(self):
         """根据实际 DPI 让 Tk 使用正确的字体和控件缩放。"""
-        if sys.platform != 'win32':
-            return
-
-        try:
-            dpi = ctypes.windll.user32.GetDpiForWindow(self.root.winfo_id())
-        except Exception:
+        if sys.platform == 'win32':
             try:
-                dpi = int(self.root.winfo_fpixels('1i'))
+                dpi = ctypes.windll.user32.GetDpiForWindow(self.root.winfo_id())
             except Exception:
-                dpi = 96
+                try:
+                    dpi = int(self.root.winfo_fpixels('1i'))
+                except Exception:
+                    dpi = 96
 
-        scaling = max(dpi / 72.0, 1.0)
-        try:
-            self.root.tk.call('tk', 'scaling', scaling)
-        except tk.TclError:
-            pass
+            scaling = max(dpi / 72.0, 1.0)
+            try:
+                self.root.tk.call('tk', 'scaling', scaling)
+            except tk.TclError:
+                pass
+
+        self._initialize_window_size_policy()
+
+    def _initialize_window_size_policy(self):
+        work_x, work_y, work_width, work_height = self._get_work_area()
+        safe_width = max(1, int(work_width) - self.window_workarea_margin_x)
+        safe_height = max(1, int(work_height) - self.window_workarea_margin_y)
+        self.min_window_width = min(self.design_window_width, safe_width)
+        self.min_window_height = min(self.design_window_height, safe_height)
+        self.startup_window_width = self.min_window_width
+        self.startup_window_height = self.min_window_height
+        self.root.minsize(self.min_window_width, self.min_window_height)
+        self.root.geometry(f'{self.startup_window_width}x{self.startup_window_height}')
+        self._write_app_log(
+            '[window_size_policy] '
+            f'work_area={work_x},{work_y},{work_width}x{work_height} '
+            f'min={self.min_window_width}x{self.min_window_height} '
+            f'startup={self.startup_window_width}x{self.startup_window_height}'
+        )
 
     def _build_page_specs(self):
         return {
@@ -588,6 +628,7 @@ class SmartPaperTool:
         if self.launch_silently:
             self.root.after(180, self._apply_silent_launch)
         self.root.after(500, self._prefetch_announcement)
+        self.root.after(900, self._check_version_update_on_startup)
 
     def _finish_startup_render(self):
         """已不再使用，保留以防其他引用。"""
@@ -940,6 +981,9 @@ class SmartPaperTool:
 
     def _restore_or_center_window(self):
         """恢复上次窗口位置，若无记录则居中显示。"""
+        work_x, work_y, work_width, work_height = self._get_work_area()
+        safe_width = max(self.min_window_width, int(work_width) - self.window_workarea_margin_x)
+        safe_height = max(self.min_window_height, int(work_height) - self.window_workarea_margin_y)
         geometry = None
         if self.config_mgr is None:
             geometry = self._get_centered_root_geometry()
@@ -953,12 +997,10 @@ class SmartPaperTool:
 
         if saved_x is not None and saved_y is not None and saved_w is not None and saved_h is not None:
             try:
-                sw = self.root.winfo_screenwidth()
-                sh = self.root.winfo_screenheight()
-                w = max(int(saved_w), self.min_window_width)
-                h = max(int(saved_h), self.min_window_height)
-                x = max(0, min(int(saved_x), sw - w))
-                y = max(0, min(int(saved_y), sh - h))
+                w = min(max(int(saved_w), self.min_window_width), safe_width)
+                h = min(max(int(saved_h), self.min_window_height), safe_height)
+                x = max(int(work_x), min(int(saved_x), int(work_x) + max(0, int(work_width) - w)))
+                y = max(int(work_y), min(int(saved_y), int(work_y) + max(0, int(work_height) - h)))
                 geometry = {'x': x, 'y': y, 'width': w, 'height': h}
                 self._apply_window_geometry(geometry)
                 return geometry
@@ -970,12 +1012,11 @@ class SmartPaperTool:
         return geometry
 
     def _get_centered_root_geometry(self):
-        width = self.min_window_width
-        height = self.min_window_height
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        x = max(0, (screen_width - width) // 2)
-        y = max(0, (screen_height - height) // 2)
+        work_x, work_y, work_width, work_height = self._get_work_area()
+        width = min(self.startup_window_width, max(1, int(work_width) - self.window_workarea_margin_x))
+        height = min(self.startup_window_height, max(1, int(work_height) - self.window_workarea_margin_y))
+        x = int(work_x) + max(0, (int(work_width) - width) // 2)
+        y = int(work_y) + max(0, (int(work_height) - height) // 2)
         return {
             'x': x,
             'y': y,
@@ -1275,7 +1316,59 @@ class SmartPaperTool:
 
         tick()
 
+    def _is_update_ignored(self, version):
+        ignored_version = ''
+        if self.config_mgr is not None:
+            ignored_version = (self.config_mgr.get_setting('ignored_update_version', '') or '').strip()
+        target_version = str(version or '').strip()
+        if not ignored_version or not target_version:
+            return False
+        return compare_versions(ignored_version, target_version) == 0
+
+    def _remember_ignored_update(self, version):
+        target_version = str(version or '').strip()
+        if not target_version or self.config_mgr is None:
+            return False
+        self.config_mgr.set_setting('ignored_update_version', target_version)
+        saved = self.config_mgr.save()
+        if saved:
+            self._write_app_log(f'已忽略版本更新提醒: {target_version}')
+        else:
+            self._write_app_log(f'保存忽略版本更新提醒失败: {target_version}', level='WARN')
+        return saved
+
+    def _can_show_version_update_dialog(self):
+        try:
+            return (
+                self.root.winfo_exists() and
+                self.root.winfo_viewable() and
+                self.root.state() != 'iconic'
+            )
+        except tk.TclError:
+            return False
+
+    def _show_or_defer_version_update_dialog(self, data, *, from_startup=False):
+        if from_startup and not self._can_show_version_update_dialog():
+            self._pending_version_update_data = data
+            self._write_app_log('窗口当前不可见，已延后显示版本更新提醒')
+            return
+        self._show_version_update_dialog(data)
+
+    def _show_pending_version_update_dialog(self):
+        data = self._pending_version_update_data
+        if not data or not self._can_show_version_update_dialog():
+            return
+        self._pending_version_update_data = None
+        self._show_version_update_dialog(data)
+
+    def _check_version_update_on_startup(self):
+        if self._version_check_busy:
+            self.root.after(600, self._check_version_update_on_startup)
+            return
+        self._check_version_update(silent=True)
+
     def _show_version_update_dialog(self, data):
+        self._pending_version_update_data = None
         window, content, footer = self._create_info_dialog_shell('版本更新', '760x580', min_width=620, min_height=460)
 
         tk.Label(
@@ -1344,15 +1437,30 @@ class SmartPaperTool:
                     ).pack(anchor='w', fill=tk.X)
 
             download_url = data.get('download_url', '')
-            if download_url:
-                btn_frame = tk.Frame(content, bg=COLORS['card_bg'])
-                btn_frame.pack(fill=tk.X, pady=(16, 0))
-                ModernButton(
-                    btn_frame,
-                    '前往下载',
-                    style='primary',
-                    command=lambda: webbrowser.open(download_url),
-                ).pack(side=tk.RIGHT)
+            def ignore_current_version():
+                if not self._remember_ignored_update(latest):
+                    messagebox.showerror('保存失败', '无法保存忽略提醒设置。', parent=window)
+                    return
+                self._set_status(f'已忽略版本 {latest} 的启动提醒', COLORS['success'])
+                self._close_dialog(window)
+
+            def open_update_page():
+                if download_url:
+                    webbrowser.open(download_url)
+                self._close_dialog(window)
+
+            ModernButton(
+                footer,
+                '更新',
+                style='primary',
+                command=open_update_page,
+            ).pack(side=tk.RIGHT)
+            ModernButton(
+                footer,
+                '此版本不再提醒',
+                style='secondary',
+                command=ignore_current_version,
+            ).pack(side=tk.RIGHT, padx=(0, 10))
         else:
             tk.Label(
                 content,
@@ -1363,19 +1471,28 @@ class SmartPaperTool:
                 anchor='center',
                 justify='center',
             ).pack(fill=tk.X)
+            ModernButton(footer, '关闭', style='secondary', command=lambda: self._close_dialog(window)).pack(side=tk.RIGHT)
 
-        ModernButton(footer, '关闭', style='secondary', command=lambda: self._close_dialog(window)).pack(side=tk.RIGHT)
-
-    def _check_version_update(self, button=None):
+    def _check_version_update(self, button=None, *, silent=False):
         if self._version_check_busy:
             return
 
-        self._write_app_log('检查版本更新')
-        self._set_status('正在检查版本更新...', COLORS['warning'])
+        self._version_check_busy = True
+        if silent:
+            self._write_app_log('启动后后台检查版本更新')
+        else:
+            self._write_app_log('检查版本更新')
+            self._set_status('正在检查版本更新...', COLORS['warning'])
 
         if not self._remote_content:
-            self._set_status('更新服务尚未初始化', COLORS['error'])
-            self._reset_version_check_button(button, text='检查失败', style='danger', delay_ms=1200)
+            if not silent:
+                self._set_status('更新服务尚未初始化', COLORS['error'])
+            self._reset_version_check_button(
+                button,
+                text='检查失败',
+                style='danger',
+                delay_ms=1200 if self._widget_exists(button) else 0,
+            )
             return
 
         if self._widget_exists(button):
@@ -1386,6 +1503,10 @@ class SmartPaperTool:
             cmp = compare_versions(APP_VERSION, latest)
 
             if cmp < 0:
+                if silent and self._is_update_ignored(latest):
+                    self._write_app_log(f'发现新版本 {latest}，但当前版本已设置为不再提醒')
+                    self._reset_version_check_button(button)
+                    return
                 if self._widget_exists(button):
                     try:
                         if hasattr(button, 'set_style'):
@@ -1401,18 +1522,28 @@ class SmartPaperTool:
                 self._cancel_version_check_animation()
                 self._version_check_busy = False
                 self._version_check_button = None
-                self._set_status(f'发现新版本 {latest}', COLORS['warning'])
-                self._show_version_update_dialog(data)
-                self._reset_version_check_button(button, delay_ms=1200)
+                if not silent:
+                    self._set_status(f'发现新版本 {latest}', COLORS['warning'])
+                self._show_or_defer_version_update_dialog(data, from_startup=silent)
+                self._reset_version_check_button(button, delay_ms=1200 if self._widget_exists(button) else 0)
                 return
 
-            self._set_status('当前已是最新版本', COLORS['success'])
-            self._reset_version_check_button(button, text='已是最新版本', style='secondary', delay_ms=1200)
+            if not silent:
+                self._set_status('当前已是最新版本', COLORS['success'])
+                self._reset_version_check_button(button, text='已是最新版本', style='secondary', delay_ms=1200 if self._widget_exists(button) else 0)
+                return
+            self._reset_version_check_button(button)
 
         def on_error(exc):
             self._write_app_log(f'检查版本更新失败: {exc}', level='WARN')
-            self._set_status('检查更新失败，请检查网络连接', COLORS['error'])
-            self._reset_version_check_button(button, text='检查失败', style='danger', delay_ms=1200)
+            if not silent:
+                self._set_status('检查更新失败，请检查网络连接', COLORS['error'])
+            self._reset_version_check_button(
+                button,
+                text='检查失败',
+                style='danger',
+                delay_ms=1200 if self._widget_exists(button) else 0,
+            )
 
         self._remote_content.fetch('version', on_success=on_loaded, on_error=on_error, force=True)
 
@@ -1559,16 +1690,24 @@ class SmartPaperTool:
                             return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
             except Exception:
                 pass
+            try:
+                rect = wintypes.RECT()
+                if ctypes.windll.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rect), 0):
+                    return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+            except Exception:
+                pass
         return 0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight()
 
     def _apply_window_geometry(self, geometry):
         if not geometry:
-            self._center_window()
-            return
-        width = max(int(geometry.get('width', self.min_window_width)), self.min_window_width)
-        height = max(int(geometry.get('height', self.min_window_height)), self.min_window_height)
-        x = int(geometry.get('x', 0))
-        y = int(geometry.get('y', 0))
+            geometry = self._get_centered_root_geometry()
+        work_x, work_y, work_width, work_height = self._get_work_area()
+        safe_width = max(self.min_window_width, int(work_width) - self.window_workarea_margin_x)
+        safe_height = max(self.min_window_height, int(work_height) - self.window_workarea_margin_y)
+        width = min(max(int(geometry.get('width', self.min_window_width)), self.min_window_width), safe_width)
+        height = min(max(int(geometry.get('height', self.min_window_height)), self.min_window_height), safe_height)
+        x = max(int(work_x), min(int(geometry.get('x', work_x)), int(work_x) + max(0, int(work_width) - width)))
+        y = max(int(work_y), min(int(geometry.get('y', work_y)), int(work_y) + max(0, int(work_height) - height)))
         self.root.geometry(f'{width}x{height}+{x}+{y}')
 
     def _minimize_window(self):
@@ -1626,6 +1765,15 @@ class SmartPaperTool:
         shell_inset = 2
         self.top_nav_shadow_gap = shadow_gap
         self.top_nav_shell_inset = shell_inset
+        self.user_shell_inset = shell_inset + 1
+        self.user_shadow_gap = shadow_gap
+        self.user_content_inset = 2
+        self.user_row_pad_left = 12
+        self.user_row_pad_right = 12
+        self.user_row_pad_y = 8
+        self.user_avatar_slot_width = 56
+        self.user_logo_gap = 10
+        self.user_arrow_gap = 8
 
         self.top_nav_frame = tk.Frame(self.root, bg=COLORS['nav_bg'])
         top_pad = 12 if self.window_chrome else 18
@@ -1641,113 +1789,138 @@ class SmartPaperTool:
         self.page_titles = {page_id: label for page_id, label in nav_items}
 
         self.nav_button_shells = []
+        self.nav_button_borders = []
         for page_id, label in nav_items:
-            shell = tk.Frame(self.nav_center, bg=COLORS['shadow'])
+            shell = tk.Frame(self.nav_center, bg=COLORS['nav_bg'], bd=0, highlightthickness=0)
             shell.pack(side=tk.LEFT, padx=(0, 7))
-            button = ModernButton(
-                shell,
-                label,
-                style='nav',
-                command=lambda pid=page_id: self._show_page(pid),
-                padx=12,
-                pady=8,
-                font=FONTS['nav'],
-                highlightthickness=2,
+            border = tk.Frame(shell, bg='#121317', bd=0, highlightthickness=0)
+            border.pack_propagate(False)
+            button_width, button_height = self._measure_top_nav_canvas_size(label)
+            shell.configure(width=button_width + shadow_gap, height=button_height + shadow_gap)
+            shell.pack_propagate(False)
+            border.place(
+                x=0,
+                y=0,
+                width=button_width + shadow_gap,
+                height=button_height + shadow_gap,
             )
-            button.pack(
-                fill=tk.BOTH,
-                expand=True,
-                padx=(shell_inset, shadow_gap),
-                pady=(shell_inset, shadow_gap),
+            button = tk.Canvas(
+                border,
+                bg=COLORS['nav_bg'],
+                bd=0,
+                highlightthickness=0,
+                cursor='hand2',
+                width=button_width,
+                height=button_height,
             )
+            button._nav_page_id = page_id
+            button._nav_label = label
+            button.place(
+                x=0,
+                y=0,
+                width=button_width,
+                height=button_height,
+            )
+            button.bind('<Button-1>', lambda _event, pid=page_id: self._show_page(pid))
+            button.bind('<Configure>', lambda _event, canvas=button: self._render_top_nav_canvas(canvas))
+            shell.bind('<Button-1>', lambda _event, pid=page_id: self._show_page(pid))
+            border.bind('<Button-1>', lambda _event, pid=page_id: self._show_page(pid))
+            self._render_top_nav_canvas(button)
+            shell._nav_button = button
+            border._nav_button = button
             self.nav_button_shells.append(shell)
+            self.nav_button_borders.append(border)
             self.nav_buttons[page_id] = button
 
         self.right_tools = tk.Frame(self.top_nav_inner, bg=COLORS['nav_bg'])
 
         tool_specs = [
-            ('🔔', '公告', self._show_announcement),
-            ('◐', '模式切换', self._show_theme_menu),
-            ('⚙', '设置', self._show_settings),
+            ('notice', '公告', '系统公告', 'png/SystemNotice.png', self._show_announcement),
+            ('theme', '模式', '模式切换', 'png/ModeSwitch.png', self._show_theme_menu),
+            ('settings', '设置', '设置', 'png/Settings.png', self._show_settings),
         ]
 
         self.tool_button_shells = []
+        self.tool_button_borders = []
+        self.tool_button_images = {}
         self.theme_tool_button = None
-        for icon, tip, command in tool_specs:
-            shell = tk.Frame(self.right_tools, bg=COLORS['shadow'])
-            shell.pack(side=tk.LEFT, padx=(0, 4))
-            button = ToolIconButton(
-                shell,
-                text=icon,
-                tooltip=tip,
-                command=lambda cb=command: cb(),
-                padx=0,
-                pady=0,
-                font=FONTS['small'],
-                highlightthickness=2,
+        self.bell_button = None
+        self.bell_badge = None
+        for role, label, tip, icon_file, command in tool_specs:
+            try:
+                icon_image = self._load_top_tool_icon(icon_file, max_size=(26, 26))
+            except Exception:
+                icon_image = None
+            self.tool_button_images[role] = icon_image
+            button = tk.Canvas(
+                self.right_tools,
+                bg=COLORS['shadow'],
+                bd=0,
+                highlightthickness=0,
+                cursor='hand2',
+                width=84,
+                height=84,
             )
-            button.pack(
-                fill=tk.BOTH,
-                expand=True,
-                padx=(shell_inset, shadow_gap),
-                pady=(shell_inset, shadow_gap),
-            )
-            self.tool_button_shells.append(shell)
+            button._tool_role = role
+            button._tool_label = label
+            button._tool_tip = tip
+            button._tool_icon_file = icon_file
+            button._tool_icon_bg = COLORS['toolbar_icon_bg']
+            button._tool_icon_image = icon_image
+            button._tool_has_badge = role == 'notice' and self._bell_badge_visible
+            button.pack(side=tk.LEFT, padx=(0, 4))
+            button.bind('<Button-1>', lambda _event, cb=command: cb())
+            button.bind('<Configure>', lambda _event, canvas=button: self._render_top_tool_canvas(canvas))
+            self._render_top_tool_canvas(button)
+            self.tool_button_shells.append(button)
+            self.tool_button_borders.append(None)
             self.tool_buttons.append(button)
-            if tip == '模式切换':
-                self.theme_tool_button = button
-            if tip == '公告':
+            if role == 'notice':
                 self.bell_button = button
+            if role == 'theme':
+                self.theme_tool_button = button
 
         self.user_box = tk.Frame(self.right_tools, bg=COLORS['shadow'])
 
         self.user_inner = tk.Frame(
             self.user_box,
-            bg=COLORS['card_bg'],
-            highlightbackground=COLORS['card_border'],
-            highlightthickness=2,
+            bg=COLORS['card_border'],
             bd=0,
+            highlightthickness=0,
         )
-        self.user_inner.pack(
-            fill=tk.BOTH,
-            expand=True,
-            padx=(shell_inset, shadow_gap),
-            pady=(shell_inset, shadow_gap),
+        self.user_inner.place(x=self.user_shell_inset, y=self.user_shell_inset)
+        self.user_content = tk.Frame(
+            self.user_inner,
+            bg=COLORS['card_bg'],
+            bd=0,
+            highlightthickness=0,
         )
+        self.user_content.place(x=self.user_content_inset, y=self.user_content_inset)
+        self.user_canvas = tk.Canvas(
+            self.user_content,
+            bg=COLORS['card_bg'],
+            bd=0,
+            highlightthickness=0,
+            cursor='hand2',
+        )
+        self.user_canvas.place(x=0, y=0)
+        self.user_row = None
 
         try:
             self.user_logo = load_image('logo.png', max_size=(40, 40))
-            logo_label = tk.Label(self.user_inner, image=self.user_logo, bg=COLORS['card_bg'])
-            logo_label.pack(side=tk.LEFT, padx=(10, 6), pady=4)
         except Exception:
-            logo_label = None
+            self.user_logo = None
+        self.user_logo_label = None
 
         raw_username = os.getenv('USERNAME') or 'Local User'
-        display_username = raw_username if len(raw_username) <= 7 else f'{raw_username[:7]}...'
-        self.username_label = tk.Label(
-            self.user_inner,
-            text=display_username,
-            font=FONTS['small'],
-            fg=COLORS['text_main'],
-            bg=COLORS['card_bg'],
-            width=min(max(len(display_username), 4), 7),
-            anchor='w',
-        )
-        self.username_label.pack(side=tk.LEFT, pady=6)
+        self._user_display_name = raw_username if len(raw_username) <= 7 else f'{raw_username[:7]}...'
+        self.username_label = None
+        self.user_arrow = None
 
-        self.user_arrow = tk.Label(
-            self.user_inner,
-            text='▼',
-            font=FONTS['tiny'],
-            fg=COLORS['text_sub'],
-            bg=COLORS['card_bg'],
-        )
-        self.user_arrow.pack(side=tk.LEFT, padx=(5, 8), pady=6)
-
-        for widget in (self.user_box, self.user_inner, self.username_label, self.user_arrow):
+        self.user_canvas.bind('<Button-1>', lambda _event: self._show_about_dialog())
+        self.user_canvas.bind('<Configure>', lambda _event, canvas=self.user_canvas: self._render_user_profile_canvas(canvas))
+        for widget in (self.user_box, self.user_inner, self.user_content, self.user_canvas):
             widget.bind('<Button-1>', lambda _event: self._show_about_dialog())
-        if logo_label is not None:
-            logo_label.bind('<Button-1>', lambda _event: self._show_about_dialog())
 
         self.user_box.pack(side=tk.LEFT, padx=(2, 0))
 
@@ -1758,6 +1931,8 @@ class SmartPaperTool:
         self.nav_center.grid(row=0, column=0, sticky='w')
         self.right_tools.grid(row=0, column=1, sticky='e')
 
+        self.top_nav_inner.update_idletasks()
+        self._sync_top_nav_metrics()
         self.top_nav_inner.bind('<Configure>', self._relayout_top_nav)
         self.top_nav_inner.after_idle(self._sync_top_nav_metrics)
 
@@ -1795,14 +1970,24 @@ class SmartPaperTool:
 
         self.nav_buttons = {}
         self.nav_button_shells = []
+        self.nav_button_borders = []
         self.tool_buttons = []
         self.tool_button_shells = []
+        self.tool_button_borders = []
+        self.tool_button_images = {}
         self.top_nav_frame = None
         self.top_nav_inner = None
         self.nav_center = None
         self.right_tools = None
         self.user_box = None
         self.user_inner = None
+        self.user_content = None
+        self.user_canvas = None
+        self.user_row = None
+        self.user_logo_label = None
+        self.theme_tool_button = None
+        self.bell_button = None
+        self.bell_badge = None
         self.username_label = None
         self.user_arrow = None
 
@@ -1811,13 +1996,18 @@ class SmartPaperTool:
             self.top_nav_frame.pack_configure(before=self.content_view)
         self.root.update_idletasks()
         self._relayout_top_nav()
-        for page_id, button in self.nav_buttons.items():
-            button.set_style('nav_active' if page_id == self.current_page_id else 'nav')
+        for _page_id, button in self.nav_buttons.items():
+            # 顶部一级导航使用自绘样式，当前页保持黄色激活态，其余按钮使用浅色底。
+            self._render_top_nav_canvas(button)
+
+        self._refresh_top_nav_buttons()
 
     def _handle_root_map(self, _event=None):
         if not self._startup_complete or self._shell_repair_job is not None:
             return
         self._shell_repair_job = self.root.after(80, self._repair_shell_after_map)
+        if self._pending_version_update_data:
+            self.root.after(220, self._show_pending_version_update_dialog)
 
     def _repair_shell_after_map(self):
         self._shell_repair_job = None
@@ -1849,8 +2039,9 @@ class SmartPaperTool:
             self._rebuild_top_nav_after_show()
 
     def _apply_top_nav_spacing(self):
+        _work_x, _work_y, work_width, _work_height = self._get_work_area()
         width = max(self.root.winfo_width(), self.min_window_width)
-        max_width = max(self.root.winfo_screenwidth(), self.min_window_width + 1)
+        max_width = max(int(work_width), self.min_window_width + 1)
         progress = min(1.0, max(0.0, (width - self.min_window_width) / (max_width - self.min_window_width)))
 
         outer_pad = int(round(18 + 18 * progress))
@@ -1870,26 +2061,374 @@ class SmartPaperTool:
 
         self.user_box.pack_configure(padx=(user_gap, 0))
 
+    def _refresh_top_nav_buttons(self):
+        for button in self.nav_buttons.values():
+            self._render_top_nav_canvas(button)
+
+    def _measure_top_nav_canvas_size(self, label):
+        try:
+            nav_font = tkfont.Font(font=FONTS['nav'])
+        except Exception:
+            nav_font = tkfont.nametofont('TkDefaultFont')
+        text_width = nav_font.measure(label or '')
+        text_height = nav_font.metrics('linespace')
+        canvas_width = max(text_width + 36, 92)
+        canvas_height = max(text_height + 16, 42)
+        if canvas_width % 2 != 0:
+            canvas_width += 1
+        if canvas_height % 2 != 0:
+            canvas_height += 1
+        return canvas_width, canvas_height
+
+    def _measure_user_profile_box_size(self):
+        def _ensure_even(value):
+            value = int(max(value, 0))
+            return value if value % 2 == 0 else value + 1
+
+        shell_inset = getattr(self, 'user_shell_inset', getattr(self, 'top_nav_shell_inset', 0))
+        shadow_gap = getattr(self, 'user_shadow_gap', getattr(self, 'top_nav_shadow_gap', 0))
+        content_inset = getattr(self, 'user_content_inset', 2)
+        row_pad_left = getattr(self, 'user_row_pad_left', 12)
+        row_pad_right = getattr(self, 'user_row_pad_right', 12)
+        row_pad_y = getattr(self, 'user_row_pad_y', 8)
+        avatar_slot_width = getattr(self, 'user_avatar_slot_width', 56)
+        logo_gap = getattr(self, 'user_logo_gap', 10)
+        arrow_gap = getattr(self, 'user_arrow_gap', 8)
+        username_text = getattr(self, '_user_display_name', '')
+        arrow_text = '\u25BE'
+        try:
+            username_font = tkfont.Font(font=FONTS['small'])
+        except Exception:
+            username_font = tkfont.nametofont('TkDefaultFont')
+        try:
+            arrow_font = tkfont.Font(font=FONTS['tiny'])
+        except Exception:
+            arrow_font = tkfont.nametofont('TkDefaultFont')
+
+        username_width = username_font.measure(username_text) + 12
+        username_height = username_font.metrics('linespace') + 6
+        arrow_width = arrow_font.measure(arrow_text) + 8
+        arrow_height = arrow_font.metrics('linespace') + 6
+        logo_height = 44 if getattr(self, 'user_logo', None) is not None else 0
+
+        row_width = username_width
+        row_height = username_height
+        if getattr(self, 'user_logo', None) is not None:
+            row_width += avatar_slot_width + logo_gap
+            row_height = max(row_height, logo_height)
+        if arrow_width > 0:
+            row_width += arrow_gap + arrow_width
+            row_height = max(row_height, arrow_height)
+
+        content_width = _ensure_even(row_width + row_pad_left + row_pad_right)
+        content_height = _ensure_even(row_height + row_pad_y * 2)
+        inner_width = _ensure_even(content_width + content_inset * 2)
+        inner_height = _ensure_even(content_height + content_inset * 2)
+        box_width = inner_width + shell_inset + shadow_gap
+        box_height = inner_height + shell_inset + shadow_gap
+        return box_width, box_height, inner_width, inner_height, content_width, content_height
+
+    def _render_user_profile_canvas(self, canvas):
+        if canvas is None:
+            return
+
+        try:
+            req_width = int(float(canvas.cget('width')))
+            req_height = int(float(canvas.cget('height')))
+        except Exception:
+            req_width = 120
+            req_height = 48
+
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        if width <= 1:
+            width = req_width
+        if height <= 1:
+            height = req_height
+        width = max(int(width), 80)
+        height = max(int(height), 40)
+
+        username_text = getattr(self, '_user_display_name', '')
+        arrow_text = '\u25BE'
+        row_pad_left = getattr(self, 'user_row_pad_left', 12)
+        avatar_slot_width = getattr(self, 'user_avatar_slot_width', 56)
+        logo_gap = getattr(self, 'user_logo_gap', 10)
+        arrow_gap = getattr(self, 'user_arrow_gap', 8)
+        center_y = int(round(height / 2))
+
+        try:
+            username_font = tkfont.Font(font=FONTS['small'])
+        except Exception:
+            username_font = tkfont.nametofont('TkDefaultFont')
+        try:
+            arrow_font = tkfont.Font(font=FONTS['tiny'])
+        except Exception:
+            arrow_font = tkfont.nametofont('TkDefaultFont')
+
+        username_width = username_font.measure(username_text) + 12
+        cursor_x = row_pad_left
+
+        canvas.delete('all')
+        canvas.configure(bg=COLORS['card_bg'], highlightthickness=0, bd=0)
+
+        if getattr(self, 'user_logo', None) is not None:
+            canvas.create_image(
+                cursor_x + avatar_slot_width / 2,
+                center_y,
+                image=self.user_logo,
+            )
+            cursor_x += avatar_slot_width + logo_gap
+
+        canvas.create_text(
+            cursor_x + 4,
+            center_y,
+            text=username_text,
+            fill=COLORS['text_main'],
+            font=FONTS['small'],
+            anchor='w',
+        )
+        cursor_x += username_width + arrow_gap
+
+        canvas.create_text(
+            cursor_x + 1,
+            center_y,
+            text=arrow_text,
+            fill=COLORS['text_sub'],
+            font=FONTS['tiny'],
+            anchor='w',
+        )
+
+    def _layout_user_profile_box(self, *, box_width=None, box_height=None):
+        if not getattr(self, 'user_box', None) or not getattr(self, 'user_inner', None) or not getattr(self, 'user_content', None):
+            return
+
+        shell_inset = getattr(self, 'user_shell_inset', getattr(self, 'top_nav_shell_inset', 0))
+        shadow_gap = getattr(self, 'user_shadow_gap', getattr(self, 'top_nav_shadow_gap', 0))
+        content_inset = getattr(self, 'user_content_inset', 2)
+
+        min_box_width, min_box_height, _min_inner_width, _min_inner_height, _min_content_width, _min_content_height = self._measure_user_profile_box_size()
+
+        width = int(box_width if box_width is not None else max(self.user_box.winfo_width(), self.user_box.winfo_reqwidth(), min_box_width))
+        height = int(box_height if box_height is not None else max(self.user_box.winfo_height(), self.user_box.winfo_reqheight(), min_box_height))
+        width = max(width, min_box_width)
+        height = max(height, min_box_height)
+
+        inner_width = max(width - shell_inset - shadow_gap, 0)
+        inner_height = max(height - shell_inset - shadow_gap, 0)
+        self.user_inner.place_configure(
+            x=shell_inset,
+            y=shell_inset,
+            width=inner_width,
+            height=inner_height,
+        )
+
+        content_width = max(inner_width - content_inset * 2, 0)
+        content_height = max(inner_height - content_inset * 2, 0)
+        self.user_content.place_configure(
+            x=content_inset,
+            y=content_inset,
+            width=content_width,
+            height=content_height,
+        )
+        if getattr(self, 'user_canvas', None):
+            self.user_canvas.place_configure(
+                x=0,
+                y=0,
+                width=content_width,
+                height=content_height,
+            )
+            self._render_user_profile_canvas(self.user_canvas)
+
+    def _render_top_nav_canvas(self, canvas):
+        if canvas is None:
+            return
+        nav_outline = '#121317'
+        nav_normal_fill = '#F5F4EF'
+        nav_active_fill = '#FFD84A'
+        try:
+            req_width = int(float(canvas.cget('width')))
+            req_height = int(float(canvas.cget('height')))
+        except Exception:
+            req_width = 96
+            req_height = 42
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        if width <= 1:
+            width = req_width
+        if height <= 1:
+            height = req_height
+        width = max(width, 48)
+        height = max(height, 36)
+        center_x = int(round(width / 2))
+        center_y = int(round(height / 2))
+        outline_width = 3
+        inset = max(2, outline_width // 2 + 1)
+        page_id = getattr(canvas, '_nav_page_id', '')
+        is_active = page_id == self.current_page_id
+        label = getattr(canvas, '_nav_label', '')
+        canvas.delete('all')
+        canvas.configure(bg=COLORS['nav_bg'], highlightthickness=0, bd=0)
+        canvas.create_rectangle(
+            inset,
+            inset,
+            max(width - inset, inset + 1),
+            max(height - inset, inset + 1),
+            fill=nav_active_fill if is_active else nav_normal_fill,
+            outline=nav_outline,
+            width=outline_width,
+        )
+        canvas.create_text(
+            center_x,
+            center_y,
+            text=label,
+            fill=nav_outline,
+            font=FONTS['nav'],
+            anchor='center',
+            justify='center',
+        )
+
+    def _load_top_tool_icon(self, filename, *, max_size=(24, 24)):
+        try:
+            from PIL import Image as _PILImage
+            from PIL import ImageTk as _ImageTk
+
+            path = get_resource_path(filename)
+            with _PILImage.open(path) as source:
+                image = source.convert('RGBA')
+                if max_size:
+                    resampling = getattr(getattr(_PILImage, 'Resampling', _PILImage), 'LANCZOS', getattr(_PILImage, 'LANCZOS', 1))
+                    image.thumbnail(max_size, resampling)
+                background = _PILImage.new('RGBA', image.size, COLORS['toolbar_icon_bg'])
+                background.alpha_composite(image)
+            return _ImageTk.PhotoImage(background)
+        except Exception:
+            return load_image(filename, max_size=max_size)
+
+    def _render_top_tool_canvas(self, canvas):
+        if canvas is None:
+            return
+        icon_file = getattr(canvas, '_tool_icon_file', '')
+        icon_bg = getattr(canvas, '_tool_icon_bg', None)
+        if icon_file and icon_bg != COLORS['toolbar_icon_bg']:
+            try:
+                icon_image = self._load_top_tool_icon(icon_file, max_size=(26, 26))
+            except Exception:
+                icon_image = None
+            canvas._tool_icon_image = icon_image
+            canvas._tool_icon_bg = COLORS['toolbar_icon_bg']
+            role = getattr(canvas, '_tool_role', '')
+            if role:
+                self.tool_button_images[role] = icon_image
+        try:
+            width = max(int(float(canvas.cget('width'))), canvas.winfo_width(), 52)
+            height = max(int(float(canvas.cget('height'))), canvas.winfo_height(), 52)
+        except Exception:
+            width = max(canvas.winfo_width(), 84)
+            height = max(canvas.winfo_height(), 84)
+
+        shadow_gap = getattr(self, 'top_nav_shadow_gap', 5)
+        right = max(12, width - shadow_gap)
+        bottom = max(12, height - shadow_gap)
+        center_x = right / 2
+        center_y = bottom / 2
+        icon_image = getattr(canvas, '_tool_icon_image', None)
+        label = getattr(canvas, '_tool_label', '')
+        has_badge = bool(getattr(canvas, '_tool_has_badge', False))
+
+        canvas.delete('all')
+        canvas.configure(bg=COLORS['shadow'], highlightthickness=0, bd=0)
+        canvas.create_rectangle(
+            0,
+            0,
+            right,
+            bottom,
+            fill=COLORS['toolbar_icon_bg'],
+            outline=COLORS['card_border'],
+            width=2,
+        )
+        if icon_image is not None:
+            canvas.create_image(center_x, center_y, image=icon_image)
+        else:
+            canvas.create_text(center_x, center_y, text=label, fill=COLORS['toolbar_icon_fg'], font=FONTS['small'])
+        if has_badge:
+            canvas.create_oval(
+                right - 16,
+                8,
+                right - 6,
+                18,
+                fill=COLORS['error'],
+                outline=COLORS['error'],
+            )
+
+    def _sync_top_nav_metrics_legacy_unused(self):
+        return
+        # 一级导航只使用“历史记录/智能纠错”的尺寸基准，避免其他按钮再被自身文本宽度带偏。
+
     def _sync_top_nav_metrics(self):
         self.top_nav_inner.update_idletasks()
-        shell_extra = getattr(self, 'top_nav_shell_inset', 0) + getattr(self, 'top_nav_shadow_gap', 3)
+
+        def _ensure_even(value):
+            value = int(max(value, 0))
+            return value if value % 2 == 0 else value + 1
+
+        nav_shadow_gap = getattr(self, 'top_nav_shadow_gap', 3)
+        tool_shell_extra = getattr(self, 'top_nav_shell_inset', 0) + nav_shadow_gap
+        nav_min_border_width = 92
+        nav_button_inset_x = 0
+        nav_button_inset_y = 0
+        nav_border_height = 0
+        nav_button_metrics = []
+        for shell, border in zip(self.nav_button_shells, self.nav_button_borders):
+            button = getattr(shell, '_nav_button', None) or getattr(border, '_nav_button', None)
+            if button is None:
+                continue
+            inner_width, inner_height = self._measure_top_nav_canvas_size(getattr(button, '_nav_label', ''))
+            border_width = _ensure_even(max(inner_width, nav_min_border_width) + nav_shadow_gap)
+            border_height = _ensure_even(inner_height + nav_shadow_gap)
+            nav_button_metrics.append((shell, border, button, inner_width, inner_height, border_width, border_height))
+            nav_border_height = max(nav_border_height, border_height)
+
         self.user_box.update_idletasks()
-        user_box_height = self.user_inner.winfo_reqheight() + shell_extra
+        user_box_width, user_box_height, _user_inner_width, _user_inner_height, _user_content_width, _user_content_height = self._measure_user_profile_box_size()
         nav_height = max(
-            max((shell.winfo_reqheight() for shell in self.nav_button_shells), default=0),
+            nav_border_height,
             user_box_height,
             52,
         )
+        nav_height = _ensure_even(nav_height)
+
+        final_nav_border_height = nav_height
+        for shell, border, button, inner_width, inner_height, border_width, _border_height in nav_button_metrics:
+            shell.configure(width=border_width, height=nav_height)
+            shell.pack_propagate(False)
+            border.pack_propagate(False)
+            border.place_configure(
+                x=0,
+                y=0,
+                width=border_width,
+                height=final_nav_border_height,
+            )
+            button.place_configure(
+                x=nav_button_inset_x,
+                y=nav_button_inset_y,
+                width=max(border_width - nav_shadow_gap, inner_width),
+                height=max(final_nav_border_height - nav_shadow_gap, inner_height),
+            )
+            self._render_top_nav_canvas(button)
 
         for shell in self.tool_button_shells:
             shell.configure(width=nav_height, height=nav_height)
-            shell.pack_propagate(False)
+            if isinstance(shell, tk.Canvas):
+                self._render_top_tool_canvas(shell)
+            else:
+                shell.pack_propagate(False)
 
         self.user_box.configure(
-            width=self.user_inner.winfo_reqwidth() + shell_extra,
+            width=user_box_width,
             height=nav_height,
         )
         self.user_box.pack_propagate(False)
+        self._layout_user_profile_box(box_width=user_box_width, box_height=nav_height)
 
     def _relayout_top_nav(self, _event=None):
         self._sync_top_nav_metrics()
@@ -2060,13 +2599,11 @@ class SmartPaperTool:
         if not page:
             return
 
-        for pid, built_page in self.pages.items():
+        for _pid, built_page in self.pages.items():
             built_page.frame.pack_forget()
-            button = self.nav_buttons.get(pid)
-            if button:
-                button.set_style('nav_active' if pid == page_id else 'nav')
 
         self.current_page_id = page_id
+        self._refresh_top_nav_buttons()
         page.frame.pack(fill=tk.BOTH, expand=True)
         if invoke_on_show and hasattr(page, 'on_show'):
             page.on_show()
@@ -2154,16 +2691,20 @@ class SmartPaperTool:
             self._clear_bell_badge()
 
     def _show_bell_badge(self):
-        if self.bell_button:
+        self._bell_badge_visible = True
+        if isinstance(getattr(self, 'bell_button', None), tk.Canvas):
             try:
-                self.bell_button.configure(text='\U0001f514\u2022')
+                self.bell_button._tool_has_badge = True
+                self._render_top_tool_canvas(self.bell_button)
             except tk.TclError:
                 pass
 
     def _clear_bell_badge(self):
-        if self.bell_button:
+        self._bell_badge_visible = False
+        if isinstance(getattr(self, 'bell_button', None), tk.Canvas):
             try:
-                self.bell_button.configure(text='\U0001f514')
+                self.bell_button._tool_has_badge = False
+                self._render_top_tool_canvas(self.bell_button)
             except tk.TclError:
                 pass
 
@@ -3628,26 +4169,42 @@ class SmartPaperTool:
         self._refresh_window_chrome()
 
         for shell in self.nav_button_shells:
-            shell.configure(bg=COLORS['shadow'])
+            shell.configure(bg=COLORS['nav_bg'])
 
-        for page_id, button in self.nav_buttons.items():
-            button.set_style('nav_active' if page_id == self.current_page_id else 'nav')
+        for border in self.nav_button_borders:
+            border.configure(bg='#121317')
+
+        self._refresh_top_nav_buttons()
 
         for shell in self.tool_button_shells:
-            shell.configure(bg=COLORS['shadow'])
+            if isinstance(shell, tk.Canvas):
+                self._render_top_tool_canvas(shell)
+            else:
+                shell.configure(bg=COLORS['shadow'])
+
+        for border in self.tool_button_borders:
+            if border is not None:
+                border.configure(bg=COLORS['card_border'])
 
         for button in self.tool_buttons:
-            button.set_style('tool')
+            if hasattr(button, 'set_style'):
+                button.set_style('tool')
+            elif isinstance(button, tk.Canvas):
+                self._render_top_tool_canvas(button)
+            else:
+                button.configure(bg=COLORS['toolbar_icon_bg'], fg=COLORS['toolbar_icon_fg'])
+        if isinstance(getattr(self, 'bell_button', None), tk.Canvas):
+            self._render_top_tool_canvas(self.bell_button)
 
-        if hasattr(self, 'user_box'):
+        if getattr(self, 'user_box', None):
             self.user_box.configure(bg=COLORS['shadow'])
-            self.user_inner.configure(
-                bg=COLORS['card_bg'],
-                highlightbackground=COLORS['card_border'],
-                highlightthickness=2,
-            )
-            self.username_label.configure(bg=COLORS['card_bg'], fg=COLORS['text_main'])
-            self.user_arrow.configure(bg=COLORS['card_bg'], fg=COLORS['text_sub'])
+            if getattr(self, 'user_inner', None):
+                self.user_inner.configure(bg=COLORS['card_border'])
+            if getattr(self, 'user_content', None):
+                self.user_content.configure(bg=COLORS['card_bg'])
+            if getattr(self, 'user_canvas', None):
+                self.user_canvas.configure(bg=COLORS['card_bg'])
+                self._render_user_profile_canvas(self.user_canvas)
 
         if hasattr(self, 'status_label'):
             self.status_label.configure(bg=COLORS['card_bg'], fg=COLORS['text_sub'])

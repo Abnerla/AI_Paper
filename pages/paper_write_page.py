@@ -132,6 +132,22 @@ class PaperWritePage(WorkspaceStateMixin):
         ('灰', 'fmt_bg_gray', '#E9ECEF'),
         ('无', '', ''),
     )
+    OUTLINE_EMPHASIS_MARKERS = ('***', '___', '**', '__', '*', '_')
+    OUTLINE_MARKDOWN_RE = re.compile(r'^(#{1,6})\s+(.+)$')
+    OUTLINE_CHAPTER_RE = re.compile(r'^(第[一二三四五六七八九十百千万\d]+(章|节|部分|篇))\s*[:：]?\s*(.+)$')
+    OUTLINE_DECIMAL_RE = re.compile(r'^((?:\d+\.)+\d+)\s*[:：]?\s*(.+)$')
+    OUTLINE_SINGLE_NUMBER_RE = re.compile(r'^(\d+)(?:([、．.])\s*|\s+)(.+)$')
+    OUTLINE_CN_ENUM_RE = re.compile(r'^([一二三四五六七八九十百千万]+[、．.])\s*(.+)$')
+    OUTLINE_CN_PAREN_RE = re.compile(r'^(（[一二三四五六七八九十百千万]+）)\s*(.+)$')
+    OUTLINE_ARABIC_PAREN_RE = re.compile(r'^((?:（\d+）|\(\d+\)))\s*(.+)$')
+    OUTLINE_CN_ABSTRACT_TITLES = frozenset({'摘要', '中文摘要', '摘要与关键词'})
+    OUTLINE_CN_KEYWORD_TITLES = frozenset({'关键词', '关键字', '中文关键词', '中文关键字'})
+    OUTLINE_EN_ABSTRACT_TITLES = frozenset({'abstract', '英文摘要', 'abstract and keywords'})
+    OUTLINE_EN_KEYWORD_TITLES = frozenset({'keywords', '英文关键词', '英文关键字'})
+    OUTLINE_INTRO_TITLES = frozenset({'引言', '绪论'})
+    OUTLINE_REFERENCE_TITLES = frozenset({'参考文献', 'references', 'bibliography'})
+    OUTLINE_APPENDIX_TITLES = frozenset({'附录', 'appendix'})
+    NUMERIC_REFERENCE_STYLES = frozenset({'GB/T 7714', 'IEEE'})
 
     def __init__(self, parent, config_mgr, api_client, history_mgr,
                  set_status, navigate_page=None, app_bridge=None):
@@ -154,7 +170,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self._section_levels = {}  # {章节标题: 层级}
         self._section_parent = {}  # {章节标题: 父标题}
         self._section_children = {}  # {章节标题: [子标题]}
-        self._collapsed_sections = set()  # 折叠的二级标题
+        self._collapsed_sections = set()  # 折叠的分支标题
         self._editor_section_source = ''
         self._outline_editing_title = ''
         self._outline_drag_job = None
@@ -302,16 +318,16 @@ class PaperWritePage(WorkspaceStateMixin):
         else:
             self._section_parent = {}
         self._section_formats = self._sanitize_section_format_map(state.get('section_formats', {}))
-        self._merge_keyword_section_into_abstract()
-        if not any(self._section_parent.values()) and self._section_order:
-            self._infer_section_relationships_from_order()
-        else:
-            self._rebuild_section_children()
+        self._restore_level_font_styles(state.get('level_font_styles', {}))
+        aliases = self._normalize_outline_structure_state()
+        self._rebuild_section_children()
         collapsed = state.get('collapsed_sections', [])
         if isinstance(collapsed, list):
             self._collapsed_sections = {
-                title for title in collapsed
-                if title in self._section_order and self._section_levels.get(title) == 2 and self._section_children.get(title)
+                resolved_title
+                for title in collapsed
+                for resolved_title in [self._resolve_normalized_section_title(title, aliases)]
+                if resolved_title in self._section_order and self._section_children.get(resolved_title)
             }
         else:
             self._collapsed_sections = set()
@@ -323,14 +339,15 @@ class PaperWritePage(WorkspaceStateMixin):
 
         self._refresh_outline_list()
 
-        selected_section = state.get('selected_section', '')
+        selected_section = self._resolve_normalized_section_title(state.get('selected_section', ''), aliases)
         if selected_section in self._sections:
             self._select_section(selected_section, touch_context=False)
 
-        current_section = state.get('current_section', '')
+        current_section = self._resolve_normalized_section_title(state.get('current_section', ''), aliases)
         self.section_entry.delete(0, tk.END)
         self.section_entry.insert(0, current_section)
-        self._editor_section_source = state.get('editor_section_source', '') or current_section
+        editor_source = state.get('editor_section_source', '') or current_section
+        self._editor_section_source = self._resolve_normalized_section_title(editor_source, aliases) or current_section
         toolbar_bg_color = state.get('editor_toolbar_bg_color', self.DEFAULT_BG_SWATCH_COLOR)
         if isinstance(toolbar_bg_color, str) and re.match(r'^#[0-9A-Fa-f]{6}$', toolbar_bg_color):
             self._editor_bg_indicator_color = toolbar_bg_color
@@ -347,11 +364,6 @@ class PaperWritePage(WorkspaceStateMixin):
         except Exception:
             self._context_revision = 0
 
-        saved_styles = state.get('level_font_styles', {})
-        if isinstance(saved_styles, dict) and saved_styles:
-            for key in ('h1', 'h2', 'h3', 'body'):
-                if key in saved_styles and isinstance(saved_styles[key], dict):
-                    self._level_font_styles[key] = dict(saved_styles[key])
         self._apply_level_font_to_editor()
 
         self._update_stats()
@@ -648,6 +660,8 @@ class PaperWritePage(WorkspaceStateMixin):
         edit_frame, self.edit_text = create_scrolled_text(
             inner,
             height=22,
+            # 正文需要保留空格输入，不能让空格成为主要换行触发点。
+            wrap=tk.CHAR,
             undo=True,
             autoseparators=True,
             maxundo=200,
@@ -1514,6 +1528,55 @@ class PaperWritePage(WorkspaceStateMixin):
     # ──────────────────────────────────────────────
     # 字体格式统一设置
     # ──────────────────────────────────────────────
+
+    def _normalize_level_font_style(self, level_key, style):
+        # 恢复工作区状态时只接受四组层级配置，其余字段回退到默认值。
+        defaults = dict(self.LEVEL_STYLE_DEFAULTS.get(level_key, {}))
+        defaults = dict(self.LEVEL_STYLE_DEFAULTS.get(level_key, {}))
+        if not isinstance(style, dict):
+            return defaults
+
+        normalized = dict(defaults)
+        font_name = str(style.get('font', '') or '').strip()
+        if font_name:
+            normalized['font'] = font_name
+
+        font_en_name = str(style.get('font_en', '') or '').strip()
+        if font_en_name:
+            normalized['font_en'] = font_en_name
+
+        size_map = {name: pt for name, pt in self.WORD_FONT_SIZES}
+        size_name = str(style.get('size_name', '') or '').strip()
+        if size_name in size_map:
+            normalized['size_name'] = size_name
+            normalized['size_pt'] = size_map[size_name]
+            return normalized
+
+        raw_size_pt = style.get('size_pt', None)
+        try:
+            size_pt = float(raw_size_pt)
+        except (TypeError, ValueError):
+            size_pt = None
+        if size_pt is None or size_pt <= 0:
+            return normalized
+
+        normalized['size_pt'] = size_pt
+        matched_name = next(
+            (name for name, pt in self.WORD_FONT_SIZES if float(pt) == size_pt),
+            '',
+        )
+        if matched_name:
+            normalized['size_name'] = matched_name
+        return normalized
+
+    def _restore_level_font_styles(self, saved_styles):
+        saved = saved_styles if isinstance(saved_styles, dict) else {}
+        for key in ('h1', 'h2', 'h3', 'body'):
+            self._level_font_styles[key] = self._normalize_level_font_style(
+                key,
+                saved.get(key, {}),
+            )
+        self._outline_level_fonts = {}
 
     def _open_font_format_dialog(self):
         root = self.frame.winfo_toplevel()
@@ -2879,8 +2942,8 @@ class PaperWritePage(WorkspaceStateMixin):
             return None
 
         exact_blacklist = {
-            '摘要', 'abstract', '摘要与关键词', 'abstract and keywords',
-            '关键词', '关键字', 'keywords',
+            '摘要', '中文摘要', 'abstract', '英文摘要', '摘要与关键词', 'abstract and keywords',
+            '关键词', '关键字', '中文关键词', '中文关键字', 'keywords', '英文关键词', '英文关键字',
             '参考文献', 'references', 'bibliography',
             '附录', 'appendix',
             '目录', 'contents', 'table of contents',
@@ -2931,7 +2994,7 @@ class PaperWritePage(WorkspaceStateMixin):
         meta_prefixes = (
             '学号', '作者', '姓名', '学生', '班级', '专业', '院系',
             '指导教师', '指导老师', '完成时间', '完成日期', '日期',
-            '目录', '摘要', '关键词', '关键字',
+            '目录', '摘要', '中文摘要', '英文摘要', '关键词', '关键字', '中文关键词', '中文关键字', '英文关键词', '英文关键字',
             'abstract', 'keywords', 'references', 'bibliography',
             'appendix', 'contents', 'acknowledgements', 'acknowledgments',
         )
@@ -2958,8 +3021,8 @@ class PaperWritePage(WorkspaceStateMixin):
 
         plain = self._heading_plain_text(text)
         return plain in {
-            '摘要', 'abstract', '摘要与关键词', 'abstract and keywords',
-            '关键词', '关键字', 'keywords',
+            '摘要', '中文摘要', 'abstract', '英文摘要', '摘要与关键词', 'abstract and keywords',
+            '关键词', '关键字', '中文关键词', '中文关键字', 'keywords', '英文关键词', '英文关键字',
             '目录', 'contents', 'table of contents',
             '参考文献', 'references', 'bibliography',
             '附录', 'appendix',
@@ -3071,41 +3134,14 @@ class PaperWritePage(WorkspaceStateMixin):
 
     def _parse_and_show_outline(self, text):
         """从文本中解析章节标题，填充左侧大纲列表"""
-        lines = text.split('\n')
-        headings = []
-        stack = []
-        for index, line in enumerate(lines):
-            parsed = self._parse_outline_heading(line)
-            if not parsed:
-                continue
-            title, level = parsed
-            while stack and stack[-1]['level'] >= level:
-                stack.pop()
-            parent_title = stack[-1]['title'] if stack else ''
-            heading = {'title': title, 'start': index, 'level': level, 'parent': parent_title}
-            headings.append(heading)
-            stack.append(heading)
-
-        self._sections = {}
-        self._section_formats = {}
-        self._section_order = []
-        self._section_levels = {}
-        self._section_parent = {}
+        parsed = self._build_outline_structure(text)
+        self._sections = dict(parsed['sections'])
+        self._section_formats = {title: [] for title in self._sections}
+        self._section_order = list(parsed['order'])
+        self._section_levels = dict(parsed['levels'])
+        self._section_parent = dict(parsed['parents'])
         self._collapsed_sections = set()
-        for idx, heading in enumerate(headings):
-            next_start = headings[idx + 1]['start'] if idx + 1 < len(headings) else len(lines)
-            body_lines = []
-            for candidate in lines[heading['start'] + 1:next_start]:
-                if self._parse_outline_heading(candidate):
-                    continue
-                body_lines.append(candidate)
-            content = self._normalize_section_body('\n'.join(body_lines))
-            self._sections[heading['title']] = content
-            self._section_formats[heading['title']] = []
-            self._section_order.append(heading['title'])
-            self._section_levels[heading['title']] = heading['level']
-            self._section_parent[heading['title']] = heading.get('parent', '')
-        self._merge_keyword_section_into_abstract()
+        self._normalize_outline_structure_state()
         self._rebuild_section_children()
 
         self._sync_outline_text_from_sections()
@@ -3119,15 +3155,749 @@ class PaperWritePage(WorkspaceStateMixin):
             self._editor_section_source = ''
         self._touch_context_revision()
 
+    def _apply_normalized_outline_state(self, normalized):
+        old_sections = dict(self._sections)
+        old_formats = self._copy_section_format_map() if hasattr(self, '_section_formats') else {}
+        self._sections = dict(normalized.get('sections', {}))
+        self._section_order = list(normalized.get('order', []))
+        self._section_levels = dict(normalized.get('levels', {}))
+        self._section_parent = dict(normalized.get('parents', {}))
+        self._section_formats = {}
+        for title in self._section_order:
+            if old_sections.get(title, None) == self._sections.get(title, None):
+                self._section_formats[title] = list(old_formats.get(title, []))
+            else:
+                self._section_formats[title] = []
+        return dict(normalized.get('aliases', {}))
+
+    def _normalize_outline_structure_state(self):
+        normalized = self._normalize_outline_structure(
+            {
+                'sections': self._sections,
+                'order': self._section_order,
+                'levels': self._section_levels,
+                'parents': self._section_parent,
+            }
+        )
+        return self._apply_normalized_outline_state(normalized)
+
+    def _resolve_normalized_section_title(self, title, aliases=None):
+        candidate = str(title or '').strip()
+        if not candidate:
+            return ''
+        if candidate in self._sections:
+            return candidate
+        if aliases:
+            mapped = aliases.get(candidate, '')
+            if mapped in self._sections:
+                return mapped
+        kind = self._classify_outline_special_title(candidate)
+        if kind:
+            return self._find_section_title_by_kind(kind)
+        return ''
+
     def _normalize_section_body(self, text):
+        return self._normalize_outline_section_body(text)
+
+    @classmethod
+    def _strip_outline_emphasis(cls, text):
+        normalized = str(text or '').strip()
+        if not normalized:
+            return ''
+        while True:
+            changed = False
+            for marker in cls.OUTLINE_EMPHASIS_MARKERS:
+                if normalized.startswith(marker) and normalized.endswith(marker) and len(normalized) > len(marker) * 2:
+                    inner = normalized[len(marker):-len(marker)].strip()
+                    if inner:
+                        normalized = inner
+                        changed = True
+                        break
+            if not changed:
+                return normalized
+
+    @classmethod
+    def _normalize_special_heading_plain_text(cls, text):
+        normalized = re.sub(r'\s+', ' ', str(text or '').strip())
+        normalized = normalized.strip('：:').strip()
+        return normalized.lower()
+
+    @classmethod
+    def _classify_plain_special_heading(cls, text):
+        plain = cls._normalize_special_heading_plain_text(text)
+        if plain in cls.OUTLINE_CN_ABSTRACT_TITLES:
+            return 'cn_abstract'
+        if plain in cls.OUTLINE_CN_KEYWORD_TITLES:
+            return 'cn_keywords'
+        if plain in cls.OUTLINE_EN_ABSTRACT_TITLES:
+            return 'en_abstract'
+        if plain in cls.OUTLINE_EN_KEYWORD_TITLES:
+            return 'en_keywords'
+        if plain in cls.OUTLINE_INTRO_TITLES:
+            return 'intro'
+        if plain in cls.OUTLINE_REFERENCE_TITLES:
+            return 'reference'
+        if plain in cls.OUTLINE_APPENDIX_TITLES:
+            return 'appendix'
+        return ''
+
+    @classmethod
+    def _classify_outline_special_title(cls, title):
+        return cls._classify_plain_special_heading(cls._editable_title_text(title))
+
+    @classmethod
+    def _canonical_outline_title(cls, kind, intro_name='引言'):
+        mapping = {
+            'cn_abstract': '# 中文摘要',
+            'en_abstract': '# 英文摘要',
+            'intro': f'# {intro_name or "引言"}',
+            'reference': '# 参考文献',
+        }
+        return mapping.get(kind, '')
+
+    @classmethod
+    def _build_markdown_outline_title(cls, text, level):
+        hashes = '#' * max(1, min(int(level or 1), 6))
+        return f'{hashes} {str(text or "").strip()}'.strip()
+
+    @classmethod
+    def _merge_outline_section_bodies(cls, current, extra):
+        current_text = cls._normalize_outline_section_body(current or '')
+        extra_text = cls._normalize_outline_section_body(extra or '')
+        if not extra_text:
+            return current_text
+        if not current_text:
+            return extra_text
+        if extra_text == current_text or extra_text in current_text:
+            return current_text
+        if current_text in extra_text:
+            return extra_text
+        return f'{current_text}\n\n{extra_text}'
+
+    @classmethod
+    def _normalize_keyword_content(cls, text):
+        normalized = cls._normalize_outline_section_body(text or '')
+        normalized = re.sub(
+            r'^\s*(?:关键词|关键字|中文关键词|中文关键字|英文关键词|英文关键字|keywords)\s*[:：]\s*',
+            '',
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        return normalized.strip(' \t\r\n；;，,')
+
+    @classmethod
+    def _merge_keyword_content(cls, current, extra):
+        current_text = cls._normalize_keyword_content(current)
+        extra_text = cls._normalize_keyword_content(extra)
+        if not extra_text:
+            return current_text
+        if not current_text:
+            return extra_text
+        if extra_text == current_text or extra_text in current_text:
+            return current_text
+        if current_text in extra_text:
+            return extra_text
+
+        items = []
+        seen = set()
+        for source in (current_text, extra_text):
+            for token in re.split(r'[；;，,\n]+', source):
+                item = token.strip(' \t\r\n；;，,')
+                if not item:
+                    continue
+                lowered = item.lower()
+                if lowered in seen:
+                    continue
+                seen.add(lowered)
+                items.append(item)
+        return '；'.join(items)
+
+    @classmethod
+    def _format_keyword_line(cls, keyword_text, language='cn'):
+        normalized = cls._normalize_keyword_content(keyword_text)
+        if not normalized:
+            return ''
+        prefix = 'Keywords: ' if str(language or '').lower().startswith('en') else '关键词：'
+        return f'{prefix}{normalized}'
+
+    @classmethod
+    def _merge_abstract_keyword_body(cls, abstract_text, keyword_text, language='cn'):
+        abstract_body = cls._normalize_outline_section_body(abstract_text or '')
+        keyword_line = cls._format_keyword_line(keyword_text, language=language)
+        if not keyword_line:
+            return abstract_body
+        parts = [part for part in (abstract_body, keyword_line) if part]
+        return '\n\n'.join(parts).strip()
+
+    def _supports_numeric_reference_linking(self):
+        style = ''
+        if hasattr(self, 'ref_var') and self.ref_var is not None:
+            try:
+                style = str(self.ref_var.get() or '').strip()
+            except Exception:
+                style = ''
+        return style in self.NUMERIC_REFERENCE_STYLES
+
+    @classmethod
+    def _normalize_reference_entry_text(cls, text):
+        normalized = cls._normalize_outline_section_body(text or '')
+        normalized = re.sub(r'^\s*(?:\[(\d+)\]|(\d+)[\.、])\s*', '', normalized)
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        return normalized
+
+    @classmethod
+    def _reference_entry_key(cls, text):
+        return cls._normalize_reference_entry_text(text)
+
+    @classmethod
+    def _parse_reference_entries(cls, text):
+        normalized = str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+        if not normalized:
+            return []
+
+        lines = normalized.split('\n')
+        entries = []
+        current = None
+        numbered_found = False
+        start_re = re.compile(r'^\s*(?:\[(\d+)\]|(\d+)[\.、])\s*(.*)$')
+
+        def flush_current():
+            if not current:
+                return
+            entry_text = cls._normalize_reference_entry_text('\n'.join(current['parts']))
+            if not entry_text:
+                return
+            entries.append(
+                {
+                    'number': current['number'],
+                    'text': entry_text,
+                    'key': cls._reference_entry_key(entry_text),
+                }
+            )
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                if current and current['parts'] and current['parts'][-1] != '':
+                    current['parts'].append('')
+                continue
+
+            match = start_re.match(stripped)
+            if match:
+                numbered_found = True
+                flush_current()
+                current = {
+                    'number': int(match.group(1) or match.group(2)),
+                    'parts': [match.group(3).strip()],
+                }
+                continue
+
+            if current:
+                current['parts'].append(stripped)
+                continue
+
+            entry_text = cls._normalize_reference_entry_text(stripped)
+            if entry_text:
+                entries.append({'number': None, 'text': entry_text, 'key': cls._reference_entry_key(entry_text)})
+
+        flush_current()
+        if numbered_found:
+            return [entry for entry in entries if entry.get('key')]
+
+        fallback_entries = []
+        for block in re.split(r'\n\s*\n', normalized):
+            entry_text = cls._normalize_reference_entry_text(block)
+            if entry_text:
+                fallback_entries.append({'number': None, 'text': entry_text, 'key': cls._reference_entry_key(entry_text)})
+        return fallback_entries or [entry for entry in entries if entry.get('key')]
+
+    @classmethod
+    def _parse_citation_numbers(cls, content):
+        numbers = []
+        for part in re.split(r'[,，、]', str(content or '').strip()):
+            token = part.strip()
+            if not token:
+                continue
+            range_match = re.match(r'^(\d+)\s*[-–—]\s*(\d+)$', token)
+            if range_match:
+                start = int(range_match.group(1))
+                end = int(range_match.group(2))
+                if start <= end:
+                    numbers.extend(range(start, end + 1))
+                else:
+                    numbers.extend(range(end, start + 1))
+                continue
+            if token.isdigit():
+                numbers.append(int(token))
+        return numbers
+
+    @classmethod
+    def _format_citation_numbers(cls, numbers):
+        ordered = sorted(dict.fromkeys(int(number) for number in numbers if int(number) > 0))
+        if not ordered:
+            return ''
+        parts = []
+        start = ordered[0]
+        prev = ordered[0]
+        for number in ordered[1:]:
+            if number == prev + 1:
+                prev = number
+                continue
+            parts.append(f'{start}-{prev}' if start != prev else str(start))
+            start = prev = number
+        parts.append(f'{start}-{prev}' if start != prev else str(start))
+        return ','.join(parts)
+
+    @classmethod
+    def _collect_citation_reference_keys(cls, text, number_to_entry):
+        if not text or not number_to_entry:
+            return []
+
+        keys = []
+        seen = set()
+        for match in re.finditer(r'\[([^\[\]]+)\]', text):
+            for number in cls._parse_citation_numbers(match.group(1)):
+                entry = number_to_entry.get(number)
+                key = entry.get('key', '') if entry else ''
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                keys.append(key)
+        return keys
+
+    @classmethod
+    def _rewrite_citations_with_entry_map(cls, text, number_to_entry):
+        if not text or not number_to_entry:
+            return text
+
+        def replace(match):
+            source_numbers = cls._parse_citation_numbers(match.group(1))
+            if not source_numbers:
+                return match.group(0)
+            target_numbers = []
+            for number in source_numbers:
+                entry = number_to_entry.get(number)
+                target_number = entry.get('new_number') if entry else None
+                target_numbers.append(target_number if target_number else number)
+            formatted = cls._format_citation_numbers(target_numbers)
+            return f'[{formatted}]' if formatted else match.group(0)
+
+        return re.sub(r'\[([^\[\]]+)\]', replace, text)
+
+    @classmethod
+    def _build_reference_body_from_entries(cls, entries):
+        lines = []
+        for index, entry in enumerate(entries, start=1):
+            entry_text = cls._normalize_reference_entry_text(entry.get('text', ''))
+            if not entry_text:
+                continue
+            lines.append(f'[{index}] {entry_text}')
+        return '\n'.join(lines).strip()
+
+    @classmethod
+    def _normalize_intro_child_level(cls, original_level, previous_level=0):
+        target_level = 2 if int(original_level or 1) <= 2 else 3
+        if previous_level <= 0 and target_level > 2:
+            return 2
+        if previous_level >= 2 and target_level > previous_level + 1:
+            return min(previous_level + 1, 3)
+        return max(2, min(target_level, 3))
+
+    @classmethod
+    def _is_primary_body_chapter_title(cls, title):
+        kind = cls._classify_outline_special_title(title)
+        if kind:
+            return False
+        parsed = cls._analyze_outline_heading(title)
+        if not parsed or int(parsed.get('level', 0) or 0) != 1:
+            return False
+        if parsed.get('style') in {'chapter', 'single_number', 'cn_enum'}:
+            return True
+        if parsed.get('style') == 'markdown':
+            return bool(
+                re.match(
+                    r'^(?:第[一二三四五六七八九十百千万\d]+(?:章|部分|篇)|\d+(?:[、．.]|\s+)|[一二三四五六七八九十百千万]+[、．.])',
+                    parsed.get('body', '').strip(),
+                )
+            )
+        return False
+
+    @classmethod
+    def _analyze_outline_heading(cls, line):
+        text = cls._strip_outline_emphasis(line)
+        if not text or len(text) > 160:
+            return None
+
+        markdown = cls.OUTLINE_MARKDOWN_RE.match(text)
+        if markdown:
+            hashes = markdown.group(1)
+            label_text = markdown.group(2).strip()
+            if not label_text:
+                return None
+            return {
+                'title': f'{hashes} {label_text}',
+                'level': min(len(hashes), 3),
+                'prefix': hashes,
+                'body': label_text,
+                'style': 'markdown',
+            }
+
+        chapter = cls.OUTLINE_CHAPTER_RE.match(text)
+        if chapter:
+            prefix = chapter.group(1).strip()
+            label_text = chapter.group(3).strip()
+            if not label_text:
+                return None
+            kind = chapter.group(2)
+            level = 2 if kind == '节' else 1
+            return {
+                'title': f'{prefix} {label_text}',
+                'level': level,
+                'prefix': prefix,
+                'body': label_text,
+                'style': 'chapter',
+            }
+
+        decimal = cls.OUTLINE_DECIMAL_RE.match(text)
+        if decimal:
+            prefix = decimal.group(1).strip().rstrip('.．')
+            label_text = decimal.group(2).strip()
+            if not prefix or not label_text:
+                return None
+            level = min(len([item for item in prefix.split('.') if item]), 3)
+            return {
+                'title': f'{prefix} {label_text}',
+                'level': max(1, level),
+                'prefix': prefix,
+                'body': label_text,
+                'style': 'decimal',
+            }
+
+        single_number = cls.OUTLINE_SINGLE_NUMBER_RE.match(text)
+        if single_number:
+            prefix = single_number.group(1).strip()
+            separator = single_number.group(2) or ''
+            label_text = single_number.group(3).strip()
+            if not label_text:
+                return None
+            display_prefix = f'{prefix}{separator}' if separator else prefix
+            return {
+                'title': f'{display_prefix} {label_text}',
+                'level': 1,
+                'prefix': display_prefix,
+                'body': label_text,
+                'style': 'single_number',
+            }
+
+        chinese_enum = cls.OUTLINE_CN_ENUM_RE.match(text)
+        if chinese_enum:
+            prefix = chinese_enum.group(1).strip()
+            label_text = chinese_enum.group(2).strip()
+            if not label_text:
+                return None
+            return {
+                'title': f'{prefix} {label_text}',
+                'level': 1,
+                'prefix': prefix,
+                'body': label_text,
+                'style': 'cn_enum',
+            }
+
+        chinese_paren = cls.OUTLINE_CN_PAREN_RE.match(text)
+        if chinese_paren:
+            prefix = chinese_paren.group(1).strip()
+            label_text = chinese_paren.group(2).strip()
+            if not label_text:
+                return None
+            return {
+                'title': f'{prefix} {label_text}',
+                'level': 2,
+                'prefix': prefix,
+                'body': label_text,
+                'style': 'cn_paren',
+            }
+
+        arabic_paren = cls.OUTLINE_ARABIC_PAREN_RE.match(text)
+        if arabic_paren:
+            prefix = arabic_paren.group(1).strip()
+            label_text = arabic_paren.group(2).strip()
+            if not label_text:
+                return None
+            return {
+                'title': f'{prefix} {label_text}',
+                'level': 3,
+                'prefix': prefix,
+                'body': label_text,
+                'style': 'arabic_paren',
+            }
+
+        plain_special_kind = cls._classify_plain_special_heading(text)
+        if plain_special_kind:
+            level = 2 if plain_special_kind in {'cn_keywords', 'en_keywords'} else 1
+            return {
+                'title': text,
+                'level': level,
+                'prefix': '',
+                'body': text,
+                'style': 'plain_special',
+            }
+
+        return None
+
+    @classmethod
+    def _normalize_outline_section_body(cls, text):
         lines = []
         for raw_line in (text or '').splitlines():
-            if self._parse_outline_heading(raw_line):
+            if cls._analyze_outline_heading(raw_line):
                 continue
-            lines.append(raw_line.rstrip())
+            lines.append(raw_line)
         # Preserve first-line indentation while still trimming blank lines
         # introduced by the Tk text widget around the stored section body.
         return '\n'.join(lines).strip('\n')
+
+    @classmethod
+    def _build_outline_structure(cls, text):
+        lines = str(text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        headings = []
+        stack = []
+        for index, line in enumerate(lines):
+            parsed = cls._analyze_outline_heading(line)
+            if not parsed:
+                continue
+            title = parsed['title']
+            level = parsed['level']
+            while stack and stack[-1]['level'] >= level:
+                stack.pop()
+            parent_title = stack[-1]['title'] if stack else ''
+            heading = {'title': title, 'start': index, 'level': level, 'parent': parent_title}
+            headings.append(heading)
+            stack.append(heading)
+
+        sections = {}
+        order = []
+        levels = {}
+        parents = {}
+        for idx, heading in enumerate(headings):
+            next_start = headings[idx + 1]['start'] if idx + 1 < len(headings) else len(lines)
+            body_lines = []
+            for candidate in lines[heading['start'] + 1:next_start]:
+                if cls._analyze_outline_heading(candidate):
+                    continue
+                body_lines.append(candidate)
+            title = heading['title']
+            sections[title] = cls._normalize_outline_section_body('\n'.join(body_lines))
+            order.append(title)
+            levels[title] = heading['level']
+            parents[title] = heading['parent']
+        return {
+            'sections': sections,
+            'order': order,
+            'levels': levels,
+            'parents': parents,
+        }
+
+    @classmethod
+    def _normalize_outline_structure(cls, parsed):
+        sections = dict(parsed.get('sections', {}) or {})
+        raw_order = list(parsed.get('order', []) or [])
+        raw_levels = dict(parsed.get('levels', {}) or {})
+        raw_parents = dict(parsed.get('parents', {}) or {})
+        order = [title for title in raw_order if title in sections]
+        for title in sections:
+            if title not in order:
+                order.append(title)
+        if not order:
+            return {
+                'sections': {},
+                'order': [],
+                'levels': {},
+                'parents': {},
+                'aliases': {},
+            }
+
+        intro_root_titles = {
+            title
+            for title in order
+            if cls._classify_outline_special_title(title) == 'intro'
+        }
+
+        def has_intro_ancestor(title):
+            parent = raw_parents.get(title, '')
+            while parent:
+                if parent in intro_root_titles:
+                    return True
+                parent = raw_parents.get(parent, '')
+            return False
+
+        first_body_index = next(
+            (index for index, title in enumerate(order) if cls._is_primary_body_chapter_title(title)),
+            len(order),
+        )
+        intro_name = '绪论' if any(
+            cls._normalize_special_heading_plain_text(cls._editable_title_text(title)) == '绪论'
+            for title in intro_root_titles
+        ) else '引言'
+
+        cn_abstract_body = ''
+        en_abstract_body = ''
+        intro_body = ''
+        reference_body = ''
+        intro_children = []
+        normal_nodes = []
+        appendix_nodes = []
+        previous_intro_level = 0
+
+        for index, title in enumerate(order):
+            body = cls._normalize_outline_section_body(sections.get(title, ''))
+            level = max(1, int(raw_levels.get(title, cls._infer_outline_level(title)) or 1))
+            kind = cls._classify_outline_special_title(title)
+
+            if kind == 'cn_abstract':
+                abstract_text, keyword_text = cls._parse_abstract_result(body)
+                merged_body = cls._merge_abstract_keyword_body(abstract_text, keyword_text, language='cn')
+                cn_abstract_body = cls._merge_outline_section_bodies(cn_abstract_body, merged_body or body)
+                continue
+
+            if kind == 'cn_keywords':
+                cn_abstract_body = cls._merge_outline_section_bodies(
+                    cn_abstract_body,
+                    cls._format_keyword_line(body, language='cn'),
+                )
+                continue
+
+            if kind == 'en_abstract':
+                abstract_text, keyword_text = cls._parse_abstract_result(body)
+                merged_body = cls._merge_abstract_keyword_body(abstract_text, keyword_text, language='en')
+                en_abstract_body = cls._merge_outline_section_bodies(en_abstract_body, merged_body or body)
+                continue
+
+            if kind == 'en_keywords':
+                en_abstract_body = cls._merge_outline_section_bodies(
+                    en_abstract_body,
+                    cls._format_keyword_line(body, language='en'),
+                )
+                continue
+
+            if kind == 'intro':
+                if cls._normalize_special_heading_plain_text(cls._editable_title_text(title)) == '绪论':
+                    intro_name = '绪论'
+                intro_body = cls._merge_outline_section_bodies(intro_body, body)
+                continue
+
+            if kind == 'reference':
+                reference_body = cls._merge_outline_section_bodies(reference_body, body)
+                continue
+
+            if has_intro_ancestor(title) or (index < first_body_index and level > 1):
+                child_level = cls._normalize_intro_child_level(level, previous_intro_level)
+                previous_intro_level = child_level
+                intro_children.append(
+                    {
+                        'source': title,
+                        'title': cls._build_markdown_outline_title(cls._editable_title_text(title), child_level),
+                        'body': body,
+                        'level': child_level,
+                    }
+                )
+                continue
+
+            target_nodes = appendix_nodes if kind == 'appendix' else normal_nodes
+            target_nodes.append(
+                {
+                    'source': title,
+                    'title': title,
+                    'body': body,
+                    'level': level,
+                }
+            )
+
+        final_nodes = []
+        used_titles = set()
+        aliases = {}
+
+        def allocate_title(proposed_title):
+            candidate = str(proposed_title or '').strip()
+            if not candidate:
+                candidate = '# 未命名章节'
+            if candidate not in used_titles:
+                used_titles.add(candidate)
+                return candidate
+            suffix = 2
+            while True:
+                retry = f'{candidate} ({suffix})'
+                if retry not in used_titles:
+                    used_titles.add(retry)
+                    return retry
+                suffix += 1
+
+        def append_node(title, body, level):
+            actual_title = allocate_title(title)
+            final_nodes.append(
+                {
+                    'title': actual_title,
+                    'body': cls._normalize_outline_section_body(body or ''),
+                    'level': max(1, int(level or 1)),
+                }
+            )
+            return actual_title
+
+        cn_abstract_title = append_node(cls._canonical_outline_title('cn_abstract'), cn_abstract_body, 1)
+        en_abstract_title = append_node(cls._canonical_outline_title('en_abstract'), en_abstract_body, 1)
+        intro_title = append_node(cls._canonical_outline_title('intro', intro_name=intro_name), intro_body, 1)
+
+        for title in order:
+            kind = cls._classify_outline_special_title(title)
+            if kind == 'cn_abstract':
+                aliases[title] = cn_abstract_title
+            elif kind == 'cn_keywords':
+                aliases[title] = cn_abstract_title
+            elif kind == 'en_abstract':
+                aliases[title] = en_abstract_title
+            elif kind == 'en_keywords':
+                aliases[title] = en_abstract_title
+            elif kind == 'intro':
+                aliases[title] = intro_title
+
+        for node in intro_children:
+            actual_title = append_node(node['title'], node['body'], node['level'])
+            aliases[node['source']] = actual_title
+
+        for node in normal_nodes:
+            actual_title = append_node(node['title'], node['body'], node['level'])
+            aliases[node['source']] = actual_title
+
+        reference_title = append_node(cls._canonical_outline_title('reference'), reference_body, 1)
+        for title in order:
+            if cls._classify_outline_special_title(title) == 'reference':
+                aliases[title] = reference_title
+
+        for node in appendix_nodes:
+            actual_title = append_node(node['title'], node['body'], node['level'])
+            aliases[node['source']] = actual_title
+
+        normalized_sections = {}
+        normalized_order = []
+        normalized_levels = {}
+        normalized_parents = {}
+        stack = []
+        for node in final_nodes:
+            title = node['title']
+            level = node['level']
+            while stack and stack[-1][1] >= level:
+                stack.pop()
+            normalized_sections[title] = node['body']
+            normalized_order.append(title)
+            normalized_levels[title] = level
+            normalized_parents[title] = stack[-1][0] if stack else ''
+            stack.append((title, level))
+
+        return {
+            'sections': normalized_sections,
+            'order': normalized_order,
+            'levels': normalized_levels,
+            'parents': normalized_parents,
+            'aliases': aliases,
+        }
 
     @staticmethod
     def _normalize_editor_block_text(text):
@@ -3143,29 +3913,52 @@ class PaperWritePage(WorkspaceStateMixin):
             self.outline_text.insert('1.0', outline_text)
 
     def _heading_plain_text(self, title):
-        return self._editable_title_text(title).replace('：', ':').strip().lower()
+        return self._normalize_special_heading_plain_text(self._editable_title_text(title))
 
-    def _is_abstract_section_title(self, title):
-        plain = self._heading_plain_text(title)
-        return plain in {'摘要', 'abstract', '摘要与关键词', 'abstract and keywords'}
-
-    def _is_keyword_section_title(self, title):
-        plain = self._heading_plain_text(title)
-        return plain in {'关键词', '关键字', 'keywords'}
-
-    def _find_abstract_section_title(self):
+    def _find_section_title_by_kind(self, kind):
         for title in self._section_order:
-            if self._is_abstract_section_title(title):
+            if self._classify_outline_special_title(title) == kind:
                 return title
         return ''
 
+    def _is_chinese_abstract_section_title(self, title):
+        return self._classify_outline_special_title(title) == 'cn_abstract'
+
+    def _is_english_abstract_section_title(self, title):
+        return self._classify_outline_special_title(title) == 'en_abstract'
+
+    def _is_abstract_section_title(self, title):
+        return self._classify_outline_special_title(title) in {'cn_abstract', 'en_abstract'}
+
+    def _is_chinese_keyword_section_title(self, title):
+        return self._classify_outline_special_title(title) == 'cn_keywords'
+
+    def _is_english_keyword_section_title(self, title):
+        return self._classify_outline_special_title(title) == 'en_keywords'
+
+    def _is_keyword_section_title(self, title):
+        return self._classify_outline_special_title(title) in {'cn_keywords', 'en_keywords'}
+
+    def _find_chinese_abstract_section_title(self):
+        return self._find_section_title_by_kind('cn_abstract')
+
+    def _find_english_abstract_section_title(self):
+        return self._find_section_title_by_kind('en_abstract')
+
+    def _find_abstract_section_title(self):
+        return self._find_chinese_abstract_section_title()
+
+    def _find_chinese_keyword_section_title(self):
+        return self._find_section_title_by_kind('cn_keywords')
+
+    def _find_english_keyword_section_title(self):
+        return self._find_section_title_by_kind('en_keywords')
+
     def _is_reference_section_title(self, title):
-        plain = self._heading_plain_text(title)
-        return plain in {'参考文献', 'references', 'bibliography'}
+        return self._classify_outline_special_title(title) == 'reference'
 
     def _is_appendix_section_title(self, title):
-        plain = self._heading_plain_text(title)
-        return plain.startswith('附录') or plain.startswith('appendix')
+        return self._classify_outline_special_title(title) == 'appendix' or self._heading_plain_text(title).startswith('附录')
 
     def _find_reference_section_title(self):
         for title in self._section_order:
@@ -3173,89 +3966,41 @@ class PaperWritePage(WorkspaceStateMixin):
                 return title
         return ''
 
-    def _keyword_line_from_content(self, content):
-        text = (content or '').strip()
-        if not text:
-            return ''
-        collapsed = re.sub(r'\s+', ' ', text).strip('；;,.， ')
-        return f'关键词：{collapsed}' if collapsed else ''
-
-    def _merge_abstract_parts(self, abstract_content, keyword_content):
-        abstract_text = self._normalize_section_body(abstract_content or '')
-        keyword_text = self._normalize_section_body(keyword_content or '')
-        parts = []
-        if abstract_text:
-            parts.append(abstract_text)
-        keyword_line = self._keyword_line_from_content(keyword_text)
-        if keyword_line:
-            parts.append(keyword_line)
-        return '\n\n'.join(parts).strip()
-
-    def _merge_keyword_section_into_abstract(self):
-        if not self._section_order:
-            return
-
-        abstract_title = self._find_abstract_section_title()
-        keyword_titles = [title for title in self._section_order if self._is_keyword_section_title(title)]
-        if not keyword_titles:
-            return
-
-        primary_keyword_title = keyword_titles[0]
-        if not abstract_title:
-            keyword_level = self._section_levels.get(primary_keyword_title, 2)
-            abstract_title = self._format_title_for_level(primary_keyword_title, '摘要', level=keyword_level)
-            if abstract_title in self._sections and abstract_title != primary_keyword_title:
-                abstract_title = self._make_unique_title(abstract_title, exclude_title=primary_keyword_title)
-            self._sections[abstract_title] = ''
-            self._section_formats[abstract_title] = []
-            self._section_levels[abstract_title] = keyword_level
-            self._section_parent[abstract_title] = self._section_parent.get(primary_keyword_title, '')
-            insert_index = self._section_order.index(primary_keyword_title)
-            self._section_order.insert(insert_index, abstract_title)
-
-        merged_content = self._sections.get(abstract_title, '')
-        for keyword_title in keyword_titles:
-            merged_content = self._merge_abstract_parts(merged_content, self._sections.get(keyword_title, ''))
-            self._sections.pop(keyword_title, None)
-            self._section_formats.pop(keyword_title, None)
-            self._section_levels.pop(keyword_title, None)
-            self._section_parent.pop(keyword_title, None)
-            self._collapsed_sections.discard(keyword_title)
-            if keyword_title in self._section_order:
-                self._section_order.remove(keyword_title)
-            if getattr(self, '_outline_selected', None) is not None and self._outline_selected.get() == keyword_title:
-                self._outline_selected.set(abstract_title)
-            if self._editor_section_source == keyword_title:
-                self._editor_section_source = abstract_title
-            if self.section_entry.get().strip() == keyword_title:
-                self.section_entry.delete(0, tk.END)
-                self.section_entry.insert(0, abstract_title)
-
-        self._sections[abstract_title] = merged_content
-        self._section_formats.setdefault(abstract_title, [])
+    @classmethod
+    def _build_default_front_matter_structure(cls, intro_name='引言'):
+        titles = [
+            (cls._canonical_outline_title('cn_abstract'), 1),
+            (cls._canonical_outline_title('en_abstract'), 1),
+            (cls._canonical_outline_title('intro', intro_name=intro_name), 1),
+            (cls._canonical_outline_title('reference'), 1),
+        ]
+        sections = {title: '' for title, _ in titles}
+        order = [title for title, _ in titles]
+        levels = {title: level for title, level in titles}
+        parents = {}
+        stack = []
+        for title in order:
+            level = levels[title]
+            while stack and stack[-1][1] >= level:
+                stack.pop()
+            parents[title] = stack[-1][0] if stack else ''
+            stack.append((title, level))
+        return {
+            'sections': sections,
+            'order': order,
+            'levels': levels,
+            'parents': parents,
+            'aliases': {},
+        }
 
     def _ensure_abstract_section(self):
-        abstract_title = self._find_abstract_section_title()
-        if abstract_title:
-            return abstract_title
-
-        if self._section_order:
-            first_title = self._section_order[0]
-            first_level = self._section_levels.get(first_title, self._infer_outline_level(first_title))
-            insert_index = 1 if first_level == 1 and len(self._section_order) >= 1 else 0
-            parent = first_title if first_level < 2 and insert_index == 1 else ''
-        else:
-            insert_index = 0
-            parent = ''
-
-        abstract_title = '## 摘要'
-        if abstract_title in self._sections:
-            abstract_title = self._make_unique_title(abstract_title)
-        self._section_order.insert(insert_index, abstract_title)
-        self._sections[abstract_title] = ''
-        self._section_formats[abstract_title] = []
-        self._section_levels[abstract_title] = 2
-        self._section_parent[abstract_title] = parent
+        self._normalize_outline_structure_state()
+        if not self._section_order:
+            self._apply_normalized_outline_state(self._build_default_front_matter_structure())
+        abstract_title = self._find_chinese_abstract_section_title()
+        if not abstract_title:
+            self._apply_normalized_outline_state(self._build_default_front_matter_structure())
+            abstract_title = self._find_chinese_abstract_section_title()
         self._rebuild_section_children()
         self._sync_outline_text_from_sections()
         self._refresh_outline_list()
@@ -3270,7 +4015,11 @@ class PaperWritePage(WorkspaceStateMixin):
             parts.append(f'# {topic}')
 
         for title in self._section_order:
-            if self._is_abstract_section_title(title) or self._is_keyword_section_title(title):
+            if (
+                self._is_abstract_section_title(title)
+                or self._is_keyword_section_title(title)
+                or self._is_reference_section_title(title)
+            ):
                 continue
             body = self._normalize_section_body(self._sections.get(title, ''))
             if not body:
@@ -3285,7 +4034,8 @@ class PaperWritePage(WorkspaceStateMixin):
 
         return '\n\n'.join(part for part in parts if part).strip()
 
-    def _parse_abstract_result(self, text):
+    @staticmethod
+    def _parse_abstract_result(text):
         raw = (text or '').strip()
         if not raw:
             return '', ''
@@ -3324,9 +4074,16 @@ class PaperWritePage(WorkspaceStateMixin):
         return '\n\n'.join(parts).strip()
 
     def _write_abstract_to_section(self, content):
+        self._normalize_outline_structure_state()
         abstract_title = self._ensure_abstract_section()
-        self._merge_keyword_section_into_abstract()
-        self._sections[abstract_title] = self._normalize_section_body(content)
+        abstract_text, keyword_text = self._parse_abstract_result(content)
+        if not abstract_text and not keyword_text:
+            abstract_text = self._normalize_section_body(content)
+        self._sections[abstract_title] = self._merge_abstract_keyword_body(
+            abstract_text,
+            keyword_text,
+            language='cn',
+        )
         self._section_formats[abstract_title] = []
         self._rebuild_section_children()
         self._sync_outline_text_from_sections()
@@ -3338,28 +4095,124 @@ class PaperWritePage(WorkspaceStateMixin):
         self._schedule_workspace_state_save()
         return abstract_title
 
+    @staticmethod
+    def _is_markdown_rule_line(line):
+        return bool(re.match(r'^\s*(?:-{3,}|\*{3,}|_{3,})\s*$', str(line or '')))
+
+    @classmethod
+    def _split_reference_heading_line(cls, line):
+        candidate = str(line or '').strip()
+        if not candidate or cls._is_markdown_rule_line(candidate):
+            return None
+
+        candidate = re.sub(r'^\s*#{1,6}\s*', '', candidate).strip()
+        emphasis_markers = r'(?:\*\*\*|___|\*\*|__|\*|_)'
+        match = re.match(
+            rf'^(?:{emphasis_markers}\s*)?(?:[【\[]\s*)?'
+            rf'(?P<label>参考文献|references|bibliography)'
+            rf'(?:\s*[】\]])?(?:\s*{emphasis_markers})?\s*(?P<trailing>.*)$',
+            candidate,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+
+        trailing = (match.group('trailing') or '').strip()
+        if not trailing:
+            return {'inline_rest': ''}
+
+        if trailing[:1] not in ':：（(':
+            return None
+
+        remainder = trailing
+        if remainder[:1] in ':：':
+            remainder = remainder[1:].lstrip()
+
+        while remainder:
+            note_match = re.match(r'^[（(][^()（）\n]{0,200}[)）]\s*', remainder)
+            if not note_match:
+                break
+            remainder = remainder[note_match.end():].lstrip()
+            if remainder[:1] in ':：':
+                remainder = remainder[1:].lstrip()
+
+        return {'inline_rest': remainder}
+
+    @classmethod
+    def _find_reference_block_start(cls, lines):
+        if not lines:
+            return None, None
+
+        for heading_index, line in enumerate(lines):
+            if cls._split_reference_heading_line(line) is None:
+                continue
+
+            block_start = heading_index
+            while block_start > 0 and not str(lines[block_start - 1] or '').strip():
+                block_start -= 1
+            if block_start > 0 and cls._is_markdown_rule_line(lines[block_start - 1]):
+                block_start -= 1
+                while block_start > 0 and not str(lines[block_start - 1] or '').strip():
+                    block_start -= 1
+            return block_start, heading_index
+
+        return None, None
+
+    @classmethod
+    def _find_trailing_reference_entries_start(cls, lines):
+        if not lines:
+            return None
+
+        start_re = re.compile(r'^\s*(?:\[(\d+)\]|(\d+)[\.、])\s+\S')
+        candidates = []
+        for index, line in enumerate(lines):
+            if not start_re.match(str(line or '')):
+                continue
+            if index > 0:
+                previous = str(lines[index - 1] or '')
+                if previous.strip() and not cls._is_markdown_rule_line(previous):
+                    continue
+            candidates.append(index)
+
+        for index in candidates:
+            suffix = '\n'.join(lines[index:]).strip()
+            if not suffix:
+                continue
+            entries = cls._parse_reference_entries(suffix)
+            if not entries:
+                continue
+            numbered_starts = [
+                line for line in lines[index:]
+                if start_re.match(str(line or ''))
+            ]
+            if numbered_starts:
+                return index
+        return None
+
     def _strip_reference_heading(self, text):
         normalized = (text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
         if not normalized:
             return ''
 
-        single_line_match = re.match(
-            r'^\s*(?:#{1,6}\s*)?(?:[【\[]\s*)?(?:参考文献|references|bibliography)(?:\s*[】\]])?\s*(?:[:：]\s*(.*))?$',
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        if single_line_match:
-            inline_rest = (single_line_match.group(1) or '').strip()
-            return inline_rest
-
         lines = normalized.split('\n')
-        first_line = lines[0].strip()
-        if re.match(
-            r'^(?:#{1,6}\s*)?(?:[【\[]\s*)?(?:参考文献|references|bibliography)(?:\s*[】\]])?\s*$',
-            first_line,
-            flags=re.IGNORECASE,
-        ):
-            return '\n'.join(lines[1:]).strip()
+        _block_start, heading_index = self._find_reference_block_start(lines)
+        if heading_index is None:
+            return normalized
+
+        heading_meta = self._split_reference_heading_line(lines[heading_index]) or {}
+        entry_lines = []
+        inline_rest = (heading_meta.get('inline_rest') or '').strip()
+        if inline_rest:
+            entry_lines.append(inline_rest)
+        entry_lines.extend(lines[heading_index + 1:])
+        while entry_lines and self._is_markdown_rule_line(entry_lines[0]):
+            entry_lines.pop(0)
+        while entry_lines and not str(entry_lines[0]).strip():
+            entry_lines.pop(0)
+        while entry_lines and not str(entry_lines[-1]).strip():
+            entry_lines.pop()
+        if entry_lines:
+            return '\n'.join(entry_lines).strip()
         return normalized
 
     def _extract_references_from_section_result(self, text):
@@ -3367,43 +4220,42 @@ class PaperWritePage(WorkspaceStateMixin):
         if not normalized:
             return '', ''
 
-        heading_match = re.search(
-            r'(?im)^\s*(?:#{1,6}\s*)?(?:[【\[]\s*)?(?:参考文献|references|bibliography)(?:\s*[】\]])?\s*(?:[:：].*)?$',
-            normalized,
-        )
-        if not heading_match:
-            return self._normalize_section_body(normalized), ''
+        lines = normalized.split('\n')
+        block_start, heading_index = self._find_reference_block_start(lines)
+        if heading_index is None:
+            trailing_start = self._find_trailing_reference_entries_start(lines)
+            if trailing_start is None:
+                return self._normalize_section_body(normalized), ''
+            body_part = '\n'.join(lines[:trailing_start]).strip()
+            references_text = '\n'.join(lines[trailing_start:]).strip()
+            return self._normalize_section_body(body_part), self._normalize_section_body(references_text)
 
-        body_part = normalized[:heading_match.start()].strip()
-        references_part = normalized[heading_match.start():].strip()
+        body_part = '\n'.join(lines[:block_start]).strip()
+        references_part = '\n'.join(lines[block_start:]).strip()
         references_text = self._strip_reference_heading(references_part)
         return self._normalize_section_body(body_part), self._normalize_section_body(references_text)
 
     def _ensure_reference_section(self):
+        self._normalize_outline_structure_state()
+        if not self._section_order:
+            self._apply_normalized_outline_state(self._build_default_front_matter_structure())
         reference_title = self._find_reference_section_title()
         if reference_title:
             return reference_title
 
         insert_index = len(self._section_order)
-        parent = ''
         appendix_title = next((title for title in self._section_order if self._is_appendix_section_title(title)), '')
         if appendix_title:
             insert_index = self._section_order.index(appendix_title)
-            parent = self._section_parent.get(appendix_title, '')
-        elif self._section_order:
-            first_title = self._section_order[0]
-            first_level = self._section_levels.get(first_title, self._infer_outline_level(first_title))
-            if first_level == 1:
-                parent = first_title
 
-        reference_title = '## 参考文献'
+        reference_title = self._canonical_outline_title('reference')
         if reference_title in self._sections:
             reference_title = self._make_unique_title(reference_title)
         self._section_order.insert(insert_index, reference_title)
         self._sections[reference_title] = ''
         self._section_formats[reference_title] = []
-        self._section_levels[reference_title] = 2
-        self._section_parent[reference_title] = parent
+        self._section_levels[reference_title] = 1
+        self._section_parent[reference_title] = ''
         self._rebuild_section_children()
         self._sync_outline_text_from_sections()
         self._refresh_outline_list()
@@ -3415,55 +4267,178 @@ class PaperWritePage(WorkspaceStateMixin):
             return ''
 
         reference_title = self._ensure_reference_section()
-        existing_references = self._normalize_section_body(self._sections.get(reference_title, ''))
-        if existing_references:
-            merged_references = f'{existing_references}\n\n{clean_references}'
-        else:
-            merged_references = clean_references
-        self._sections[reference_title] = merged_references
-        self._section_formats[reference_title] = self._preserve_existing_formats(
-            reference_title,
-            existing_references,
-            merged_references,
-        )
+        existing_entries = self._parse_reference_entries(self._sections.get(reference_title, ''))
+        new_entries = self._parse_reference_entries(clean_references)
+        merged_entries = self._merge_reference_entry_lists(existing_entries, new_entries)
+        self._sections[reference_title] = self._build_reference_body_from_entries(merged_entries)
+        self._section_formats[reference_title] = []
         self._rebuild_section_children()
         self._sync_outline_text_from_sections()
         self._refresh_outline_list()
         self._schedule_workspace_state_save()
         return reference_title
 
-    def _parse_outline_heading(self, line):
-        text = (line or '').strip()
-        if not text or len(text) > 120:
+    @classmethod
+    def _merge_section_text(cls, existing_text, new_text):
+        existing = cls._normalize_editor_block_text(existing_text)
+        new = cls._normalize_editor_block_text(new_text)
+        if existing and new:
+            return f'{existing}\n\n{new}'
+        return new or existing
+
+    @classmethod
+    def _merge_reference_entry_lists(cls, *groups):
+        merged = []
+        seen = set()
+        for group in groups:
+            for entry in group or []:
+                entry_text = cls._normalize_reference_entry_text(entry.get('text', ''))
+                entry_key = cls._reference_entry_key(entry_text)
+                if not entry_key or entry_key in seen:
+                    continue
+                seen.add(entry_key)
+                merged.append({'text': entry_text, 'key': entry_key})
+        return merged
+
+    @classmethod
+    def _build_reference_number_map(cls, entries):
+        number_map = {}
+        next_auto_number = 1
+        for entry in entries or []:
+            entry_text = cls._normalize_reference_entry_text(entry.get('text', ''))
+            entry_key = cls._reference_entry_key(entry_text)
+            if not entry_key:
+                continue
+            number = entry.get('number')
+            if not isinstance(number, int) or number <= 0:
+                while next_auto_number in number_map:
+                    next_auto_number += 1
+                number = next_auto_number
+            number_map[number] = {
+                'number': number,
+                'text': entry_text,
+                'key': entry_key,
+            }
+            next_auto_number = max(next_auto_number, number + 1)
+        return number_map
+
+    def _is_reference_linkable_section_title(self, title):
+        return bool(title) and not (
+            self._is_abstract_section_title(title)
+            or self._is_keyword_section_title(title)
+            or self._is_reference_section_title(title)
+        )
+
+    def _ensure_section_registered(self, section):
+        if not section or section in self._section_order:
+            return
+
+        insert_index = len(self._section_order)
+        reference_title = self._find_reference_section_title()
+        appendix_title = next((title for title in self._section_order if self._is_appendix_section_title(title)), '')
+        if reference_title:
+            insert_index = self._section_order.index(reference_title)
+        elif appendix_title:
+            insert_index = self._section_order.index(appendix_title)
+
+        level = self._infer_outline_level(section)
+        self._section_order.insert(insert_index, section)
+        self._sections.setdefault(section, '')
+        self._section_formats.setdefault(section, [])
+        self._section_levels[section] = level
+        self._section_parent[section] = self._find_parent_for_insert(insert_index, level)
+
+    def _sync_document_references_after_section_write(self, section, existing_text, new_text, references_text, existing_formats=None):
+        reference_title = self._ensure_reference_section()
+        old_reference_entries = self._parse_reference_entries(self._sections.get(reference_title, ''))
+        local_reference_entries = self._parse_reference_entries(references_text)
+        old_number_map = self._build_reference_number_map(old_reference_entries)
+        local_number_map = self._build_reference_number_map(local_reference_entries)
+
+        entry_by_key = {}
+        for entry in list(old_reference_entries) + list(local_reference_entries):
+            entry_text = self._normalize_reference_entry_text(entry.get('text', ''))
+            entry_key = self._reference_entry_key(entry_text)
+            if entry_key and entry_key not in entry_by_key:
+                entry_by_key[entry_key] = {'text': entry_text, 'key': entry_key}
+
+        ordered_keys = []
+        seen_keys = set()
+
+        def append_keys(keys):
+            for key in keys:
+                if not key or key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                ordered_keys.append(key)
+
+        for title in self._section_order:
+            if title == reference_title or not self._is_reference_linkable_section_title(title):
+                continue
+            if title == section:
+                append_keys(self._collect_citation_reference_keys(existing_text, old_number_map))
+                append_keys(self._collect_citation_reference_keys(new_text, local_number_map))
+                continue
+            section_body = self._normalize_section_body(self._sections.get(title, ''))
+            append_keys(self._collect_citation_reference_keys(section_body, old_number_map))
+
+        for entries in (old_reference_entries, local_reference_entries):
+            for entry in entries:
+                entry_key = entry.get('key') or self._reference_entry_key(entry.get('text', ''))
+                if not entry_key or entry_key in seen_keys:
+                    continue
+                seen_keys.add(entry_key)
+                ordered_keys.append(entry_key)
+
+        final_entries = []
+        new_number_by_key = {}
+        for entry_key in ordered_keys:
+            entry = entry_by_key.get(entry_key)
+            if not entry:
+                continue
+            new_number = len(final_entries) + 1
+            new_number_by_key[entry_key] = new_number
+            final_entries.append({'text': entry['text'], 'key': entry_key, 'new_number': new_number})
+
+        for number_map in (old_number_map, local_number_map):
+            for entry in number_map.values():
+                entry['new_number'] = new_number_by_key.get(entry.get('key'))
+
+        for title in self._section_order:
+            if title in {section, reference_title} or not self._is_reference_linkable_section_title(title):
+                continue
+            current_body = self._normalize_section_body(self._sections.get(title, ''))
+            rewritten_body = self._rewrite_citations_with_entry_map(current_body, old_number_map)
+            if rewritten_body != current_body:
+                self._sections[title] = rewritten_body
+                self._section_formats[title] = []
+
+        rewritten_existing = self._rewrite_citations_with_entry_map(existing_text, old_number_map)
+        rewritten_new = self._rewrite_citations_with_entry_map(new_text, local_number_map)
+        merged_text = self._merge_section_text(rewritten_existing, rewritten_new)
+        original_merged_text = self._merge_section_text(existing_text, new_text)
+        merged_formats = (
+            self._preserve_existing_formats(section, existing_text, merged_text, source_spans=existing_formats)
+            if merged_text == original_merged_text
+            else []
+        )
+
+        self._sections[section] = merged_text
+        self._section_formats[section] = merged_formats
+        self._sections[reference_title] = self._build_reference_body_from_entries(final_entries)
+        self._section_formats[reference_title] = []
+        return merged_text, merged_formats, reference_title
+
+    @classmethod
+    def _parse_outline_heading(cls, line):
+        parsed = cls._analyze_outline_heading(line)
+        if not parsed:
             return None
+        return parsed['title'], parsed['level']
 
-        markdown = re.match(r'^(#{1,6})\s+(.+)$', text)
-        if markdown:
-            return text, len(markdown.group(1))
-
-        chapter = re.match(r'^第[一二三四五六七八九十百千]+[章节部分]\s*.+$', text)
-        if chapter:
-            return text, 1
-
-        chinese = re.match(r'^[一二三四五六七八九十百千]+[、．.]\s*.+$', text)
-        if chinese:
-            return text, 2
-
-        numbered = re.match(r'^(?:[-*•]\s*)?((?:\d+\.)+\d+)\s+(.+)$', text)
-        if numbered:
-            number_label = numbered.group(1).strip()
-            title_text = numbered.group(2).strip()
-            level = number_label.count('.') + 2
-            return f'{number_label} {title_text}', level
-
-        simple_numbered = re.match(r'^(\d+)[、．.]\s*(.+)$', text)
-        if simple_numbered:
-            return f'{simple_numbered.group(1)}. {simple_numbered.group(2).strip()}', 2
-
-        return None
-
-    def _infer_outline_level(self, title):
-        parsed = self._parse_outline_heading(title)
+    @classmethod
+    def _infer_outline_level(cls, title):
+        parsed = cls._parse_outline_heading(title)
         if parsed:
             return parsed[1]
         return 2
@@ -3475,24 +4450,12 @@ class PaperWritePage(WorkspaceStateMixin):
             return '## 新二级标题'
         return '### 新三级标题'
 
-    def _editable_title_text(self, title):
-        text = (title or '').strip()
-        markdown = re.match(r'^#{1,6}\s+(.+)$', text)
-        if markdown:
-            return markdown.group(1).strip()
-
-        numbered = re.match(r'^(?:\d+\.)+\d+\s+(.+)$', text)
-        if numbered:
-            return numbered.group(1).strip()
-
-        chapter = re.match(r'^第[一二三四五六七八九十百千万\d]+[章节部分]\s*(.+)$', text)
-        if chapter:
-            return chapter.group(1).strip()
-
-        chinese = re.match(r'^[一二三四五六七八九十百千万\d]+[、.．]\s*(.+)$', text)
-        if chinese:
-            return chinese.group(1).strip()
-        return text
+    @classmethod
+    def _editable_title_text(cls, title):
+        parsed = cls._analyze_outline_heading(title)
+        if parsed:
+            return parsed['body']
+        return cls._strip_outline_emphasis(title)
 
     def _format_title_for_level(self, original_title, new_text, level=None):
         target_level = max(1, int(level or self._section_levels.get(original_title, self._infer_outline_level(original_title)) or 1))
@@ -3500,22 +4463,14 @@ class PaperWritePage(WorkspaceStateMixin):
         if not label_text:
             return original_title
 
-        markdown = re.match(r'^(#{1,6})\s+(.+)$', original_title)
-        if markdown:
-            hashes = '#' * min(target_level, 6)
-            return f'{hashes} {label_text}'
-
-        numbered = re.match(r'^((?:\d+\.)+\d+)\s+(.+)$', original_title)
-        if numbered:
-            return f'{numbered.group(1)} {label_text}'
-
-        chapter = re.match(r'^(第[一二三四五六七八九十百千万\d]+[章节部分])\s*(.+)$', original_title)
-        if chapter:
-            return f'{chapter.group(1)} {label_text}'
-
-        chinese = re.match(r'^([一二三四五六七八九十百千万\d]+[、.．])\s*(.+)$', original_title)
-        if chinese:
-            return f'{chinese.group(1)} {label_text}'
+        parsed = self._analyze_outline_heading(original_title)
+        if parsed:
+            style = parsed['style']
+            prefix = parsed['prefix']
+            if style == 'markdown':
+                hashes = '#' * min(target_level, 6)
+                return f'{hashes} {label_text}'
+            return f'{prefix} {label_text}'
 
         default_title = self._default_title_for_level(target_level)
         prefix_match = re.match(r'^(#{1,6})\s+', default_title)
@@ -3681,8 +4636,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self._collapsed_sections = {
             candidate
             for candidate in self._collapsed_sections
-            if self._section_levels.get(candidate, self._infer_outline_level(candidate)) == 2
-            and self._section_children.get(candidate)
+            if self._section_children.get(candidate)
         }
         self._sync_outline_text_from_sections()
         self._refresh_outline_list()
@@ -4078,7 +5032,7 @@ class PaperWritePage(WorkspaceStateMixin):
 
             indent = 8 + max(level - 1, 0) * 18
             branch = self._section_children.get(title, [])
-            show_toggle = level == 2 and bool(branch)
+            show_toggle = bool(branch)
             toggle_text = '▸' if title in self._collapsed_sections else '▾'
             toggle = tk.Label(
                 row,
@@ -4333,31 +5287,46 @@ class PaperWritePage(WorkspaceStateMixin):
 
         def on_success(result):
             reference_section_title = ''
+            self._ensure_section_registered(section)
+            existing_formats = (
+                self._serialize_editor_format_spans()
+                if self._editor_section_source == section
+                else self._copy_section_formats(section)
+            )
             if self._is_reference_section_title(section):
-                clean_result = ''
                 references_text = self._normalize_section_body(self._strip_reference_heading(result))
+                clean_result = references_text
+                merged = self._normalize_section_body(self._sections.get(section, ''))
+                merged_formats = self._copy_section_formats(section)
+                if references_text:
+                    reference_section_title = self._write_references_to_section(references_text)
+                    merged = self._normalize_section_body(self._sections.get(reference_section_title, ''))
+                    merged_formats = self._copy_section_formats(reference_section_title)
+                self._set_editor_content(merged, merged_formats)
+                self._editor_section_source = reference_section_title or section
             else:
                 clean_result, references_text = self._extract_references_from_section_result(result)
-            existing_formats = self._serialize_editor_format_spans() if self._editor_section_source == section else self._copy_section_formats(section)
-            if existing and clean_result:
-                merged = f'{existing}\n\n{clean_result}'
-            else:
-                merged = clean_result or existing
-            merged_formats = self._preserve_existing_formats(section, existing, merged, source_spans=existing_formats)
-            self._set_editor_content(merged, merged_formats)
-            self._sections[section] = merged
-            self._section_formats[section] = merged_formats
-            self._editor_section_source = section
-            if references_text:
-                reference_section_title = self._write_references_to_section(references_text)
-            if section not in self._section_order:
-                self._section_order.append(section)
-                self._section_formats.setdefault(section, [])
-                self._section_levels[section] = self._infer_outline_level(section)
-                self._section_parent[section] = self._find_parent_for_insert(len(self._section_order) - 1, self._section_levels[section])
-                self._rebuild_section_children()
-                self._sync_outline_text_from_sections()
-                self._refresh_outline_list()
+                if references_text and self._supports_numeric_reference_linking():
+                    merged, merged_formats, reference_section_title = self._sync_document_references_after_section_write(
+                        section,
+                        existing,
+                        clean_result,
+                        references_text,
+                        existing_formats=existing_formats,
+                    )
+                else:
+                    merged = self._merge_section_text(existing, clean_result)
+                    merged_formats = self._preserve_existing_formats(section, existing, merged, source_spans=existing_formats)
+                    self._sections[section] = merged
+                    self._section_formats[section] = merged_formats
+                    if references_text:
+                        reference_section_title = self._write_references_to_section(references_text)
+                self._set_editor_content(merged, merged_formats)
+                self._editor_section_source = section
+
+            self._rebuild_section_children()
+            self._sync_outline_text_from_sections()
+            self._refresh_outline_list()
             self._touch_context_revision()
             self._update_stats()
             self._add_history_version(
