@@ -629,11 +629,13 @@ def create_home_shell_button(
     padx=18,
     pady=6,
     font=None,
-    border_color='#000000',
+    border_color=None,
     **button_kwargs,
 ):
     """创建与首页“系统公告”同款的外壳按钮。"""
 
+    if border_color is None:
+        border_color = COLORS['card_border']
     shell = tk.Frame(parent, bg=border_color, bd=0, highlightthickness=0)
     button = ModernButton(
         shell,

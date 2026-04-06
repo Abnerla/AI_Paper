@@ -77,6 +77,7 @@ class HomePage:
         self.hero_tag_shells = []
         self.hero_tag_windows = []
         self.hero_button_shells = []
+        self.dashboard_shell_buttons = []
         self.hero_completion_label = None
         self.hero_completion_hint = None
 
@@ -89,6 +90,7 @@ class HomePage:
         self.board_subtitle_label = None
         self.task_text_label = None
         self.status_value_labels = {}
+        self.status_continue_button_shell = None
         self.status_continue_button = None
         self.system_status_empty_label = None
         self.system_status_list = None
@@ -136,7 +138,7 @@ class HomePage:
         self.refresh_dashboard()
 
     def _make_hero_shell_button(self, parent, text, style, command, padx, pady, font, min_width):
-        shell = tk.Frame(parent, bg='#000000', bd=0, highlightthickness=0)
+        shell = tk.Frame(parent, bg=COLORS['card_border'], bd=0, highlightthickness=0)
         button = ModernButton(
             shell,
             text,
@@ -153,7 +155,7 @@ class HomePage:
         self.hero_button_shells.append((shell, button))
         return shell
 
-    def _create_dashboard_shell_button(self, parent, text, *, command, style='secondary', padx=12, pady=8, font=None, border_color='#000000', **button_kwargs):
+    def _create_dashboard_shell_button(self, parent, text, *, command, style='secondary', padx=12, pady=8, font=None, border_color=None, **button_kwargs):
         shell, button = create_home_shell_button(
             parent,
             text,
@@ -165,6 +167,7 @@ class HomePage:
             border_color=border_color,
             **button_kwargs,
         )
+        self.dashboard_shell_buttons.append((shell, button))
         return shell, button
 
     def _fix_hero_button_sizes(self):
@@ -184,6 +187,29 @@ class HomePage:
                     shell.pack_propagate(False)
             except tk.TclError:
                 pass
+
+    def _refresh_primary_action_button_styles(self):
+        for shell, button in self.hero_button_shells:
+            try:
+                shell.configure(bg=COLORS['card_border'])
+            except tk.TclError:
+                continue
+            if hasattr(button, 'set_style'):
+                try:
+                    button.set_style(button.style_name)
+                except tk.TclError:
+                    pass
+
+        for shell, button in self.dashboard_shell_buttons:
+            try:
+                shell.configure(bg=COLORS['card_border'])
+            except tk.TclError:
+                continue
+            if hasattr(button, 'set_style'):
+                try:
+                    button.set_style(button.style_name)
+                except tk.TclError:
+                    pass
 
     def _build_hero(self):
         self.hero_panel = tk.Frame(self.frame, bg=COLORS['shadow'])
@@ -527,7 +553,7 @@ class HomePage:
             bind_adaptive_wrap(value_label, value_shell, padding=0, min_width=180)
             self.status_value_labels[key] = value_label
 
-        status_button_shell, self.status_continue_button = self._create_dashboard_shell_button(
+        self.status_continue_button_shell, self.status_continue_button = self._create_dashboard_shell_button(
             self.status_card.inner,
             '继续当前任务',
             style='primary',
@@ -536,7 +562,7 @@ class HomePage:
             pady=10,
             font=FONTS['body_bold'],
         )
-        status_button_shell.pack(anchor='w')
+        self.status_continue_button_shell.pack(anchor='w')
 
     def _build_tasks_card(self):
         self.tasks_card = CardFrame(self.right_column, padding=22)
@@ -2044,7 +2070,7 @@ class HomePage:
                     padx=8,
                     pady=4,
                     font=FONTS['small'],
-                    border_color=COLORS['primary'] if is_active else '#000000',
+                    border_color=COLORS['primary'] if is_active else COLORS['card_border'],
                 )
                 select_shell.configure(width=select_button_width, height=select_button_height)
                 select_shell.pack_propagate(False)
@@ -2149,6 +2175,7 @@ class HomePage:
         self._relayout_dashboard()
 
     def on_show(self):
+        self._refresh_primary_action_button_styles()
         self._relayout_hero()
         self._relayout_dashboard()
         self.refresh_dashboard()

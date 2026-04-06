@@ -29,7 +29,7 @@ class HistoryPage:
         'full_snapshot': '完整快照回滚',
         'legacy_partial': '兼容部分恢复',
     }
-    FILTER_BUTTON_BORDER = '#000000'
+    FILTER_BUTTON_BORDER = 'card_border'
     HISTORY_ACTION_BUTTON_MIN_WIDTH = 136
     EXPORT_OPTIONS = (
         ('导出 docx', 'docx', 'secondary'),
@@ -137,7 +137,7 @@ class HistoryPage:
         self._refresh_filter_styles()
 
     def _make_filter_shell_button(self, parent, text, command):
-        shell = tk.Frame(parent, bg=self.FILTER_BUTTON_BORDER, bd=0, highlightthickness=0)
+        shell = tk.Frame(parent, bg=COLORS[self.FILTER_BUTTON_BORDER], bd=0, highlightthickness=0)
         button = ModernButton(
             shell,
             text,
