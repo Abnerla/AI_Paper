@@ -1888,14 +1888,24 @@ class SmartPaperTool:
             bd=0,
             highlightthickness=0,
         )
-        self.user_inner.place(x=self.user_shell_inset, y=self.user_shell_inset)
+        self.user_inner.pack(
+            fill=tk.BOTH,
+            expand=True,
+            padx=(self.user_shell_inset, self.user_shadow_gap),
+            pady=(self.user_shell_inset, self.user_shadow_gap),
+        )
         self.user_content = tk.Frame(
             self.user_inner,
             bg=COLORS['card_bg'],
             bd=0,
             highlightthickness=0,
         )
-        self.user_content.place(x=self.user_content_inset, y=self.user_content_inset)
+        self.user_content.pack(
+            fill=tk.BOTH,
+            expand=True,
+            padx=self.user_content_inset,
+            pady=self.user_content_inset,
+        )
         self.user_canvas = tk.Canvas(
             self.user_content,
             bg=COLORS['card_bg'],
@@ -1903,7 +1913,7 @@ class SmartPaperTool:
             highlightthickness=0,
             cursor='hand2',
         )
-        self.user_canvas.place(x=0, y=0)
+        self.user_canvas.pack(fill=tk.BOTH, expand=True)
         self.user_row = None
 
         try:
@@ -1916,6 +1926,17 @@ class SmartPaperTool:
         self._user_display_name = raw_username if len(raw_username) <= 7 else f'{raw_username[:7]}...'
         self.username_label = None
         self.user_arrow = None
+
+        initial_user_box_width, initial_user_box_height, _inner_width, _inner_height, _content_width, _content_height = self._measure_user_profile_box_size()
+        self.user_box.configure(
+            width=initial_user_box_width,
+            height=initial_user_box_height,
+        )
+        self.user_box.pack_propagate(False)
+        self._layout_user_profile_box(
+            box_width=initial_user_box_width,
+            box_height=initial_user_box_height,
+        )
 
         self.user_canvas.bind('<Button-1>', lambda _event: self._show_about_dialog())
         self.user_canvas.bind('<Configure>', lambda _event, canvas=self.user_canvas: self._render_user_profile_canvas(canvas))
@@ -2177,7 +2198,29 @@ class SmartPaperTool:
                 center_y,
                 image=self.user_logo,
             )
-            cursor_x += avatar_slot_width + logo_gap
+        else:
+            avatar_radius = 18
+            avatar_center_x = cursor_x + avatar_slot_width / 2
+            avatar_fill = COLORS['primary_light']
+            avatar_outline = COLORS['card_border']
+            avatar_text = (username_text or 'U').strip()[:1].upper()
+            canvas.create_oval(
+                avatar_center_x - avatar_radius,
+                center_y - avatar_radius,
+                avatar_center_x + avatar_radius,
+                center_y + avatar_radius,
+                fill=avatar_fill,
+                outline=avatar_outline,
+                width=2,
+            )
+            canvas.create_text(
+                avatar_center_x,
+                center_y,
+                text=avatar_text,
+                fill=COLORS['text_main'],
+                font=FONTS['body_bold'],
+            )
+        cursor_x += avatar_slot_width + logo_gap
 
         canvas.create_text(
             cursor_x + 4,
@@ -2215,28 +2258,12 @@ class SmartPaperTool:
 
         inner_width = max(width - shell_inset - shadow_gap, 0)
         inner_height = max(height - shell_inset - shadow_gap, 0)
-        self.user_inner.place_configure(
-            x=shell_inset,
-            y=shell_inset,
-            width=inner_width,
-            height=inner_height,
-        )
-
         content_width = max(inner_width - content_inset * 2, 0)
         content_height = max(inner_height - content_inset * 2, 0)
-        self.user_content.place_configure(
-            x=content_inset,
-            y=content_inset,
-            width=content_width,
-            height=content_height,
-        )
+        self.user_inner.configure(width=inner_width, height=inner_height)
+        self.user_content.configure(width=content_width, height=content_height)
         if getattr(self, 'user_canvas', None):
-            self.user_canvas.place_configure(
-                x=0,
-                y=0,
-                width=content_width,
-                height=content_height,
-            )
+            self.user_canvas.configure(width=content_width, height=content_height)
             self._render_user_profile_canvas(self.user_canvas)
 
     def _render_top_nav_canvas(self, canvas):
