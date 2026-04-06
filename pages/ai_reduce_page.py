@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 from modules.ai_reducer import AIReducer
 from modules.app_metadata import MODULE_AI_REDUCE
 from modules.report_importer import ReportImportEngine
-from modules.ui_components import COLORS, FONTS, CardFrame, ModernButton, create_scrolled_text
+from modules.ui_components import COLORS, FONTS, CardFrame, ModernButton, create_scrolled_text, get_window_work_area
 from pages.text_transform_base import TextTransformPageBase
 
 
@@ -33,7 +33,7 @@ class AIReducePage(TextTransformPageBase):
         ),
         (
             'academic',
-            '学术风格拟合',
+            '学术拟合',
             '对标对应学科高质量论文写作习惯，优化表述严谨性，消除 AI 通用化表达。\n'
             '适用场景：需同步提升论文学术质感并规避 AI 检测。',
         ),
@@ -326,12 +326,17 @@ class AIReducePage(TextTransformPageBase):
 
         width = max(dialog.winfo_reqwidth(), 720)
         height = max(dialog.winfo_reqheight(), 460)
+        work_x, work_y, work_width, work_height = get_window_work_area(dialog)
+        width = min(width, max(1, int(work_width) - 96))
+        height = min(height, max(1, int(work_height) - 80))
         root_x = root.winfo_rootx()
         root_y = root.winfo_rooty()
         root_width = max(root.winfo_width(), root.winfo_reqwidth(), width)
         root_height = max(root.winfo_height(), root.winfo_reqheight(), height)
         x = root_x + max((root_width - width) // 2, 0)
         y = root_y + max((root_height - height) // 2, 0)
+        x = max(int(work_x), min(x, int(work_x) + max(0, int(work_width) - width)))
+        y = max(int(work_y), min(y, int(work_y) + max(0, int(work_height) - height)))
         dialog.geometry(f'{width}x{height}+{x}+{y}')
 
     def _handle_frame_destroy(self, event):

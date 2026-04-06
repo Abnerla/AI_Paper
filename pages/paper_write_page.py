@@ -5,6 +5,7 @@
 
 import os
 import re
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
@@ -148,6 +149,9 @@ class PaperWritePage(WorkspaceStateMixin):
     OUTLINE_REFERENCE_TITLES = frozenset({'参考文献', 'references', 'bibliography'})
     OUTLINE_APPENDIX_TITLES = frozenset({'附录', 'appendix'})
     NUMERIC_REFERENCE_STYLES = frozenset({'GB/T 7714', 'IEEE'})
+    BATCH_WRITE_WARNING_SECTION_WORDS = max(1200, PaperWriter.SECTION_MAX_TOKENS * 2 // 3)
+    BATCH_WRITE_WARNING_TOTAL_WORDS = PaperWriter.SECTION_MAX_TOKENS * 4
+    BATCH_WRITE_WARNING_SECTION_COUNT = 8
 
     def __init__(self, parent, config_mgr, api_client, history_mgr,
                  set_status, navigate_page=None, app_bridge=None):
@@ -568,6 +572,20 @@ class PaperWritePage(WorkspaceStateMixin):
         edit_card = CardFrame(right, title='内容编辑区')
         edit_card.pack(fill=tk.BOTH, expand=True)
         inner = edit_card.inner
+        if edit_card.title_frame is not None:
+            spacer = tk.Frame(edit_card.title_frame, bg=COLORS['card_bg'])
+            spacer.grid(row=0, column=1, sticky='ew')
+            edit_card.title_frame.grid_columnconfigure(2, weight=0)
+            self._write_all_sections_button_shell, self._write_all_sections_button = create_home_shell_button(
+                edit_card.title_frame,
+                '写所有章节',
+                command=self._write_all_sections,
+                style='secondary',
+                padx=12,
+                pady=4,
+                font=FONTS['small'],
+            )
+            self._write_all_sections_button_shell.grid(row=0, column=2, sticky='e')
 
         # 顶部：当前章节 + 目标字数 + 写章节按钮
         top_row = tk.Frame(inner, bg=COLORS['card_bg'])
@@ -5085,9 +5103,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self._outline_canvas.yview_moveto(0)
         self.frame.after_idle(self._sync_outline_list_width)
 
-    def _select_section(self, title, touch_context=True):
-        """点击标题时，仅显示该标题对应的正文内容。"""
-        self._store_current_editor_content()
+    def _display_section(self, title, touch_context=True):
         self._ensure_section_visible_in_outline(title)
         self._outline_selected.set(title)
         for candidate in list(getattr(self, '_outline_row_widgets', {}).keys()):
@@ -5101,6 +5117,11 @@ class PaperWritePage(WorkspaceStateMixin):
             self._touch_context_revision()
         self._update_stats()
         self.frame.after_idle(self._capture_selection_snapshot)
+
+    def _select_section(self, title, touch_context=True):
+        """点击标题时，仅显示该标题对应的正文内容。"""
+        self._store_current_editor_content()
+        self._display_section(title, touch_context=touch_context)
 
     def _new_doc(self):
         if not messagebox.askyesno(
@@ -5275,6 +5296,379 @@ class PaperWritePage(WorkspaceStateMixin):
             self.app_bridge.show_prompt_manager(page_id='paper_write', compact=True, scene_id=scene_id)
         return False
 
+    def _resolve_section_existing_content(self, section):
+        section = (section or '').strip()
+        if not section:
+            return ''
+        if self._editor_section_source == section or self.section_entry.get().strip() == section:
+            return self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        return self._normalize_section_body(self._sections.get(section, ''))
+
+    def _resolve_section_existing_formats(self, section):
+        section = (section or '').strip()
+        if not section:
+            return []
+        if self._editor_section_source == section:
+            return self._serialize_editor_format_spans()
+        return self._copy_section_formats(section)
+
+    def _apply_written_section_result(
+        self,
+        section,
+        result,
+        *,
+        existing_text='',
+        existing_formats=None,
+        set_display=True,
+    ):
+        section = (section or '').strip()
+        if not section:
+            raise ValueError('章节名称不能为空')
+
+        existing = self._normalize_section_body(existing_text)
+        if existing_formats is None:
+            existing_formats = self._resolve_section_existing_formats(section)
+        existing_formats = [dict(span) for span in (existing_formats or [])]
+
+        reference_section_title = ''
+        clean_result = ''
+        display_section = section
+        self._ensure_section_registered(section)
+
+        if self._is_reference_section_title(section):
+            references_text = self._normalize_section_body(self._strip_reference_heading(result))
+            clean_result = references_text
+            merged = self._normalize_section_body(self._sections.get(section, ''))
+            merged_formats = self._copy_section_formats(section)
+            if references_text:
+                reference_section_title = self._write_references_to_section(references_text)
+                merged = self._normalize_section_body(self._sections.get(reference_section_title, ''))
+                merged_formats = self._copy_section_formats(reference_section_title)
+                display_section = reference_section_title
+            self._sections[display_section] = merged
+            self._section_formats[display_section] = merged_formats
+        else:
+            clean_result, references_text = self._extract_references_from_section_result(result)
+            if references_text and self._supports_numeric_reference_linking():
+                merged, merged_formats, reference_section_title = self._sync_document_references_after_section_write(
+                    section,
+                    existing,
+                    clean_result,
+                    references_text,
+                    existing_formats=existing_formats,
+                )
+            else:
+                merged = self._merge_section_text(existing, clean_result)
+                merged_formats = self._preserve_existing_formats(
+                    section,
+                    existing,
+                    merged,
+                    source_spans=existing_formats,
+                )
+                self._sections[section] = merged
+                self._section_formats[section] = merged_formats
+                if references_text:
+                    reference_section_title = self._write_references_to_section(references_text)
+
+        self._rebuild_section_children()
+        self._sync_outline_text_from_sections()
+        self._refresh_outline_list()
+
+        if set_display:
+            current_display = self._editor_section_source or self.section_entry.get().strip()
+            if current_display and current_display != display_section:
+                self._store_current_editor_content()
+            self._display_section(display_section, touch_context=False)
+        else:
+            self._update_stats()
+            self.frame.after_idle(self._capture_selection_snapshot)
+
+        self._touch_context_revision()
+        self._add_history_version(
+            '写作章节',
+            section,
+            clean_result,
+            extra={
+                'paper_title': self.topic_entry.get().strip() or section,
+                'references_section': reference_section_title,
+            },
+        )
+        self._schedule_workspace_state_save()
+        return {
+            'section': section,
+            'display_section': display_section,
+            'clean_result': clean_result,
+            'reference_section_title': reference_section_title,
+        }
+
+    def _get_batch_write_scope_mode(self):
+        choice = messagebox.askyesnocancel(
+            '写所有章节',
+            '请选择本次批量生成范围：\n\n'
+            '是：只写空白章节\n'
+            '否：写全部章节\n'
+            '取消：不执行',
+            parent=self.frame,
+        )
+        if choice is None:
+            return ''
+        return 'empty_only' if choice else 'all'
+
+    def _collect_batch_write_targets(self, scope_mode):
+        self._normalize_outline_structure_state()
+        self._rebuild_section_children()
+
+        targets = []
+        for title in self._section_order:
+            if self._is_reference_section_title(title):
+                continue
+            if self._section_children.get(title):
+                continue
+
+            existing_text = self._resolve_section_existing_content(title)
+            if scope_mode == 'empty_only' and existing_text:
+                continue
+
+            targets.append(
+                {
+                    'section': title,
+                    'existing_text': existing_text,
+                    'existing_formats': self._copy_section_formats(title),
+                }
+            )
+        return targets
+
+    def _confirm_batch_write_warning(self, targets, word_count):
+        target_count = len(targets)
+        total_words = max(0, int(word_count or 0)) * target_count
+        warnings = []
+
+        if int(word_count or 0) > self.BATCH_WRITE_WARNING_SECTION_WORDS:
+            warnings.append(
+                f'当前目标字数为 {word_count} 字，单章节篇幅偏长。'
+            )
+        if target_count > self.BATCH_WRITE_WARNING_SECTION_COUNT:
+            warnings.append(
+                f'本次计划生成 {target_count} 个章节，批量范围较大。'
+            )
+        if total_words > self.BATCH_WRITE_WARNING_TOTAL_WORDS:
+            warnings.append(
+                f'按当前设置估算，总目标字数约为 {total_words} 字。'
+            )
+
+        if not warnings:
+            return True
+
+        message = (
+            f'本次计划生成 {target_count} 个章节，按每章约 {word_count} 字估算，总目标约 {total_words} 字。\n\n'
+            + '\n'.join(warnings)
+            + '\n\n可能遇到额度不足或单次生成过长，建议分批生成。\n\n是否仍继续本次批量生成？'
+        )
+        return bool(messagebox.askyesno('建议分批生成', message, parent=self.frame))
+
+    @staticmethod
+    def _classify_batch_write_error(error_text):
+        lowered = str(error_text or '').lower()
+        length_keywords = (
+            'context_length_exceeded',
+            'context length',
+            'too many tokens',
+            'max_tokens',
+            'maximum context',
+            '上下文长度',
+            '长度超限',
+            '输入过长',
+            '超长',
+        )
+        quota_keywords = (
+            'insufficient_quota',
+            'quota',
+            'rate limit',
+            'too many requests',
+            '429',
+            '额度',
+            '余额',
+            '频率限制',
+            '请求过于频繁',
+            'credit',
+        )
+        if any(keyword in lowered for keyword in length_keywords):
+            return 'length'
+        if any(keyword in lowered for keyword in quota_keywords):
+            return 'quota'
+        return 'generic'
+
+    def _show_batch_write_failure(self, result):
+        failed_section = str(result.get('failed_section', '') or '').strip()
+        completed_sections = list(result.get('completed_sections', []) or [])
+        remaining_sections = list(result.get('remaining_sections', []) or [])
+        error_text = str(result.get('error_message', '') or '').strip()
+        error_type = str(result.get('error_type', 'generic') or 'generic').strip()
+
+        if error_type == 'quota':
+            reason_text = '检测到额度不足或频率限制，建议缩小范围后分批生成。'
+            dialog = messagebox.showwarning
+        elif error_type == 'length':
+            reason_text = '检测到单次生成过长或上下文超长，建议降低目标字数后分批生成。'
+            dialog = messagebox.showwarning
+        else:
+            reason_text = '批量写作过程中发生错误，后续章节未继续执行。'
+            dialog = messagebox.showerror
+
+        remaining_preview = ''
+        if remaining_sections:
+            preview_items = remaining_sections[:8]
+            remaining_preview = '\n'.join(preview_items)
+            if len(remaining_sections) > len(preview_items):
+                remaining_preview += f'\n……还有 {len(remaining_sections) - len(preview_items)} 个章节'
+
+        message = (
+            f'失败章节：{failed_section or "未确定"}\n'
+            f'已完成章节数：{len(completed_sections)}\n'
+            f'剩余章节数：{len(remaining_sections)}\n\n'
+            f'{reason_text}'
+        )
+        if remaining_preview:
+            message += f'\n\n剩余章节：\n{remaining_preview}'
+        if error_text:
+            message += f'\n\n错误信息：\n{error_text[:500]}'
+
+        self.set_status(f'批量写作已中止：{failed_section or "执行失败"}', COLORS['error'])
+        dialog('批量写作已中止', message, parent=self.frame)
+
+    def _run_batch_write_task(self, targets, outline, word_count, reference_style):
+        total = len(targets)
+        completed_sections = []
+
+        for index, item in enumerate(targets, start=1):
+            section = item.get('section', '')
+            self.frame.after(
+                0,
+                lambda current=index, overall=total, title=section: self.set_status(
+                    f'正在写第 {current}/{overall} 节：{title}',
+                    COLORS['warning'],
+                ),
+            )
+            try:
+                result = self.writer.write_section(
+                    outline,
+                    section,
+                    item.get('existing_text', ''),
+                    word_count,
+                    reference_style,
+                )
+            except Exception as exc:
+                error_message = str(exc)
+                return {
+                    'ok': False,
+                    'failed_section': section,
+                    'completed_sections': completed_sections,
+                    'remaining_sections': [entry.get('section', '') for entry in targets[index - 1:]],
+                    'error_type': self._classify_batch_write_error(error_message),
+                    'error_message': error_message,
+                }
+
+            apply_event = threading.Event()
+            apply_result = {}
+
+            def apply_on_ui():
+                try:
+                    apply_result['payload'] = self._apply_written_section_result(
+                        section,
+                        result,
+                        existing_text=item.get('existing_text', ''),
+                        existing_formats=item.get('existing_formats', []),
+                        set_display=True,
+                    )
+                    self.set_status(
+                        f'已完成第 {index}/{total} 节：{section}',
+                        COLORS['warning'] if index < total else COLORS['info'],
+                    )
+                except Exception as ui_exc:
+                    apply_result['error'] = ui_exc
+                finally:
+                    apply_event.set()
+
+            self.frame.after(0, apply_on_ui)
+            apply_event.wait()
+
+            if apply_result.get('error') is not None:
+                error_message = str(apply_result['error'])
+                return {
+                    'ok': False,
+                    'failed_section': section,
+                    'completed_sections': completed_sections,
+                    'remaining_sections': [entry.get('section', '') for entry in targets[index - 1:]],
+                    'error_type': 'generic',
+                    'error_message': error_message,
+                }
+
+            completed_sections.append(section)
+
+        return {
+            'ok': True,
+            'completed_sections': completed_sections,
+            'completed_count': len(completed_sections),
+        }
+
+    def _write_all_sections(self):
+        self._store_current_editor_content()
+        self._normalize_outline_structure_state()
+        self._rebuild_section_children()
+        self._sync_outline_text_from_sections()
+        self._refresh_outline_list()
+
+        outline = self.outline_text.get('1.0', tk.END).strip()
+        if not outline or not self._section_order:
+            messagebox.showwarning('提示', '请先生成或导入论文大纲', parent=self.frame)
+            return
+        if not self._ensure_prompt_ready('paper_write.section'):
+            return
+
+        scope_mode = self._get_batch_write_scope_mode()
+        if not scope_mode:
+            return
+
+        targets = self._collect_batch_write_targets(scope_mode)
+        if not targets:
+            if scope_mode == 'empty_only':
+                message = '当前叶子章节都已有正文，没有可批量生成的空白章节。'
+            else:
+                message = '当前大纲没有可批量写作的叶子章节。'
+            messagebox.showwarning('提示', message, parent=self.frame)
+            return
+
+        word_count = int(self.wcount_var.get() or '1000')
+        if not self._confirm_batch_write_warning(targets, word_count):
+            return
+
+        reference_style = self.ref_var.get()
+
+        def on_success(result):
+            if not result.get('ok'):
+                self._show_batch_write_failure(result)
+                return
+            completed_count = int(result.get('completed_count', 0) or 0)
+            self.set_status(f'已完成批量写作，共生成 {completed_count} 个章节')
+
+        def on_error(exc):
+            self.set_status(f'批量写作失败：{exc}', COLORS['error'])
+            messagebox.showerror('批量写作失败', str(exc), parent=self.frame)
+
+        self.task_runner.run(
+            work=lambda: self._run_batch_write_task(
+                targets,
+                outline,
+                word_count,
+                reference_style,
+            ),
+            on_success=on_success,
+            on_error=on_error,
+            loading_text='正在批量写作章节...',
+            status_text=f'准备批量写作，共 {len(targets)} 节...',
+            status_color=COLORS['warning'],
+        )
+
     def _write_section(self):
         section = self.section_entry.get().strip()
         outline = self.outline_text.get('1.0', tk.END).strip()
@@ -5284,65 +5678,20 @@ class PaperWritePage(WorkspaceStateMixin):
         if not self._ensure_prompt_ready('paper_write.section'):
             return
         existing = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        existing_formats = self._resolve_section_existing_formats(section)
 
         def on_success(result):
-            reference_section_title = ''
-            self._ensure_section_registered(section)
-            existing_formats = (
-                self._serialize_editor_format_spans()
-                if self._editor_section_source == section
-                else self._copy_section_formats(section)
-            )
-            if self._is_reference_section_title(section):
-                references_text = self._normalize_section_body(self._strip_reference_heading(result))
-                clean_result = references_text
-                merged = self._normalize_section_body(self._sections.get(section, ''))
-                merged_formats = self._copy_section_formats(section)
-                if references_text:
-                    reference_section_title = self._write_references_to_section(references_text)
-                    merged = self._normalize_section_body(self._sections.get(reference_section_title, ''))
-                    merged_formats = self._copy_section_formats(reference_section_title)
-                self._set_editor_content(merged, merged_formats)
-                self._editor_section_source = reference_section_title or section
-            else:
-                clean_result, references_text = self._extract_references_from_section_result(result)
-                if references_text and self._supports_numeric_reference_linking():
-                    merged, merged_formats, reference_section_title = self._sync_document_references_after_section_write(
-                        section,
-                        existing,
-                        clean_result,
-                        references_text,
-                        existing_formats=existing_formats,
-                    )
-                else:
-                    merged = self._merge_section_text(existing, clean_result)
-                    merged_formats = self._preserve_existing_formats(section, existing, merged, source_spans=existing_formats)
-                    self._sections[section] = merged
-                    self._section_formats[section] = merged_formats
-                    if references_text:
-                        reference_section_title = self._write_references_to_section(references_text)
-                self._set_editor_content(merged, merged_formats)
-                self._editor_section_source = section
-
-            self._rebuild_section_children()
-            self._sync_outline_text_from_sections()
-            self._refresh_outline_list()
-            self._touch_context_revision()
-            self._update_stats()
-            self._add_history_version(
-                '写作章节',
+            outcome = self._apply_written_section_result(
                 section,
-                clean_result,
-                extra={
-                    'paper_title': self.topic_entry.get().strip() or section,
-                    'references_section': reference_section_title,
-                },
+                result,
+                existing_text=existing,
+                existing_formats=existing_formats,
             )
-            self._schedule_workspace_state_save()
-            if reference_section_title:
-                self.set_status(f'章节写作完成，参考文献已写入 {reference_section_title}')
+            if outcome.get('reference_section_title'):
+                self.set_status(f'章节写作完成，参考文献已写入 {outcome["reference_section_title"]}')
             else:
                 self.set_status('章节写作完成')
+            return
 
         def on_error(exc):
             self.set_status(f'写作失败: {exc}', COLORS['error'])

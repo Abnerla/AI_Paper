@@ -12,6 +12,7 @@ from modules.prompt_center import PromptCenter
 from modules.task_runner import TaskRunner
 from pages.home_support import ensure_model_configured
 from modules.ui_components import (
+    apply_adaptive_window_geometry,
     bind_ellipsis_tooltip,
     apply_mixed_fonts,
     COLORS,
@@ -856,10 +857,7 @@ class PolishPage(WorkspaceStateMixin):
         win.title('翻译润色')
         win.configure(bg=COLORS['bg_main'])
         win.resizable(False, False)
-        win.update_idletasks()
-        sw = win.winfo_screenwidth()
-        sh = win.winfo_screenheight()
-        win.geometry(f'1600x1200+{(sw-1600)//2}+{(sh-1200)//2}')
+        apply_adaptive_window_geometry(win, '1600x1200')
 
         tk.Label(win, text='目标语言：', font=FONTS['body'], bg=COLORS['bg_main']).pack(pady=(20, 5))
         lang_var = tk.StringVar(value='英文')

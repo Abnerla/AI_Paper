@@ -8,6 +8,7 @@ import os
 import sys
 import base64
 import calendar
+import ctypes
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
@@ -17,6 +18,11 @@ try:
     import winreg
 except ImportError:
     winreg = None
+
+try:
+    from ctypes import wintypes
+except ImportError:
+    wintypes = None
 
 
 THEMES = {
@@ -131,6 +137,21 @@ DEFAULT_FONT_SPECS = {
 }
 FONTS = {}
 
+MONITOR_DEFAULTTONEAREST = 2
+SPI_GETWORKAREA = 0x0030
+
+
+if wintypes is not None:
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [
+            ('cbSize', wintypes.DWORD),
+            ('rcMonitor', wintypes.RECT),
+            ('rcWork', wintypes.RECT),
+            ('dwFlags', wintypes.DWORD),
+        ]
+else:
+    MONITORINFO = None
+
 THEME_OPTION_NAMES = (
     'bg',
     'fg',
@@ -215,6 +236,85 @@ def get_resource_path(filename):
     else:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.normpath(os.path.join(base_dir, filename)).replace('\\', '/')
+
+
+def parse_window_size(geometry, default_width=1200, default_height=900):
+    """解析窗口尺寸字符串，仅保留宽高部分。"""
+    if isinstance(geometry, (tuple, list)) and len(geometry) >= 2:
+        try:
+            return max(int(geometry[0]), 1), max(int(geometry[1]), 1)
+        except Exception:
+            return default_width, default_height
+
+    text = str(geometry or '').strip().lower()
+    if 'x' not in text:
+        return default_width, default_height
+
+    size_text = text.split('+', 1)[0]
+    width_text, height_text = size_text.split('x', 1)
+    try:
+        width = max(int(width_text), 1)
+        height = max(int(height_text), 1)
+        return width, height
+    except Exception:
+        return default_width, default_height
+
+
+def get_window_work_area(widget):
+    """获取窗口所在显示器的可用工作区。"""
+    if sys.platform == 'win32' and wintypes is not None and MONITORINFO is not None:
+        try:
+            hwnd = widget.winfo_id()
+            if hwnd:
+                monitor = ctypes.windll.user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+                if monitor:
+                    info = MONITORINFO()
+                    info.cbSize = ctypes.sizeof(MONITORINFO)
+                    if ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                        rect = info.rcWork
+                        return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+        except Exception:
+            pass
+        try:
+            rect = wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rect), 0):
+                return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+        except Exception:
+            pass
+    return 0, 0, widget.winfo_screenwidth(), widget.winfo_screenheight()
+
+
+def apply_adaptive_window_geometry(
+    window,
+    geometry,
+    *,
+    min_width=None,
+    min_height=None,
+    margin_x=96,
+    margin_y=80,
+):
+    """按工作区约束窗口尺寸和位置，避免窗口超出常见屏幕。"""
+    target_width, target_height = parse_window_size(geometry)
+    work_x, work_y, work_width, work_height = get_window_work_area(window)
+    safe_width = max(1, int(work_width) - int(margin_x))
+    safe_height = max(1, int(work_height) - int(margin_y))
+    width = min(max(int(target_width), 1), safe_width)
+    height = min(max(int(target_height), 1), safe_height)
+
+    if min_width is not None or min_height is not None:
+        applied_min_width = min(width, max(int(min_width or 1), 1))
+        applied_min_height = min(height, max(int(min_height or 1), 1))
+        window.minsize(applied_min_width, applied_min_height)
+
+    x = int(work_x) + max(0, (int(work_width) - width) // 2)
+    y = int(work_y) + max(0, (int(work_height) - height) // 2)
+    window.geometry(f'{width}x{height}+{x}+{y}')
+    return {
+        'x': x,
+        'y': y,
+        'width': width,
+        'height': height,
+    }
 
 
 def load_image(filename, max_size=None):

@@ -72,6 +72,7 @@ from modules.remote_content import RemoteContentManager, compare_versions
 from modules.runtime_logging import RuntimeLogStream, format_exception_trace
 from modules.task_runner import TaskRunner
 from modules.ui_components import (
+    apply_adaptive_window_geometry,
     bind_adaptive_wrap,
     CardFrame,
     COLORS,
@@ -969,7 +970,8 @@ class SmartPaperTool:
         if win is None:
             win = self.root
         if geometry:
-            win.geometry(geometry)
+            apply_adaptive_window_geometry(win, geometry)
+            return
         win.update_idletasks()
         width = win.winfo_width()
         height = win.winfo_height()
@@ -2460,17 +2462,29 @@ class SmartPaperTool:
     def _relayout_top_nav(self, _event=None):
         self._sync_top_nav_metrics()
         self._apply_top_nav_spacing()
+        self.top_nav_inner.update_idletasks()
+        nav_width = self.nav_center.winfo_reqwidth()
         right_width = self.right_tools.winfo_reqwidth()
+        available_width = max(self.top_nav_inner.winfo_width(), self.top_nav_inner.winfo_reqwidth(), 1)
+        stacked = available_width < nav_width + right_width + 24
 
         self.nav_center.grid_forget()
         self.right_tools.grid_forget()
 
-        self.top_nav_inner.grid_columnconfigure(0, weight=1, minsize=0)
-        self.top_nav_inner.grid_columnconfigure(1, weight=0, minsize=right_width)
-        self.top_nav_inner.grid_rowconfigure(0, weight=0, minsize=0)
-
-        self.nav_center.grid(row=0, column=0, sticky='w')
-        self.right_tools.grid(row=0, column=1, sticky='e')
+        if stacked:
+            self.top_nav_inner.grid_columnconfigure(0, weight=1, minsize=0)
+            self.top_nav_inner.grid_columnconfigure(1, weight=0, minsize=0)
+            self.top_nav_inner.grid_rowconfigure(0, weight=0, minsize=0)
+            self.top_nav_inner.grid_rowconfigure(1, weight=0, minsize=0)
+            self.nav_center.grid(row=0, column=0, sticky='w')
+            self.right_tools.grid(row=1, column=0, sticky='e', pady=(8, 0))
+        else:
+            self.top_nav_inner.grid_columnconfigure(0, weight=1, minsize=0)
+            self.top_nav_inner.grid_columnconfigure(1, weight=0, minsize=right_width)
+            self.top_nav_inner.grid_rowconfigure(0, weight=0, minsize=0)
+            self.top_nav_inner.grid_rowconfigure(1, weight=0, minsize=0)
+            self.nav_center.grid(row=0, column=0, sticky='w')
+            self.right_tools.grid(row=0, column=1, sticky='e')
 
     def _build_status_bar(self):
         return
@@ -2672,7 +2686,7 @@ class SmartPaperTool:
     def _create_info_dialog_shell(self, title, geometry, *, min_width, min_height):
         window, body = self._create_dialog_shell(title, geometry)
         window.resizable(True, True)
-        window.minsize(min_width, min_height)
+        apply_adaptive_window_geometry(window, geometry, min_width=min_width, min_height=min_height)
 
         content_view = ScrollablePage(body, bg=COLORS['card_bg'])
         content_view.pack(fill=tk.BOTH, expand=True, padx=24, pady=(24, 0))
@@ -3148,9 +3162,10 @@ class SmartPaperTool:
             return
         self._dialog_api_page = None
 
-        window, body = self._create_dialog_shell('模型配置', '1600x1200')
+        dialog_geometry = '1600x1200'
+        window, body = self._create_dialog_shell('模型配置', dialog_geometry)
         window.resizable(True, True)
-        window.minsize(1320, 960)
+        apply_adaptive_window_geometry(window, dialog_geometry, min_width=1320, min_height=960)
         self._api_config_window = window
 
         # 底部悬浮保存按钮（先 pack，使内容区 expand 正确）
@@ -3264,7 +3279,7 @@ class SmartPaperTool:
 
         window, body = self._create_dialog_shell(title, geometry)
         window.resizable(True, True)
-        window.minsize(min_width, min_height)
+        apply_adaptive_window_geometry(window, geometry, min_width=min_width, min_height=min_height)
         setattr(self, window_attr, window)
 
         panel = PromptManagerPanel(
@@ -3287,10 +3302,11 @@ class SmartPaperTool:
             self.settings_window.focus_force()
             return
 
-        window, body = self._create_dialog_shell('设置', '1600x1200')
+        dialog_geometry = '1600x1200'
+        window, body = self._create_dialog_shell('设置', dialog_geometry)
         self.settings_window = window
         window.resizable(True, True)
-        window.minsize(1320, 960)
+        apply_adaptive_window_geometry(window, dialog_geometry, min_width=1320, min_height=960)
 
         theme_display = {
             'light': '浅色模式',

@@ -184,8 +184,8 @@ class AIReducer:
         )
 
     def rewrite_academic(self, text: str) -> str:
-        """学术风格拟合。"""
-        system, prompt = self._render_rewrite_prompt(text, 'academic', '学术风格拟合')
+        """学术拟合。"""
+        system, prompt = self._render_rewrite_prompt(text, 'academic', '学术拟合')
         return self.api.call_sync(
             prompt,
             system,

@@ -7,6 +7,8 @@ from modules.prompt_center import PromptCenter
 
 
 class PaperWriter:
+    SECTION_MAX_TOKENS = 3000
+
     def __init__(self, api_client, prompt_center=None):
         self.api = api_client
         self.prompt_center = prompt_center or PromptCenter(getattr(api_client, 'config', None))
@@ -56,7 +58,7 @@ class PaperWriter:
         return self.api.call_sync(
             prompt,
             system,
-            max_tokens=3000,
+            max_tokens=self.SECTION_MAX_TOKENS,
             usage_context=self._usage_context('paper_write.section', 'write_section'),
         )
 

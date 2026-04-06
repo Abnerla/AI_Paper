@@ -16,6 +16,7 @@ from modules.prompt_center import (
     PromptValidationError,
 )
 from modules.ui_components import (
+    apply_adaptive_window_geometry,
     COLORS,
     FONTS,
     CardFrame,
@@ -407,14 +408,7 @@ class PromptManagerPanel:
         window.configure(bg=COLORS['bg_main'])
         window.transient(self.frame.winfo_toplevel())
         window.resizable(True, True)
-        window.minsize(1320, 960)
-        width = 1600
-        height = 1200
-        screen_width = window.winfo_screenwidth()
-        screen_height = window.winfo_screenheight()
-        x = max((screen_width - width) // 2, 0)
-        y = max((screen_height - height) // 2, 0)
-        window.geometry(f'{width}x{height}+{x}+{y}')
+        apply_adaptive_window_geometry(window, '1600x1200', min_width=1320, min_height=960)
 
         shell = tk.Frame(window, bg=COLORS['shadow'])
         shell.pack(fill=tk.BOTH, expand=True, padx=18, pady=18)

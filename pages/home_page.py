@@ -19,6 +19,7 @@ from modules.usage_stats import (
     format_token_count,
 )
 from modules.ui_components import (
+    apply_adaptive_window_geometry,
     ask_datetime_string,
     bind_adaptive_wrap,
     CardFrame,
@@ -1805,12 +1806,8 @@ class HomePage:
         win.title('模型列表')
         win.configure(bg=COLORS['bg_main'])
         win.resizable(False, False)
-        win.geometry('1600x1200')
         win.transient(self.frame.winfo_toplevel())
-        win.update_idletasks()
-        sw = win.winfo_screenwidth()
-        sh = win.winfo_screenheight()
-        win.geometry(f'1600x1200+{(sw-1600)//2}+{(sh-1200)//2}')
+        apply_adaptive_window_geometry(win, '1600x1200')
         win.grab_set()
 
         # 标题
@@ -1823,6 +1820,22 @@ class HomePage:
             win.destroy()
             if self.app_bridge:
                 self.app_bridge.show_api_config()
+
+        action_icon_images = {}
+        action_button_size = 48
+        select_button_height = 48
+        select_button_width = 116
+
+        def _get_action_icon(filename, max_size=(26, 26)):
+            image = action_icon_images.get(filename)
+            if image is not None:
+                return image
+            try:
+                image = load_image(f'png/{filename}', max_size=max_size)
+            except Exception:
+                image = None
+            action_icon_images[filename] = image
+            return image
 
         ModernButton(hdr, '⚙ 前往配置', style='secondary',
                      command=_goto_add_new,
@@ -1911,15 +1924,21 @@ class HomePage:
                 _populate()
             drag_state['api_id'] = None
 
-        def _create_action_icon(parent, *, icon, tooltip, fg, command, active_bg, active_fg=None):
-            shell = tk.Frame(parent, bg=COLORS['shadow'])
+        def _create_action_icon(parent, *, icon, tooltip, fg, command, active_bg, active_fg=None, image_name=None):
+            shell = tk.Frame(
+                parent,
+                bg=COLORS['shadow'],
+                width=action_button_size,
+                height=action_button_size,
+            )
+            shell.pack_propagate(False)
             button = ToolIconButton(
                 shell,
                 text=icon,
                 tooltip=tooltip,
                 command=command,
                 font=FONTS['small'],
-                width=2,
+                width=4,
                 padx=0,
                 pady=0,
                 highlightthickness=2,
@@ -1930,6 +1949,11 @@ class HomePage:
                 activebackground=active_bg,
                 activeforeground=active_fg or COLORS['text_main'],
             )
+            if image_name:
+                image = _get_action_icon(image_name)
+                if image is not None:
+                    button.configure(image=image, text='')
+                    button.image = image
             button.pack(fill=tk.BOTH, expand=True, padx=(2, 4), pady=(2, 4))
             return shell
 
@@ -2004,23 +2028,26 @@ class HomePage:
                              wraplength=460, justify='left').pack(anchor='w', pady=(2, 0))
 
                 # 右侧按钮区（垂直居中）
-                btn_col = tk.Frame(row, bg=card_bg, width=248, height=40)
+                btn_col = tk.Frame(row, bg=card_bg, width=252, height=select_button_height)
                 btn_col.pack(side=tk.RIGHT, padx=(12, 0), anchor='center')
                 btn_col.pack_propagate(False)
-                btn_col.grid_columnconfigure(0, minsize=132)
-                btn_col.grid_columnconfigure(1, minsize=42)
-                btn_col.grid_columnconfigure(2, minsize=42)
+                btn_col.grid_columnconfigure(0, minsize=120)
+                btn_col.grid_columnconfigure(1, minsize=60)
+                btn_col.grid_columnconfigure(2, minsize=60)
+                btn_col.grid_rowconfigure(0, minsize=select_button_height)
 
                 select_shell, select_button = create_home_shell_button(
                     btn_col,
-                    '当前使用' if is_active else '使用',
+                    '启用' if is_active else '关闭',
                     command=(lambda: None) if is_active else (lambda aid=api_id, model_name=name: _activate_model(aid, model_name)),
-                    style='secondary' if is_active else 'primary',
-                    padx=10,
-                    pady=6,
+                    style='primary' if is_active else 'secondary',
+                    padx=8,
+                    pady=4,
                     font=FONTS['small'],
                     border_color=COLORS['primary'] if is_active else '#000000',
                 )
+                select_shell.configure(width=select_button_width, height=select_button_height)
+                select_shell.pack_propagate(False)
                 if is_active:
                     select_button.configure(
                         state=tk.DISABLED,
@@ -2036,6 +2063,7 @@ class HomePage:
                     fg=COLORS['primary'],
                     command=lambda aid=api_id: _open_detail(aid),
                     active_bg=COLORS['primary_light'],
+                    image_name='Edit.png',
                 )
                 detail_btn.grid(row=0, column=1, padx=(0, 6), sticky='e')
 
@@ -2057,6 +2085,7 @@ class HomePage:
                         command=_delete,
                         active_bg=COLORS['error'],
                         active_fg='#FFFFFF',
+                        image_name='Delete.png',
                     )
                     del_btn.grid(row=0, column=2, sticky='e')
 
