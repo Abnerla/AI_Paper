@@ -632,36 +632,55 @@ class CorrectionPage(WorkspaceStateMixin):
         )
         if not path:
             return
-        try:
-            paper_title = os.path.splitext(os.path.basename(path))[0]
-            if path.lower().endswith('.docx'):
-                text = self.aux.import_docx(path)
-                source_kind = 'docx_import'
-                source_desc = f'已导入 DOCX：{os.path.basename(path)}'
-                docx_path = path
-            else:
-                with open(path, 'r', encoding='utf-8', errors='ignore') as handle:
-                    text = handle.read()
-                source_kind = 'import'
-                source_desc = f'已导入文件：{os.path.basename(path)}'
-                docx_path = ''
-            self._set_input_text(
-                text,
-                source_kind,
-                source_desc,
-                paper_title=paper_title,
-                docx_path=docx_path,
-            )
-            self._set_info_text(f'已导入文稿：{path}', fg=COLORS['text_sub'])
-            self.set_status('文稿导入完成')
-            if self.config and hasattr(self.config, 'clear_home_last_import_failure'):
-                self.config.clear_home_last_import_failure()
-                self.config.save()
-        except Exception as exc:
-            if self.config and hasattr(self.config, 'set_home_last_import_failure'):
-                self.config.set_home_last_import_failure('correction', os.path.basename(path), str(exc))
-                self.config.save()
-            messagebox.showerror('导入失败', str(exc), parent=self.frame)
+        self.task_runner.run(
+            work=lambda: self._load_document_payload(path),
+            on_success=lambda payload, current_path=path: self._apply_document_payload(current_path, payload),
+            on_error=lambda exc, current_path=path: self._handle_document_import_error(current_path, exc),
+            loading_text='正在导入文稿...',
+            status_text='正在导入文稿...',
+        )
+
+    def _load_document_payload(self, path):
+        paper_title = os.path.splitext(os.path.basename(path))[0]
+        if path.lower().endswith('.docx'):
+            text = self.aux.import_docx(path)
+            source_kind = 'docx_import'
+            source_desc = f'已导入 DOCX：{os.path.basename(path)}'
+            docx_path = path
+        else:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as handle:
+                text = handle.read()
+            source_kind = 'import'
+            source_desc = f'已导入文件：{os.path.basename(path)}'
+            docx_path = ''
+        return {
+            'text': text,
+            'paper_title': paper_title,
+            'source_kind': source_kind,
+            'source_desc': source_desc,
+            'docx_path': docx_path,
+        }
+
+    def _apply_document_payload(self, path, payload):
+        payload = dict(payload or {})
+        self._set_input_text(
+            payload.get('text', ''),
+            payload.get('source_kind', 'import'),
+            payload.get('source_desc', ''),
+            paper_title=payload.get('paper_title', ''),
+            docx_path=payload.get('docx_path', ''),
+        )
+        self._set_info_text(f'已导入文稿：{path}', fg=COLORS['text_sub'])
+        self.set_status('文稿导入完成')
+        if self.config and hasattr(self.config, 'clear_home_last_import_failure'):
+            self.config.clear_home_last_import_failure()
+            self.config.save()
+
+    def _handle_document_import_error(self, path, exc):
+        if self.config and hasattr(self.config, 'set_home_last_import_failure'):
+            self.config.set_home_last_import_failure('correction', os.path.basename(path), str(exc))
+            self.config.save()
+        messagebox.showerror('导入失败', str(exc), parent=self.frame)
 
     def _run_ai_style_scan(self):
         text = self._get_input_text()

@@ -3121,38 +3121,56 @@ class PaperWritePage(WorkspaceStateMixin):
         )
         if not path:
             return
-        try:
-            if path.lower().endswith('.docx'):
-                text = self.aux.import_docx(path)
-            else:
-                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                    text = f.read()
-            title_feedback = self._apply_imported_paper_title(text, path)
-            # 先解析大纲，不把全文直接填入编辑区
-            self._parse_and_show_outline(text)
-            # 清空编辑区，等待用户点击章节
-            self.edit_text.delete('1.0', tk.END)
-            self.section_entry.delete(0, tk.END)
-            self._editor_section_source = ''
-            self._touch_context_revision()
-            self._schedule_workspace_state_save()
-            status_text = f'已导入: {path}，请点击左侧大纲章节查看内容'
-            if title_feedback:
-                status_text = f'{status_text}；{title_feedback}'
-            self.set_status(status_text)
-            self._update_stats()
-            if self.config and hasattr(self.config, 'clear_home_last_import_failure'):
-                self.config.clear_home_last_import_failure()
-                self.config.save()
-        except Exception as e:
-            if self.config and hasattr(self.config, 'set_home_last_import_failure'):
-                self.config.set_home_last_import_failure('paper_write', os.path.basename(path), str(e))
-                self.config.save()
-            messagebox.showerror('导入失败', str(e), parent=self.frame)
+        self.task_runner.run(
+            work=lambda: self._load_import_payload(path),
+            on_success=lambda payload, current_path=path: self._apply_import_payload(current_path, payload),
+            on_error=lambda exc, current_path=path: self._handle_import_failure(current_path, exc),
+            loading_text='正在导入文稿...',
+            status_text='正在导入文稿...',
+        )
 
-    def _parse_and_show_outline(self, text):
+    def _load_import_payload(self, path):
+        if path.lower().endswith('.docx'):
+            text = self.aux.import_docx(path)
+        else:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                text = f.read()
+        parsed_outline = self._build_outline_structure(text)
+        return {
+            'text': text,
+            'parsed_outline': parsed_outline,
+        }
+
+    def _apply_import_payload(self, path, payload):
+        text = str((payload or {}).get('text', '') or '')
+        parsed_outline = (payload or {}).get('parsed_outline')
+        title_feedback = self._apply_imported_paper_title(text, path)
+        # 先解析大纲，不把全文直接填入编辑区
+        self._parse_and_show_outline(text, parsed=parsed_outline)
+        # 清空编辑区，等待用户点击章节
+        self.edit_text.delete('1.0', tk.END)
+        self.section_entry.delete(0, tk.END)
+        self._editor_section_source = ''
+        self._touch_context_revision()
+        self._schedule_workspace_state_save()
+        status_text = f'已导入: {path}，请点击左侧大纲章节查看内容'
+        if title_feedback:
+            status_text = f'{status_text}；{title_feedback}'
+        self.set_status(status_text)
+        self._update_stats()
+        if self.config and hasattr(self.config, 'clear_home_last_import_failure'):
+            self.config.clear_home_last_import_failure()
+            self.config.save()
+
+    def _handle_import_failure(self, path, exc):
+        if self.config and hasattr(self.config, 'set_home_last_import_failure'):
+            self.config.set_home_last_import_failure('paper_write', os.path.basename(path), str(exc))
+            self.config.save()
+        messagebox.showerror('导入失败', str(exc), parent=self.frame)
+
+    def _parse_and_show_outline(self, text, parsed=None):
         """从文本中解析章节标题，填充左侧大纲列表"""
-        parsed = self._build_outline_structure(text)
+        parsed = parsed if isinstance(parsed, dict) else self._build_outline_structure(text)
         self._sections = dict(parsed['sections'])
         self._section_formats = {title: [] for title in self._sections}
         self._section_order = list(parsed['order'])

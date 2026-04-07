@@ -105,6 +105,7 @@ THEMES = {
 }
 
 COLORS = THEMES['light'].copy()
+_IMAGE_CACHE = {}
 
 UI_FONT_CANDIDATES = (
     'Microsoft YaHei UI',
@@ -320,6 +321,12 @@ def apply_adaptive_window_geometry(
 def load_image(filename, max_size=None):
     """加载静态图片，并在需要时按比例缩小。"""
     path = get_resource_path(filename)
+    size_key = tuple(max_size) if max_size else None
+    cache_key = (os.path.abspath(path), size_key)
+    cached = _IMAGE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     with open(path, 'rb') as file_obj:
         raw = base64.b64encode(file_obj.read()).decode('ascii')
     image = tk.PhotoImage(data=raw)
@@ -332,6 +339,7 @@ def load_image(filename, max_size=None):
         )
         if factor > 1:
             image = image.subsample(factor, factor)
+    _IMAGE_CACHE[cache_key] = image
     return image
 
 
