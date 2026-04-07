@@ -265,7 +265,7 @@ class PlagiarismPage(TextTransformPageBase):
 
         tk.Label(
             placeholder,
-            text='支持导入查重检测报告的 PDF 打印版、Word 标红版。',
+            text='支持导入查重检测报告的 PDF 打印版、Word 颜色标记版。',
             font=FONTS['body_bold'],
             fg=COLORS['text_main'],
             bg=COLORS['surface_alt'],

@@ -77,6 +77,182 @@ class APIClient:
             return 'tongyi'
         return 'openai'
 
+    @staticmethod
+    def _coerce_positive_float(value, default=None):
+        try:
+            number = float(value)
+        except Exception:
+            return default
+        if number <= 0:
+            return default
+        return number
+
+    def _resolve_request_timeout(self, cfg, request_timeout, *, default=60.0):
+        explicit_timeout = self._coerce_positive_float(request_timeout)
+        if explicit_timeout is not None:
+            return explicit_timeout
+
+        configured_timeout = None
+        if isinstance(cfg, dict):
+            configured_timeout = self._coerce_positive_float(cfg.get('timeout', ''))
+        if configured_timeout is not None:
+            return configured_timeout
+        return max(float(default or 60.0), 1.0)
+
+    @staticmethod
+    def _normalize_auth_field(field_name):
+        value = str(field_name or '').strip()
+        return value or 'Authorization'
+
+    @staticmethod
+    def _build_bearer_headers(key, *, auth_field='Authorization', include_content_type=True):
+        headers = {}
+        if include_content_type:
+            headers['Content-Type'] = 'application/json'
+        headers[str(auth_field or 'Authorization')] = f'Bearer {key}'
+        return headers
+
+    @staticmethod
+    def _resolve_openai_compat_urls(base_url):
+        normalized_base_url = str(base_url or 'https://api.openai.com/v1').strip() or 'https://api.openai.com/v1'
+        parts = urllib.parse.urlsplit(normalized_base_url)
+        path = parts.path.rstrip('/')
+        chat_suffix = '/chat/completions'
+
+        if path.endswith(chat_suffix):
+            root_path = path[:-len(chat_suffix)] or ''
+            chat_path = path
+        else:
+            root_path = path
+            chat_path = f'{root_path}{chat_suffix}' if root_path else chat_suffix
+
+        models_path = f'{root_path}/models' if root_path else '/models'
+        root_url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, root_path, '', ''))
+        chat_url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, chat_path, '', ''))
+        models_url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, models_path, '', ''))
+        return {
+            'root_url': root_url or normalized_base_url.rstrip('/'),
+            'chat_completions_url': chat_url,
+            'models_url': models_url,
+        }
+
+    @staticmethod
+    def _parse_model_mapping(raw_mapping):
+        mapping = {}
+        text = str(raw_mapping or '').strip()
+        if not text:
+            return mapping
+
+        for item in re.split(r'[\r\n,;；，]+', text):
+            entry = str(item or '').strip()
+            if not entry:
+                continue
+            delimiter = ':' if ':' in entry else '=' if '=' in entry else ''
+            if not delimiter:
+                continue
+            source, target = entry.split(delimiter, 1)
+            source = source.strip()
+            target = target.strip()
+            if source and target:
+                mapping[source] = target
+        return mapping
+
+    def _apply_model_mapping(self, model_name, cfg):
+        current_model = str(model_name or '').strip()
+        if not current_model:
+            return current_model, False
+
+        mappings = self._parse_model_mapping((cfg or {}).get('model_mapping', ''))
+        if not mappings:
+            return current_model, False
+
+        if current_model in mappings:
+            return mappings[current_model], True
+
+        lowered = current_model.lower()
+        for source, target in mappings.items():
+            if source.lower() == lowered:
+                return target, True
+        return current_model, False
+
+    def _resolve_request_model_name(self, provider_name, cfg):
+        model_name = str((cfg or {}).get('model', '') or '').strip() or 'unknown'
+        if provider_name != 'openai':
+            return model_name
+        mapped_model, _mapping_hit = self._apply_model_mapping(model_name, cfg)
+        return mapped_model or model_name
+
+    @staticmethod
+    def _load_extra_json_payload(cfg):
+        raw = str((cfg or {}).get('extra_json', '') or '').strip()
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f'高级请求体 JSON 格式错误: {exc}') from exc
+        if not isinstance(payload, dict):
+            raise ValueError('高级请求体 JSON 必须是 JSON 对象')
+        return payload
+
+    @staticmethod
+    def _merge_openai_extra_json(base_payload, extra_payload):
+        merged = dict(base_payload or {})
+        ignored_keys = []
+        protected_keys = {
+            'model',
+            'messages',
+            'system',
+            'temperature',
+            'max_tokens',
+            'prompt',
+            'input',
+        }
+        for key, value in dict(extra_payload or {}).items():
+            if key in protected_keys or key in merged:
+                ignored_keys.append(str(key))
+                continue
+            merged[key] = value
+        return merged, sorted(set(ignored_keys))
+
+    def _prepare_openai_compat_request(self, prompt, system, cfg, temperature, max_tokens):
+        key = str((cfg or {}).get('key', '') or '').strip()
+        if not key:
+            raise ValueError('OpenAI API Key未配置')
+
+        urls = self._resolve_openai_compat_urls((cfg or {}).get('base_url', 'https://api.openai.com/v1'))
+        configured_model = str((cfg or {}).get('model', '') or '').strip() or 'gpt-4o'
+        request_model, mapping_hit = self._apply_model_mapping(configured_model, cfg)
+        auth_field = self._normalize_auth_field((cfg or {}).get('auth_field', 'Authorization'))
+
+        messages = []
+        if system:
+            messages.append({'role': 'system', 'content': system})
+        messages.append({'role': 'user', 'content': prompt})
+
+        payload = {
+            'model': request_model,
+            'messages': messages,
+            'temperature': temperature,
+            'max_tokens': max_tokens,
+        }
+        extra_json_payload = self._load_extra_json_payload(cfg)
+        payload, ignored_keys = self._merge_openai_extra_json(payload, extra_json_payload)
+        headers = self._build_bearer_headers(key, auth_field=auth_field, include_content_type=True)
+
+        return {
+            'url': urls['chat_completions_url'],
+            'models_url': urls['models_url'],
+            'root_url': urls['root_url'],
+            'payload': payload,
+            'headers': headers,
+            'request_model': request_model,
+            'auth_field': auth_field,
+            'model_mapping_hit': mapping_hit,
+            'extra_json_keys': sorted(extra_json_payload.keys()),
+            'ignored_extra_json_keys': ignored_keys,
+        }
+
     def call(
         self,
         prompt: str,
@@ -203,8 +379,8 @@ class APIClient:
         if model_override:
             cfg['model'] = model_override
         provider_name = self._resolve_handler_name(api_name, cfg)
-        model_name = (cfg.get('model') or '').strip() or 'unknown'
-        timeout_value = request_timeout or 60
+        model_name = self._resolve_request_model_name(provider_name, cfg)
+        timeout_value = self._resolve_request_timeout(cfg, request_timeout)
         started_at = time.perf_counter()
         request_id = uuid.uuid4().hex
         self._log(
@@ -219,7 +395,7 @@ class APIClient:
             f'timeout={timeout_value}'
         )
         try:
-            response_payload = handler(prompt, system, cfg, temperature, max_tokens, request_timeout=request_timeout)
+            response_payload = handler(prompt, system, cfg, temperature, max_tokens, request_timeout=timeout_value)
         except Exception as exc:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
             self._log(
@@ -309,30 +485,27 @@ class APIClient:
 
     def _call_openai_compat(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
         """调用OpenAI兼容接口（包括自定义base_url）"""
-        key = cfg.get('key', '')
-        if not key:
-            raise ValueError('OpenAI API Key未配置')
-        base_url = cfg.get('base_url', 'https://api.openai.com/v1').rstrip('/')
-        model = cfg.get('model', 'gpt-4o')
-        url = f'{base_url}/chat/completions'
-        messages = []
-        if system:
-            messages.append({'role': 'system', 'content': system})
-        messages.append({'role': 'user', 'content': prompt})
-        data = {
-            'model': model,
-            'messages': messages,
-            'temperature': temperature,
-            'max_tokens': max_tokens,
-        }
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {key}',
-        }
-        resp = self._http_post(url, data, headers, timeout=request_timeout or 60)
+        prepared = self._prepare_openai_compat_request(prompt, system, cfg, temperature, max_tokens)
+        self._log(
+            '[openai_compat] '
+            f'endpoint={self._sanitize_url_for_log(prepared["url"])} '
+            f'auth_field={prepared["auth_field"]} '
+            f'model={prepared["request_model"]} '
+            f'model_mapping_hit={prepared["model_mapping_hit"]} '
+            f'extra_json_keys={",".join(prepared["extra_json_keys"]) or "-"} '
+            f'ignored_extra_json_keys={",".join(prepared["ignored_extra_json_keys"]) or "-"} '
+            f'timeout={request_timeout}'
+        )
+        resp = self._http_post(
+            prepared['url'],
+            prepared['payload'],
+            prepared['headers'],
+            timeout=request_timeout,
+        )
         return {
             'text': resp['choices'][0]['message']['content'],
-            'response_model': str(resp.get('model', '') or model),
+            'response_model': str(resp.get('model', '') or prepared['request_model']),
+            'request_model': prepared['request_model'],
             'usage': extract_openai_usage(resp),
         }
 
@@ -540,15 +713,20 @@ class APIClient:
     def fetch_models(self, api_name: str, cfg: dict = None) -> list:
         """获取指定服务商的模型列表，返回模型id字符串列表"""
         cfg = self._get_config(api_name, cfg=cfg)
-        key = cfg.get('key', '')
-        base_url = cfg.get('base_url', '').rstrip('/')
+        key = str(cfg.get('key', '') or '').strip()
+        base_url = str(cfg.get('base_url', '') or '').strip()
         if not key or not base_url:
             raise ValueError('请先填写 API Key 和请求地址')
-        url = f'{base_url}/models'
-        headers = {
-            'Authorization': f'Bearer {key}',
-            'Content-Type': 'application/json',
-        }
+        provider_name = self._resolve_handler_name(api_name, cfg)
+        if provider_name == 'openai':
+            url = self._resolve_openai_compat_urls(base_url)['models_url']
+        else:
+            url = f'{base_url.rstrip("/")}/models'
+        headers = self._build_bearer_headers(
+            key,
+            auth_field=self._normalize_auth_field(cfg.get('auth_field', 'Authorization')),
+            include_content_type=True,
+        )
         req = urllib.request.Request(url, headers=headers, method='GET')
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
@@ -570,7 +748,7 @@ class APIClient:
     def test_connection(
         self,
         api_name: str,
-        prompt: str = '请回复"连接成功"',
+        prompt: str = '请只回复 ok',
         model_override: str = None,
         timeout: float = 45,
         degrade_threshold_ms: int = None,
@@ -587,10 +765,10 @@ class APIClient:
             try:
                 result = self._call_sync(
                     prompt,
-                    '你是一个测试助手，请简洁回答。',
+                    '你是测速助手，只回复最短结果。',
                     api_name,
-                    0.1,
-                    120,
+                    0.0,
+                    16,
                     request_timeout=request_timeout,
                     model_override=(model_override or '').strip() or None,
                     cfg=cfg,

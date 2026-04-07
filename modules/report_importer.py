@@ -30,6 +30,16 @@ RISK_BY_COLOR = {
     'orange': 'medium',
     'purple': 'low',
     'black': 'safe',
+    'gray': 'safe',
+    'unknown': 'safe',
+}
+
+SOURCE_COLOR_PROTOTYPES = {
+    'red': ((255, 0, 0), (192, 0, 0), (214, 64, 64)),
+    'orange': ((237, 125, 49), (255, 165, 0), (255, 192, 0)),
+    'purple': ((112, 48, 160), (128, 0, 128), (153, 102, 204), (192, 0, 255)),
+    'black': ((0, 0, 0), (21, 22, 26), (64, 64, 64)),
+    'gray': ((96, 96, 96), (128, 128, 128), (166, 166, 166), (208, 208, 208)),
 }
 
 REFERENCE_HEADING_RE = re.compile(r'^(参考文献|引用文献|参考资料)\s*[:：]?$')
@@ -221,6 +231,7 @@ class ParagraphAnnotation:
     ai_score: float | None = None
     repeat_score: float | None = None
     duplicate_status: str | None = None
+    source_color: str = 'unknown'
     include_in_run: bool = True
     source_excerpt: str = ''
     is_auto_generated: bool = True
@@ -242,6 +253,7 @@ class ParagraphAnnotation:
             ai_score=_coerce_optional_float(payload.get('ai_score')),
             repeat_score=_coerce_optional_float(payload.get('repeat_score')),
             duplicate_status=_normalize_duplicate_status(payload.get('duplicate_status')),
+            source_color=_normalize_source_color(payload.get('source_color')),
             include_in_run=bool(payload.get('include_in_run', True)),
             source_excerpt=str(payload.get('source_excerpt', '') or ''),
             is_auto_generated=bool(payload.get('is_auto_generated', True)),
@@ -351,7 +363,7 @@ class ReportImportEngine:
         normalized_path = os.path.abspath(path)
         ext = os.path.splitext(normalized_path)[1].lower()
         if ext not in {'.docx', '.pdf'}:
-            raise RuntimeError('当前仅支持导入 PDF 打印版与 DOCX 标红版报告')
+            raise RuntimeError('当前仅支持导入 PDF 打印版与 DOCX 颜色标记版报告')
 
         self._log(
             f'[report_import] parse_begin page={page_kind} ext={ext.lstrip(".")} '
@@ -531,6 +543,7 @@ class ReportImportEngine:
             paragraphs.append(full_text)
             clean_full_text = _strip_leading_report_badge(full_text, page_kind)
             paragraph_risk = 'safe'
+            paragraph_source_color = 'unknown'
             paragraph_score = _extract_primary_score(full_text, page_kind)
             paragraph_kind = _classify_report_fragment(clean_full_text)
             for run in paragraph.runs:
@@ -538,10 +551,16 @@ class ReportImportEngine:
                 if not run_text:
                     continue
                 clean_run_text = _strip_leading_report_badge(run_text, page_kind)
-                risk_level = _risk_from_docx_run(run)
+                style_info = _docx_style_from_run(run)
+                risk_level = style_info['risk_level']
+                source_color = style_info['source_color']
                 run_score = _extract_primary_score(run_text, page_kind)
                 if RISK_ORDER.get(risk_level, 0) > RISK_ORDER.get(paragraph_risk, 0):
                     paragraph_risk = risk_level
+                    if source_color != 'unknown':
+                        paragraph_source_color = source_color
+                elif paragraph_source_color == 'unknown' and source_color != 'unknown':
+                    paragraph_source_color = source_color
                 if risk_level != 'safe' or len(clean_run_text) >= 8:
                     fragments.append(
                         {
@@ -549,6 +568,7 @@ class ReportImportEngine:
                             'risk_level': risk_level,
                             'score': run_score if run_score is not None else paragraph_score,
                             'duplicate_status': _risk_to_duplicate_status(risk_level),
+                            'source_color': source_color,
                             'kind': paragraph_kind if paragraph_kind == 'body' else 'meta',
                             'order': fragment_order,
                         }
@@ -560,6 +580,7 @@ class ReportImportEngine:
                     'risk_level': _infer_risk_from_text(full_text, paragraph_risk),
                     'score': paragraph_score,
                     'duplicate_status': _infer_duplicate_status(full_text, paragraph_risk),
+                    'source_color': paragraph_source_color,
                     'kind': paragraph_kind,
                     'order': fragment_order,
                 }
@@ -853,11 +874,13 @@ def _build_ai_annotation(paragraph, report_text, matched_fragment, matched_score
     matched_text = ''
     ai_score = None
     risk_level = 'safe'
+    source_color = 'unknown'
 
     if matched_fragment is not None:
         matched_text = _strip_leading_report_badge(str(matched_fragment.get('text', '') or '').strip(), 'ai_reduce')
         ai_score = _coerce_optional_float(matched_fragment.get('score'))
         risk_level = _normalize_risk_level(matched_fragment.get('risk_level'))
+        source_color = _normalize_source_color(matched_fragment.get('source_color'))
 
     if ai_score is None:
         ai_score = _extract_nearby_score(report_text, matched_text or paragraph.text, page_kind='ai_reduce')
@@ -881,6 +904,7 @@ def _build_ai_annotation(paragraph, report_text, matched_fragment, matched_score
         ai_score=round(float(ai_score), 1) if ai_score is not None else None,
         repeat_score=None,
         duplicate_status=None,
+        source_color=source_color,
         include_in_run=risk_level != 'safe',
         source_excerpt=matched_text,
         is_auto_generated=True,
@@ -893,6 +917,7 @@ def _build_plagiarism_annotation(paragraph, report_text, matched_fragment, match
     repeat_score = None
     risk_level = 'safe'
     duplicate_status = 'safe'
+    source_color = 'unknown'
     annotation_start = paragraph.start
     annotation_end = paragraph.end
 
@@ -901,6 +926,7 @@ def _build_plagiarism_annotation(paragraph, report_text, matched_fragment, match
         repeat_score = _coerce_optional_float(matched_fragment.get('score'))
         risk_level = _normalize_risk_level(matched_fragment.get('risk_level'))
         duplicate_status = _normalize_duplicate_status(matched_fragment.get('duplicate_status'))
+        source_color = _normalize_source_color(matched_fragment.get('source_color'))
         resolved_range = _resolve_annotation_excerpt_range(paragraph, matched_text)
         if resolved_range is not None:
             annotation_start, annotation_end = resolved_range
@@ -931,6 +957,7 @@ def _build_plagiarism_annotation(paragraph, report_text, matched_fragment, match
         ai_score=None,
         repeat_score=round(float(repeat_score), 1) if repeat_score is not None else None,
         duplicate_status=duplicate_status,
+        source_color=source_color,
         include_in_run=risk_level != 'safe',
         source_excerpt=matched_text,
         is_auto_generated=True,
@@ -1003,7 +1030,12 @@ def _match_fragment(paragraph_text, fragments, report_text, *, used_fragment_ind
 
     nearby_score = _extract_nearby_score(report_text, paragraph_text, page_kind='')
     if nearby_score is not None:
-        return {'text': paragraph_text.strip()[:80], 'risk_level': 'safe', 'score': nearby_score}, None, 0.35
+        return {
+            'text': paragraph_text.strip()[:80],
+            'risk_level': 'safe',
+            'score': nearby_score,
+            'source_color': 'unknown',
+        }, None, 0.35
     return None, None, 0.0
 
 
@@ -1163,26 +1195,48 @@ def _infer_risk_from_text(text, default_risk):
     return _normalize_risk_level(default_risk)
 
 
-def _risk_from_docx_run(run):
+def _docx_style_from_run(run):
     risk_candidates = ['safe']
+    source_color_candidates = ['unknown']
 
     try:
-        rgb = getattr(getattr(run.font, 'color', None), 'rgb', None)
+        font_color = getattr(run.font, 'color', None)
     except Exception:
-        rgb = None
+        font_color = None
+
+    rgb = getattr(font_color, 'rgb', None)
     rgb_value = _rgb_from_hex_string(str(rgb or ''))
     if rgb_value is not None:
+        source_color_candidates.append(_source_color_from_rgb(rgb_value))
         risk_candidates.append(_risk_from_rgb(rgb_value))
+
+    theme_color = getattr(font_color, 'theme_color', None)
+    theme_color_name = getattr(theme_color, 'name', str(theme_color or '')).lower()
+    theme_source_color = _normalize_source_color(theme_color_name)
+    if theme_source_color != 'unknown':
+        source_color_candidates.append(theme_source_color)
+        risk_candidates.append(RISK_BY_COLOR.get(theme_source_color, 'safe'))
 
     try:
         highlight = getattr(run.font, 'highlight_color', None)
     except Exception:
         highlight = None
     highlight_name = getattr(highlight, 'name', str(highlight or '')).lower()
+    highlight_source_color = _normalize_source_color(highlight_name)
+    if highlight_source_color != 'unknown':
+        source_color_candidates.append(highlight_source_color)
     if highlight_name in DOCX_HIGHLIGHT_NAME_MAP:
         risk_candidates.append(DOCX_HIGHLIGHT_NAME_MAP[highlight_name])
 
-    return max(risk_candidates, key=lambda item: RISK_ORDER.get(_normalize_risk_level(item), 0))
+    risk_level = max(risk_candidates, key=lambda item: RISK_ORDER.get(_normalize_risk_level(item), 0))
+    return {
+        'risk_level': _normalize_risk_level(risk_level),
+        'source_color': _select_source_color_for_risk(source_color_candidates, risk_level),
+    }
+
+
+def _risk_from_docx_run(run):
+    return _docx_style_from_run(run)['risk_level']
 
 
 def _detect_report_kind(path, report_text):
@@ -1249,6 +1303,8 @@ def _detect_vendor(path, report_text):
         return '知网'
     if '万方' in haystack or 'wanfang' in haystack:
         return '万方'
+    if '维普' in haystack or 'vip' in haystack or 'cqvip' in haystack:
+        return '维普'
     return '通用模板'
 
 
@@ -1390,12 +1446,14 @@ def _build_pymupdf_line(words, page_kind, page_height, fill_regions, *, text_col
     text_rgb = None if fill_rgb is not None else _match_pymupdf_line_text_rgb(raw_text, bbox, text_color_lines)
     background_rgb = fill_rgb if fill_rgb is not None else text_rgb
     background_risk = _risk_from_rgb(background_rgb, legend_map=legend_map) if background_rgb is not None else 'safe'
+    background_source_color = _source_color_from_rgb(background_rgb, legend_map=legend_map)
     return {
         'text': text,
         'bbox': bbox,
         'badge_score': badge_score,
         'background_rgb': background_rgb,
         'background_risk': background_risk,
+        'background_source_color': background_source_color,
         'background_source': 'fill' if fill_rgb is not None else ('text' if text_rgb is not None else None),
         'is_badge_only': badge_score is not None and not body_text,
         'is_noise': _is_pymupdf_noise_line(raw_text, bbox, page_height, page_kind),
@@ -1869,6 +1927,7 @@ def _build_pymupdf_page_fragments(lines, page_kind, legend_map=None, log_callbac
             return
 
         fragment_color_risk = _pick_pymupdf_fragment_risk(current_lines)
+        fragment_source_color = _pick_pymupdf_fragment_source_color(current_lines)
         risk_level = fragment_color_risk or _infer_risk_from_text(text, 'safe')
         score = current_score
         legend_score_risk = None
@@ -1913,6 +1972,7 @@ def _build_pymupdf_page_fragments(lines, page_kind, legend_map=None, log_callbac
                 'risk_level': risk_level,
                 'score': score,
                 'duplicate_status': duplicate_status,
+                'source_color': fragment_source_color,
                 'kind': _classify_report_fragment(text),
                 'color_applied': fragment_color_risk is not None,
             }
@@ -1959,6 +2019,24 @@ def _pick_pymupdf_fragment_risk(lines):
     if not counts:
         return None
     return max(counts, key=lambda item: (counts[item], RISK_ORDER.get(item, 0)))
+
+
+def _pick_pymupdf_fragment_source_color(lines):
+    counts = {}
+    for line in lines:
+        color_name = _normalize_source_color(line.get('background_source_color'))
+        if color_name == 'unknown':
+            continue
+        counts[color_name] = counts.get(color_name, 0) + 1
+    if not counts:
+        return 'unknown'
+    return max(
+        counts,
+        key=lambda item: (
+            counts[item],
+            RISK_ORDER.get(_normalize_risk_level(RISK_BY_COLOR.get(item, 'safe')), 0),
+        ),
+    )
 
 
 def _should_split_pymupdf_fragment(previous_line, current_line):
@@ -2187,6 +2265,7 @@ def _extract_pdf_fragments(path, page_kind, log_callback=None):
                 'risk_level': _infer_risk_from_text(line, 'safe'),
                 'score': _extract_primary_score(line, page_kind),
                 'duplicate_status': _infer_duplicate_status(line, 'safe'),
+                'source_color': 'unknown',
                 'kind': _classify_report_fragment(clean_line),
                 'order': order,
                 'color_applied': False,
@@ -2241,6 +2320,7 @@ def _extract_pdf_fragments_from_text_object(text_object, page_kind):
                 'risk_level': risk_level,
                 'score': _extract_primary_score(text, page_kind),
                 'duplicate_status': _infer_duplicate_status(text, risk_level),
+                'source_color': _source_color_from_rgb(current_rgb) if current_color_applied else 'unknown',
                 'kind': _classify_report_fragment(text),
                 'color_applied': current_color_applied,
             }
@@ -2618,6 +2698,55 @@ def _normalize_risk_level(value):
     return alias_map.get(current, alias_map.get(str(value or '').strip(), 'safe'))
 
 
+def _normalize_source_color(value):
+    current = str(value or 'unknown').strip().lower()
+    alias_map = {
+        '': 'unknown',
+        'unknown': 'unknown',
+        'none': 'unknown',
+        'red': 'red',
+        'darkred': 'red',
+        'orange': 'orange',
+        'yellow': 'orange',
+        'purple': 'purple',
+        'violet': 'purple',
+        'pink': 'purple',
+        'magenta': 'purple',
+        'black': 'black',
+        'gray': 'gray',
+        'grey': 'gray',
+        '红色': 'red',
+        '标红': 'red',
+        '橙色': 'orange',
+        '橘色': 'orange',
+        '黄色': 'orange',
+        '紫色': 'purple',
+        '标紫': 'purple',
+        '黑色': 'black',
+        '灰色': 'gray',
+    }
+    return alias_map.get(current, alias_map.get(str(value or '').strip(), 'unknown'))
+
+
+def _select_source_color_for_risk(candidates, risk_level):
+    normalized_risk = _normalize_risk_level(risk_level)
+    normalized_candidates = []
+    for item in candidates or []:
+        current = _normalize_source_color(item)
+        if current not in normalized_candidates:
+            normalized_candidates.append(current)
+
+    for color_name in normalized_candidates:
+        if color_name == 'unknown':
+            continue
+        if _normalize_risk_level(RISK_BY_COLOR.get(color_name, 'safe')) == normalized_risk:
+            return color_name
+    for color_name in normalized_candidates:
+        if color_name != 'unknown':
+            return color_name
+    return 'unknown'
+
+
 def _normalize_duplicate_status(value):
     current = str(value or '').strip().lower()
     alias_map = {
@@ -2697,9 +2826,9 @@ def _risk_from_rgb(rgb, legend_map=None):
     if rgb is None:
         return 'safe'
 
-    legend_risk = _risk_from_legend_rgb(rgb, legend_map)
-    if legend_risk is not None:
-        return legend_risk
+    legend_entry = _match_legend_rgb_entry(rgb, legend_map)
+    if legend_entry is not None:
+        return _normalize_risk_level(legend_entry.get('risk_level'))
 
     best_risk = 'safe'
     best_distance = float('inf')
@@ -2717,7 +2846,40 @@ def _risk_from_rgb(rgb, legend_map=None):
     return 'safe'
 
 
+def _source_color_from_rgb(rgb, legend_map=None):
+    if rgb is None:
+        return 'unknown'
+
+    legend_entry = _match_legend_rgb_entry(rgb, legend_map)
+    if legend_entry is not None:
+        return _normalize_source_color(legend_entry.get('color_name'))
+
+    red, green, blue = rgb
+    if max(rgb) - min(rgb) <= 18:
+        return 'black' if (red + green + blue) / 3 <= 96 else 'gray'
+
+    best_color = 'unknown'
+    best_distance = float('inf')
+    for color_name, prototypes in SOURCE_COLOR_PROTOTYPES.items():
+        for prototype in prototypes:
+            distance = sum((left - right) ** 2 for left, right in zip(rgb, prototype))
+            if distance < best_distance:
+                best_distance = distance
+                best_color = color_name
+
+    if best_distance <= 140 ** 2:
+        return best_color
+    return 'unknown'
+
+
 def _risk_from_legend_rgb(rgb, legend_map):
+    best_entry = _match_legend_rgb_entry(rgb, legend_map)
+    if best_entry is None:
+        return None
+    return _normalize_risk_level(best_entry.get('risk_level'))
+
+
+def _match_legend_rgb_entry(rgb, legend_map):
     if rgb is None or not isinstance(legend_map, dict):
         return None
 
@@ -2732,11 +2894,9 @@ def _risk_from_legend_rgb(rgb, legend_map):
             best_distance = distance
             best_entry = entry
 
-    if best_entry is None:
+    if best_entry is None or best_distance > 120 ** 2:
         return None
-    if best_distance > 120 ** 2:
-        return None
-    return _normalize_risk_level(best_entry.get('risk_level'))
+    return best_entry
 
 
 def _dedupe_keep_order(items):

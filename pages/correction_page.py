@@ -629,24 +629,17 @@ class CorrectionPage(WorkspaceStateMixin):
 
     def _import_document(self):
         path = filedialog.askopenfilename(
-            filetypes=[('Word 文档', '*.docx'), ('文本文件', '*.txt'), ('所有文件', '*.*')],
+            filetypes=[('Word 文档', '*.docx')],
             parent=self.frame,
         )
         if not path:
             return
         try:
             paper_title = os.path.splitext(os.path.basename(path))[0]
-            if path.lower().endswith('.docx'):
-                text = self.aux.import_docx(path)
-                source_kind = 'docx_import'
-                source_desc = f'已导入 DOCX：{os.path.basename(path)}'
-                docx_path = path
-            else:
-                with open(path, 'r', encoding='utf-8', errors='ignore') as handle:
-                    text = handle.read()
-                source_kind = 'import'
-                source_desc = f'已导入文件：{os.path.basename(path)}'
-                docx_path = ''
+            text = self.aux.import_docx(path)
+            source_kind = 'docx_import'
+            source_desc = f'已导入 DOCX：{os.path.basename(path)}'
+            docx_path = path
             self._set_input_text(
                 text,
                 source_kind,

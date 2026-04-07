@@ -3200,17 +3200,13 @@ class PaperWritePage(WorkspaceStateMixin):
 
     def _import_file(self):
         path = filedialog.askopenfilename(
-            filetypes=[('Word文档', '*.docx'), ('文本文件', '*.txt'), ('所有文件', '*.*')],
+            filetypes=[('Word文档', '*.docx')],
             parent=self.frame,
         )
         if not path:
             return
         try:
-            if path.lower().endswith('.docx'):
-                text = self.aux.import_docx(path)
-            else:
-                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                    text = f.read()
+            text = self.aux.import_docx(path)
             title_feedback = self._apply_imported_paper_title(text, path)
             # 先解析大纲，不把全文直接填入编辑区
             self._parse_and_show_outline(text)
