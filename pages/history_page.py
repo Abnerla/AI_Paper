@@ -19,6 +19,7 @@ from modules.ui_components import (
     bind_responsive_two_pane,
     create_home_shell_button,
     create_scrolled_text,
+    THEMES,
 )
 
 
@@ -30,6 +31,7 @@ class HistoryPage:
         'legacy_partial': '兼容部分恢复',
     }
     FILTER_BUTTON_BORDER = 'card_border'
+    FILTER_ACTIVE_BUTTON_STYLE = 'primary_fixed'
     HISTORY_ACTION_BUTTON_MIN_WIDTH = 136
     EXPORT_OPTIONS = (
         ('导出 docx', 'docx', 'secondary'),
@@ -138,6 +140,8 @@ class HistoryPage:
 
     def _make_filter_shell_button(self, parent, text, command):
         shell = tk.Frame(parent, bg=COLORS[self.FILTER_BUTTON_BORDER], bd=0, highlightthickness=0)
+        shell._home_shell_border_key = self.FILTER_BUTTON_BORDER
+        shell._home_shell_border_color = None
         button = ModernButton(
             shell,
             text,
@@ -385,8 +389,17 @@ class HistoryPage:
     def _refresh_filter_styles(self):
         for key, refs in self.filter_buttons.items():
             selected = key == self.filter_key
-            refs['button'].set_style('primary' if selected else 'secondary')
+            refs['button'].set_style(self.FILTER_ACTIVE_BUTTON_STYLE if selected else 'secondary')
             refs['button'].configure(font=FONTS['body_bold'])
+            shell = refs['shell']
+            if selected:
+                shell._home_shell_border_key = None
+                shell._home_shell_border_color = THEMES['light']['card_border']
+                shell.configure(bg=THEMES['light']['card_border'])
+            else:
+                shell._home_shell_border_key = self.FILTER_BUTTON_BORDER
+                shell._home_shell_border_color = None
+                shell.configure(bg=COLORS[self.FILTER_BUTTON_BORDER])
 
     def _filter_records(self):
         if self.filter_key == '全部':

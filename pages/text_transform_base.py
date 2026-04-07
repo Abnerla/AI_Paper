@@ -29,6 +29,7 @@ from modules.ui_components import (
     create_scrolled_text,
     set_ellipsized_label_text,
     show_tooltip,
+    THEMES,
 )
 from modules.workspace_state import WorkspaceStateMixin
 
@@ -105,6 +106,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
     MERGED_MODE_LABEL_TEXT = '处理模式：'
     MERGED_DETECT_LABEL_TEXT = '结果核验：'
     ACTION_BUTTON_TEXT = ''
+    ACTION_BUTTON_STYLE = 'primary'
     ACTION_TIP_TEXT = ''
     ACTION_START_STATUS = ''
     ACTION_LOADING_TEXT = ''
@@ -141,6 +143,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
     COMPARE_DETECT_DEFAULT_COLLAPSED = False
     COMPARE_DETECT_COLLAPSED_HINT = '默认收起，按需展开复核当前结果。'
     PRIMARY_ANALYSIS_BUTTON_TEXT = '开始检测'
+    PRIMARY_ANALYSIS_BUTTON_STYLE = 'primary'
     SECONDARY_ANALYSIS_BUTTON_TEXT = '结构检查'
     PRIMARY_ANALYSIS_EMPTY_WARNING = '请先输入原文或生成处理结果。'
     ANALYSIS_STATUS_READY_TEXT = '请选择上方核验动作。'
@@ -362,7 +365,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
         self._create_header_button_widget(
             action_buttons,
             self.ACTION_BUTTON_TEXT,
-            'primary',
+            self.ACTION_BUTTON_STYLE,
             self._run_transform,
             width=10,
             font=FONTS['body_bold'],
@@ -562,7 +565,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
         self._create_header_button_widget(
             action_shell,
             self.ACTION_BUTTON_TEXT,
-            'primary',
+            self.ACTION_BUTTON_STYLE,
             self._run_transform,
             font=FONTS['body_bold'],
             padx=20,
@@ -635,7 +638,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
         ModernButton(
             action_inner,
             self.ACTION_BUTTON_TEXT,
-            style='primary',
+            style=self.ACTION_BUTTON_STYLE,
             command=self._run_transform,
             padx=18,
             pady=10,
@@ -682,7 +685,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
 
     def _get_detect_button_specs(self):
         return (
-            (self.PRIMARY_ANALYSIS_BUTTON_TEXT, 'primary', self._run_primary_analysis),
+            (self.PRIMARY_ANALYSIS_BUTTON_TEXT, self.PRIMARY_ANALYSIS_BUTTON_STYLE, self._run_primary_analysis),
             (self.SECONDARY_ANALYSIS_BUTTON_TEXT, 'ghost', self._run_secondary_analysis),
             ('敏感表达检查', 'warning', self._detect_sensitive),
             ('刷新差异视图', 'accent', self._refresh_diff_view),
@@ -976,16 +979,17 @@ class TextTransformPageBase(WorkspaceStateMixin):
         return 'theme'
 
     def _create_header_button_widget(self, parent, text, style, command, *, font, padx, pady, width=None):
-        if style == 'primary':
+        if style in {'primary', 'primary_fixed'}:
             return create_home_shell_button(
                 parent,
                 text,
                 command=command,
-                style='primary',
+                style=style,
                 font=font,
                 padx=padx,
                 pady=pady,
                 width=width,
+                border_color=THEMES['light']['card_border'] if style == 'primary_fixed' else None,
             )[0]
         return ModernButton(
             parent,

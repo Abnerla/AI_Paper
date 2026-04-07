@@ -27,6 +27,7 @@ from modules.ui_components import (
     bind_responsive_two_pane,
     create_scrolled_text,
     set_ellipsized_label_text,
+    THEMES,
 )
 from modules.workspace_state import WorkspaceStateMixin
 
@@ -296,7 +297,17 @@ class PolishPage(WorkspaceStateMixin):
         note_frame, self.note_text = create_scrolled_text(inner, height=6)
         note_frame.pack(fill=tk.X, pady=(8, 0))
 
-        def add_primary_button(text, style, command, *, width=None, gap_after=None, home_shell=False, shell_style=None):
+        def add_primary_button(
+            text,
+            style,
+            command,
+            *,
+            width=None,
+            gap_after=None,
+            home_shell=False,
+            shell_style=None,
+            border_color=None,
+        ):
             host = tk.Frame(
                 self.polish_action_group,
                 bg=COLORS['card_bg'],
@@ -310,6 +321,7 @@ class PolishPage(WorkspaceStateMixin):
                     text,
                     command=command,
                     style=shell_style or style,
+                    border_color=border_color,
                     padx=10,
                     pady=8,
                 )
@@ -324,11 +336,12 @@ class PolishPage(WorkspaceStateMixin):
 
         add_primary_button(
             '执行AI任务',
-            style='primary',
+            style='primary_fixed',
             command=self._run_task,
             gap_after=self.POLISH_TOOLBAR_ITEM_GAP,
             home_shell=True,
-            shell_style='primary',
+            shell_style='primary_fixed',
+            border_color=THEMES['light']['card_border'],
         )
         add_primary_button(
             '提示词',

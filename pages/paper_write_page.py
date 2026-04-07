@@ -34,7 +34,9 @@ from modules.ui_components import (
     create_scrolled_text,
     get_resource_path,
     load_image,
+    refresh_home_shell_button,
     show_tooltip,
+    THEMES,
 )
 from modules.workspace_state import WorkspaceStateMixin
 
@@ -210,6 +212,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self._editor_bg_swatch_images = {}
         self._editor_tool_separators = []
         self._editor_bg_indicator_color = self.DEFAULT_BG_SWATCH_COLOR
+        self._fixed_primary_shell_buttons = []
         self._editor_numbering_window = None
         self._editor_bullet_window = None
         self._editor_palette_window = None
@@ -446,12 +449,14 @@ class PaperWritePage(WorkspaceStateMixin):
                 self._settings_primary_action_row,
                 label,
                 command=cmd,
-                style='primary',
+                style='primary_fixed',
+                border_color=THEMES['light']['card_border'],
             )
             right_gap = button_gap_x if index < len(primary_btn_specs) - 1 else 0
             shell.pack(side=tk.LEFT, padx=(0, right_gap), pady=button_gap_y)
             self._settings_action_buttons[label] = button
             self._settings_action_shells[label] = shell
+            self._fixed_primary_shell_buttons.append(shell)
 
         for index, (label, cmd) in enumerate(secondary_btn_specs):
             shell, button = create_home_shell_button(
@@ -633,12 +638,14 @@ class PaperWritePage(WorkspaceStateMixin):
             top_row,
             '写当前章节',
             command=self._write_section,
-            style='primary',
+            style='primary_fixed',
             padx=14,
             pady=6,
             font=FONTS['body_bold'],
+            border_color=THEMES['light']['card_border'],
         )
         self._write_section_button_shell.pack(side=tk.LEFT)
+        self._fixed_primary_shell_buttons.append(self._write_section_button_shell)
 
         tool_row = tk.Frame(inner, bg=COLORS['card_bg'])
         tool_row.pack(fill=tk.X, pady=(0, 8))
@@ -5192,6 +5199,8 @@ class PaperWritePage(WorkspaceStateMixin):
         self._update_stats()
 
     def on_show(self):
+        for shell in self._fixed_primary_shell_buttons:
+            refresh_home_shell_button(shell)
         self._refresh_editor_selection_style()
         self._refresh_editor_toolbar_icons()
 

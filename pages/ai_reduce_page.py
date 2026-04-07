@@ -53,6 +53,7 @@ class AIReducePage(TextTransformPageBase):
     SHOW_OUTPUT_HEADER_REPLACE_ACTION = True
 
     ACTION_BUTTON_TEXT = '开始执行'
+    ACTION_BUTTON_STYLE = 'primary_fixed'
     ACTION_START_STATUS = 'AI痕迹消除中...'
     ACTION_LOADING_TEXT = '正在执行 AI 痕迹消除...'
     ACTION_SUCCESS_STATUS = 'AI 痕迹消除完成，已写入历史记录'
@@ -67,6 +68,7 @@ class AIReducePage(TextTransformPageBase):
     COMPARE_DETECT_HELP_TEXT = '附属功能区，仅用于复核当前去痕结果；不影响上方模式选择与主流程执行。'
     COMPARE_DETECT_COLLAPSED_HINT = '默认收起，按需展开去痕效果复核。'
     PRIMARY_ANALYSIS_BUTTON_TEXT = '结果复核'
+    PRIMARY_ANALYSIS_BUTTON_STYLE = 'primary_fixed'
     PREVIEW_REFRESH_BUTTON_TEXT = '刷新'
     SECONDARY_ANALYSIS_BUTTON_TEXT = '逻辑流畅度检测'
     PRIMARY_ANALYSIS_EMPTY_WARNING = '请先输入待处理原文或生成去痕处理结果。'
@@ -133,7 +135,7 @@ class AIReducePage(TextTransformPageBase):
 
     def _get_detect_button_specs(self):
         return (
-            (self.PRIMARY_ANALYSIS_BUTTON_TEXT, 'primary', self._run_primary_analysis),
+            (self.PRIMARY_ANALYSIS_BUTTON_TEXT, self.PRIMARY_ANALYSIS_BUTTON_STYLE, self._run_primary_analysis),
             (self.PREVIEW_REFRESH_BUTTON_TEXT, 'accent', self._refresh_diff_view),
         )
 
@@ -147,7 +149,7 @@ class AIReducePage(TextTransformPageBase):
 
     def _get_analysis_summary_title_button_specs(self):
         return (
-            (self.PRIMARY_ANALYSIS_BUTTON_TEXT, 'primary', self._run_primary_analysis),
+            (self.PRIMARY_ANALYSIS_BUTTON_TEXT, self.PRIMARY_ANALYSIS_BUTTON_STYLE, self._run_primary_analysis),
         )
 
     def _get_preview_title_button_specs(self):

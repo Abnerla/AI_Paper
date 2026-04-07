@@ -626,6 +626,20 @@ def apply_theme_to_tree(widget, previous_colors=None):
         except tk.TclError:
             pass
 
+        border_key = getattr(current, '_home_shell_border_key', None)
+        border_color = COLORS.get(border_key) if border_key else getattr(current, '_home_shell_border_color', None)
+        if border_color:
+            try:
+                current.configure(bg=border_color)
+            except tk.TclError:
+                pass
+
+        if hasattr(current, 'set_style') and hasattr(current, 'style_name'):
+            try:
+                current.set_style(current.style_name)
+            except tk.TclError:
+                pass
+
         for child in current.winfo_children():
             recolor(child)
 
@@ -703,8 +717,10 @@ def create_home_shell_button(
 ):
     """创建与首页“系统公告”同款的外壳按钮。"""
 
+    shell_border_key = None
     if border_color is None:
-        border_color = COLORS['card_border']
+        shell_border_key = 'card_border'
+        border_color = COLORS[shell_border_key]
     shell = tk.Frame(parent, bg=border_color, bd=0, highlightthickness=0)
     button = ModernButton(
         shell,
@@ -718,7 +734,32 @@ def create_home_shell_button(
         **button_kwargs,
     )
     button.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+    shell._home_shell_border_key = shell_border_key
+    shell._home_shell_border_color = None if shell_border_key else border_color
+    shell._home_shell_button = button
+    button._home_shell = shell
     return shell, button
+
+
+def refresh_home_shell_button(shell, button=None):
+    if shell is None:
+        return
+
+    target_button = button or getattr(shell, '_home_shell_button', None)
+    border_key = getattr(shell, '_home_shell_border_key', None)
+    border_color = COLORS.get(border_key) if border_key else getattr(shell, '_home_shell_border_color', None)
+
+    if border_color:
+        try:
+            shell.configure(bg=border_color)
+        except tk.TclError:
+            pass
+
+    if target_button is not None and hasattr(target_button, 'set_style'):
+        try:
+            target_button.set_style(target_button.style_name)
+        except tk.TclError:
+            pass
 
 
 def create_selector_card(
@@ -1292,6 +1333,13 @@ class ModernButton(tk.Button):
             'activebackground': COLORS['btn_hover'],
             'activeforeground': COLORS['text_main'],
             'highlightbackground': COLORS['card_border'],
+        },
+        'primary_fixed': lambda: {
+            'bg': THEMES['light']['accent'],
+            'fg': THEMES['light']['text_main'],
+            'activebackground': THEMES['light']['btn_hover'],
+            'activeforeground': THEMES['light']['text_main'],
+            'highlightbackground': THEMES['light']['card_border'],
         },
         'secondary': lambda: {
             'bg': COLORS['card_bg'],

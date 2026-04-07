@@ -28,6 +28,8 @@ from modules.ui_components import (
     FONTS,
     ModernButton,
     ResponsiveButtonBar,
+    refresh_home_shell_button,
+    THEMES,
     ToolIconButton,
     load_image,
 )
@@ -137,19 +139,17 @@ class HomePage:
         self._build_dashboard()
         self.refresh_dashboard()
 
-    def _make_hero_shell_button(self, parent, text, style, command, padx, pady, font, min_width):
-        shell = tk.Frame(parent, bg=COLORS['card_border'], bd=0, highlightthickness=0)
-        button = ModernButton(
-            shell,
+    def _make_hero_shell_button(self, parent, text, style, command, padx, pady, font, min_width, border_color=None):
+        shell, button = create_home_shell_button(
+            parent,
             text,
-            style=style,
             command=command,
+            style=style,
             padx=padx,
             pady=pady,
             font=font,
-            highlightthickness=0,
+            border_color=border_color,
         )
-        button.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         # 记录 min_width，延迟到窗口可见后由 _fix_hero_button_sizes 统一固定尺寸
         shell._min_width = min_width
         self.hero_button_shells.append((shell, button))
@@ -190,26 +190,10 @@ class HomePage:
 
     def _refresh_primary_action_button_styles(self):
         for shell, button in self.hero_button_shells:
-            try:
-                shell.configure(bg=COLORS['card_border'])
-            except tk.TclError:
-                continue
-            if hasattr(button, 'set_style'):
-                try:
-                    button.set_style(button.style_name)
-                except tk.TclError:
-                    pass
+            refresh_home_shell_button(shell, button)
 
         for shell, button in self.dashboard_shell_buttons:
-            try:
-                shell.configure(bg=COLORS['card_border'])
-            except tk.TclError:
-                continue
-            if hasattr(button, 'set_style'):
-                try:
-                    button.set_style(button.style_name)
-                except tk.TclError:
-                    pass
+            refresh_home_shell_button(shell, button)
 
     def _build_hero(self):
         self.hero_panel = tk.Frame(self.frame, bg=COLORS['shadow'])
@@ -304,12 +288,13 @@ class HomePage:
             self._make_hero_shell_button(
                 self.hero_actions_bar,
                 '开始使用',
-                'primary',
+                'primary_fixed',
                 self._start_using,
                 padx=18,
                 pady=6,
                 font=FONTS['body_bold'],
                 min_width=176,
+                border_color=THEMES['light']['card_border'],
             )
         )
         self.hero_actions_bar.add(
@@ -358,12 +343,13 @@ class HomePage:
             self._make_hero_shell_button(
                 self.hero_text,
                 '开始使用',
-                'primary',
+                'primary_fixed',
                 self._start_using,
                 padx=18,
                 pady=6,
                 font=FONTS['body_bold'],
                 min_width=176,
+                border_color=THEMES['light']['card_border'],
             ),
             self._make_hero_shell_button(
                 self.hero_text,
@@ -556,11 +542,12 @@ class HomePage:
         self.status_continue_button_shell, self.status_continue_button = self._create_dashboard_shell_button(
             self.status_card.inner,
             '继续当前任务',
-            style='primary',
+            style='primary_fixed',
             command=self._continue_current_task,
             padx=20,
             pady=10,
             font=FONTS['body_bold'],
+            border_color=THEMES['light']['card_border'],
         )
         self.status_continue_button_shell.pack(anchor='w')
 
@@ -772,11 +759,12 @@ class HomePage:
         query_shell, _query_button = self._create_dashboard_shell_button(
             action_row,
             '查询',
-            style='primary',
+            style='primary_fixed',
             command=self._refresh_request_logs,
             padx=16,
             pady=8,
             font=FONTS['body_bold'],
+            border_color=THEMES['light']['card_border'],
         )
         query_shell.pack(side=tk.RIGHT)
         reset_shell, _reset_button = self._create_dashboard_shell_button(
@@ -1170,11 +1158,12 @@ class HomePage:
         save_shell, _save_button = self._create_dashboard_shell_button(
             action_shell,
             '保存',
-            style='primary',
+            style='primary_fixed',
             command=self._save_pricing_rule,
             padx=12,
             pady=8,
             font=FONTS['body_bold'],
+            border_color=THEMES['light']['card_border'],
         )
         save_shell.pack(side=tk.RIGHT, padx=(0, 8))
 
