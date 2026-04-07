@@ -96,6 +96,25 @@ class PaperWritePage(WorkspaceStateMixin):
         '字色': 'png/Color.png',
         '字体格式': 'png/Font.png',
     }
+    TOOLBAR_TEXT_FALLBACKS = {
+        '撤回': '撤',
+        '重做': '重',
+        '格式刷': '刷',
+        '字体格式': '字',
+        '字色': '色',
+        '底色': '底',
+        '加粗': 'B',
+        '斜体': 'I',
+        '下划线': 'U',
+        '删除线': 'S',
+        '上标': 'x²',
+        '下标': 'x₂',
+        '缩进': '缩',
+        '项目符号': '•',
+        '编号': '1.',
+        '引用': '引',
+        '查替': '查',
+    }
     WORD_CN_FONT_FAMILIES = (
         '宋体', '黑体', '楷体', '仿宋', '微软雅黑',
         '华文中宋', '华文楷体', '华文仿宋', '方正小标宋',
@@ -652,10 +671,10 @@ class PaperWritePage(WorkspaceStateMixin):
                     padx=3,
                     pady=4,
                     font=FONTS['small'],
-                    image=self._load_toolbar_icon(label),
                     compound='center',
                 )
                 self._configure_toolbar_icon_button(btn, label)
+                self._apply_toolbar_button_content(btn, label)
                 btn.grid(row=0, column=column, padx=(0, 3), sticky='ew')
                 tool_row.grid_columnconfigure(column, weight=1, uniform='editor_toolbar')
                 show_tooltip(btn, label)
@@ -868,6 +887,16 @@ class PaperWritePage(WorkspaceStateMixin):
             cursor='hand2',
         )
 
+    def _toolbar_text_fallback(self, label):
+        return self.TOOLBAR_TEXT_FALLBACKS.get(label, (label or '')[:2])
+
+    def _apply_toolbar_button_content(self, button, label):
+        image = self._load_toolbar_icon(label)
+        if image:
+            button.configure(image=image, text='')
+            return
+        button.configure(image='', text=self._toolbar_text_fallback(label))
+
     def _toolbar_icon_foreground(self):
         return COLORS['text_main']
 
@@ -951,7 +980,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self._editor_bg_swatch_images = {}
         for label, button in self._editor_tool_buttons.items():
             self._configure_toolbar_icon_button(button, label)
-            button.configure(image=self._load_toolbar_icon(label))
+            self._apply_toolbar_button_content(button, label)
         for separator in self._editor_tool_separators:
             if separator.winfo_exists():
                 separator.configure(

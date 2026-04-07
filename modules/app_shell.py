@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 纸研社 v1.2.1
 独立运行的 Windows 桌面应用
@@ -3031,6 +3031,30 @@ class SmartPaperTool:
         )
         subtitle_label.pack(anchor='w', pady=(1, 0))
 
+        option_widgets = []
+        restore_job = {'id': None}
+
+        def cancel_restore_job():
+            job_id = restore_job['id']
+            if job_id is None:
+                return
+            try:
+                row.after_cancel(job_id)
+            except tk.TclError:
+                pass
+            restore_job['id'] = None
+
+        def is_pointer_inside_option():
+            if not row.winfo_exists():
+                return False
+            try:
+                target = row.winfo_containing(row.winfo_pointerx(), row.winfo_pointery())
+            except tk.TclError:
+                return False
+            if not target:
+                return False
+            return any(target is widget or str(target).startswith(str(widget)) for widget in option_widgets)
+
         def apply_visual(bg, *, active=False):
             icon_color = COLORS['primary'] if active else COLORS['text_main']
             row.configure(bg=bg)
@@ -3042,21 +3066,37 @@ class SmartPaperTool:
             self._draw_theme_menu_icon(icon_canvas, icon_kind, icon_color)
 
         def on_enter(_event=None):
+            cancel_restore_job()
             if selected:
                 return
             apply_visual(hover_bg)
 
         def on_leave(_event=None):
-            apply_visual(selected_bg if selected else base_bg, active=selected)
+            cancel_restore_job()
+            if selected:
+                apply_visual(selected_bg, active=True)
+                return
+
+            def restore_if_pointer_outside():
+                restore_job['id'] = None
+                if is_pointer_inside_option():
+                    return
+                apply_visual(base_bg)
+
+            # 鼠标在同一行的子控件之间移动时，Tk 会连续派发 Enter/Leave。
+            # 延后一次再判断真实位置，避免主题子菜单在两种样式间闪烁。
+            restore_job['id'] = row.after(16, restore_if_pointer_outside)
 
         def on_click(_event=None):
+            cancel_restore_job()
             self._close_theme_menu()
             self._apply_theme(value)
             return 'break'
 
         apply_visual(selected_bg if selected else base_bg, active=selected)
+        option_widgets = [row, icon_wrap, icon_canvas, text_wrap, title_label, subtitle_label]
 
-        for widget in (row, icon_wrap, icon_canvas, text_wrap, title_label, subtitle_label):
+        for widget in option_widgets:
             widget.bind('<Enter>', on_enter, add='+')
             widget.bind('<Leave>', on_leave, add='+')
             widget.bind('<Button-1>', on_click, add='+')

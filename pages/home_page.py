@@ -2064,7 +2064,7 @@ class HomePage:
 
                 select_shell, select_button = create_home_shell_button(
                     btn_col,
-                    '启用' if is_active else '关闭',
+                    '当前使用' if is_active else '启用',
                     command=(lambda: None) if is_active else (lambda aid=api_id, model_name=name: _activate_model(aid, model_name)),
                     style='primary' if is_active else 'secondary',
                     padx=8,
@@ -2093,27 +2093,43 @@ class HomePage:
                 )
                 detail_btn.grid(row=0, column=1, padx=(0, 6), sticky='e')
 
-                if not is_active:
-                    _name = name
-                    def _delete(aid=api_id, n=_name):
-                        if not messagebox.askyesno('删除模型',
-                                f'确定要删除「{n}」的配置吗？此操作不可撤销。',
-                                parent=win):
-                            return
-                        self.config.delete_api_config(aid)
-                        self.config.save()
-                        _populate()
-                    del_btn = _create_action_icon(
-                        btn_col,
-                        icon='⌦',
-                        tooltip='删除',
-                        fg=COLORS['error'],
-                        command=_delete,
-                        active_bg=COLORS['error'],
-                        active_fg='#FFFFFF',
-                        image_name='Delete.png',
-                    )
-                    del_btn.grid(row=0, column=2, sticky='e')
+                _name = name
+
+                def _delete(aid=api_id, n=_name, active=is_active):
+                    if active:
+                        confirm_message = (
+                            f'确定要删除当前模型「{n}」的配置吗？此操作不可撤销。\n'
+                            '删除后会自动切换到下一条可用模型；若无剩余模型则清空当前模型。'
+                        )
+                    else:
+                        confirm_message = f'确定要删除「{n}」的配置吗？此操作不可撤销。'
+                    if not messagebox.askyesno('删除模型', confirm_message, parent=win):
+                        return
+
+                    backup_cfg = self.config.get_api_config(aid)
+                    previous_active_api = self.config.active_api
+                    self.config.delete_api_config(aid)
+                    if not self.config.save():
+                        if backup_cfg:
+                            self.config.set_api_config(aid, backup_cfg)
+                        self.config.active_api = previous_active_api
+                        messagebox.showerror('删除失败', '模型配置保存失败，请稍后重试。', parent=win)
+                        return
+
+                    self.refresh_dashboard()
+                    _populate()
+
+                del_btn = _create_action_icon(
+                    btn_col,
+                    icon='⌦',
+                    tooltip='删除',
+                    fg=COLORS['error'],
+                    command=_delete,
+                    active_bg=COLORS['error'],
+                    active_fg='#FFFFFF',
+                    image_name='Delete.png',
+                )
+                del_btn.grid(row=0, column=2, sticky='e')
 
             if not any_shown:
                 tk.Label(inner, text='暂无已配置的模型，请前往「模型配置」页面添加。',
@@ -2128,7 +2144,7 @@ class HomePage:
 
         _populate()
         self._model_list_refresh = _populate
-        win.bind('<FocusIn>', lambda e: _populate())
+        win.after_idle(win.focus_force)
         win.protocol('WM_DELETE_WINDOW', lambda: [setattr(self, '_model_list_refresh', None), win.destroy()])
 
     def _start_using(self):

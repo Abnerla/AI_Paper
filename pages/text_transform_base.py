@@ -2400,6 +2400,15 @@ class TextTransformPageBase(WorkspaceStateMixin):
         if self.info_label is not None:
             self.info_label.configure(text=self.INPUT_RESET_INFO_TEXT, fg=COLORS['text_sub'])
         self._mark_analysis_stale(self.INPUT_RESET_STALE_TEXT)
+        if self.input_text is not None:
+            self.input_text.delete('1.0', tk.END)
+            state = self._placeholder_state.get(self.input_text)
+            if state:
+                state['active'] = False
+            self.input_text.configure(fg=COLORS['text_main'])
+            self.input_text.mark_set(tk.INSERT, '1.0')
+            self.input_text.focus_set()
+            self._schedule_workspace_state_save()
 
     def receive_paper_write_content(self, payload):
         if not isinstance(payload, dict):
