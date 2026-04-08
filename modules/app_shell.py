@@ -625,12 +625,13 @@ class SmartPaperTool:
             f'total={time.perf_counter() - self._startup_started_at:.3f}s'
         )
         self._write_app_log('应用启动')
+        nav_order = [page_id for page_id, _label in TOP_NAV_ITEMS]
         self._page_warmup_queue = [
-            page_id for page_id in self._page_specs
-            if page_id not in {self._startup_page_id, 'api_config'}
+            page_id for page_id in nav_order
+            if page_id in self._page_specs and page_id not in {self._startup_page_id, 'api_config'}
         ]
         if self._page_warmup_queue:
-            self.root.after(1200, self._warmup_remaining_pages)
+            self.root.after(180, self._warmup_remaining_pages)
         if self.launch_silently:
             self.root.after(180, self._apply_silent_launch)
         self.root.after(500, self._prefetch_announcement)
@@ -667,17 +668,17 @@ class SmartPaperTool:
             return
 
         page_id = self._page_warmup_queue.pop(0)
-        if page_id not in self._page_class_cache:
-            started_at = time.perf_counter()
-            try:
-                self._load_page_class(page_id)
-            except Exception as exc:
-                self._write_app_log(f'[page_preload] {page_id} failed: {exc}', level='WARN')
-            else:
-                self._write_app_log(f'[page_preload] {page_id} class={time.perf_counter() - started_at:.3f}s')
+        started_at = time.perf_counter()
+        try:
+            # 预热时直接构建页面实例（隐藏），避免首次切页时同步创建导致卡顿与黑屏闪烁。
+            self._ensure_page(page_id)
+        except Exception as exc:
+            self._write_app_log(f'[page_prewarm] {page_id} failed: {exc}', level='WARN')
+        else:
+            self._write_app_log(f'[page_prewarm] {page_id} init={time.perf_counter() - started_at:.3f}s')
 
         if self._page_warmup_queue:
-            self.root.after(450, self._warmup_remaining_pages)
+            self.root.after(220, self._warmup_remaining_pages)
 
     def _load_page_class(self, page_id):
         if page_id not in self._page_specs:
@@ -929,13 +930,13 @@ class SmartPaperTool:
         return True
 
     def _schedule_loading_animation(self):
-        """在事件循环可用时持续刷新启动页点阵动画（约120fps），GIF独立调度。"""
+        """在事件循环可用时持续刷新启动页点阵动画（约60fps），GIF独立调度。"""
         win = getattr(self, '_loading_win_ref', None)
         if not getattr(self, '_loading_running', False) or not win or not win.winfo_exists():
             return
 
         self._update_loading_dots()
-        self._loading_after_id = win.after(4, self._schedule_loading_animation)
+        self._loading_after_id = win.after(16, self._schedule_loading_animation)
 
         if not hasattr(self, '_loading_gif_after_id'):
             self._loading_gif_after_id = None
@@ -1847,10 +1848,10 @@ class SmartPaperTool:
                 width=button_width,
                 height=button_height,
             )
-            button.bind('<Button-1>', lambda _event, pid=page_id: self._show_page(pid))
+            button.bind('<Button-1>', lambda _event, pid=page_id: self._handle_top_nav_click(pid))
             button.bind('<Configure>', lambda _event, canvas=button: self._render_top_nav_canvas(canvas))
-            shell.bind('<Button-1>', lambda _event, pid=page_id: self._show_page(pid))
-            border.bind('<Button-1>', lambda _event, pid=page_id: self._show_page(pid))
+            shell.bind('<Button-1>', lambda _event, pid=page_id: self._handle_top_nav_click(pid))
+            border.bind('<Button-1>', lambda _event, pid=page_id: self._handle_top_nav_click(pid))
             self._render_top_nav_canvas(button)
             shell._nav_button = button
             border._nav_button = button
@@ -2700,6 +2701,10 @@ class SmartPaperTool:
         self._show_page(page_id)
         return {'ok': True, 'page_id': page_id}
 
+    def _handle_top_nav_click(self, page_id):
+        self._show_page(page_id)
+        return 'break'
+
     def _restore_page_workspace(self, page_id, state, save_to_disk=True):
         page = self._ensure_page(page_id)
         if not page:
@@ -2740,6 +2745,8 @@ class SmartPaperTool:
 
     def _show_page(self, page_id, *, invoke_on_show=True):
         # 若页面已创建则立即切换，否则先切换占位再异步完成创建
+        if page_id == self.current_page_id and page_id in self.pages:
+            return
         if page_id in self.pages:
             self._switch_to_page(page_id, invoke_on_show=invoke_on_show)
         else:

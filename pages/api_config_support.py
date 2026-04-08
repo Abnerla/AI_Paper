@@ -7,6 +7,7 @@ FORM_KEY = '__current__'
 
 PRESET_OPTIONS = [
     ('custom', '自定义', {'website': '', 'base_url': '', 'model': '', 'api_format': 'OpenAI'}),
+    ('openrouter', 'OpenRouter', {'website': 'https://openrouter.ai', 'base_url': 'https://openrouter.ai/api/v1', 'model': 'openai/gpt-4o-mini', 'api_format': 'OpenAI'}),
     ('openai', 'OpenAI', {'website': 'https://openai.com', 'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o', 'api_format': 'OpenAI'}),
     ('claude', 'Claude', {'website': 'https://anthropic.com', 'base_url': 'https://api.anthropic.com', 'model': 'claude-opus-4-6', 'api_format': 'Claude'}),
     ('deepseek', 'DeepSeek', {'website': 'https://platform.deepseek.com', 'base_url': 'https://api.deepseek.com/v1', 'model': 'deepseek-chat', 'api_format': 'OpenAI'}),

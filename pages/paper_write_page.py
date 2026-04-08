@@ -3232,7 +3232,7 @@ class PaperWritePage(WorkspaceStateMixin):
 
     def _parse_and_show_outline(self, text):
         """从文本中解析章节标题，填充左侧大纲列表"""
-        parsed = self._build_outline_structure(text)
+        parsed = parsed if isinstance(parsed, dict) else self._build_outline_structure(text)
         self._sections = dict(parsed['sections'])
         self._section_formats = {title: [] for title in self._sections}
         self._section_order = list(parsed['order'])

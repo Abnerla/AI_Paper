@@ -33,6 +33,7 @@ from modules.ui_components import (
     ToolIconButton,
     load_image,
 )
+from modules.task_runner import TaskRunner
 
 DASHBOARD_TITLE_FONT_SIZE = 20
 DASHBOARD_SECTION_TITLE_FONT_SIZE = 16
@@ -131,6 +132,9 @@ class HomePage:
         self.pricing_edit_key = None
         self._usage_layout_after_id = None
         self._usage_summary_cards_ready = False
+        self.usage_task_runner = TaskRunner(self.frame, set_status=self.set_status)
+        self._usage_refresh_token = 0
+        self._usage_trend_cache = None
 
         self._build()
 
@@ -1182,14 +1186,12 @@ class HomePage:
     def _get_usage_store(self):
         return getattr(self.api, 'usage_store', None)
 
-    def _draw_usage_chart(self):
+    def _draw_usage_chart(self, trend=None):
         if not self.usage_chart_canvas:
             return
-        store = self._get_usage_store()
-        if store is None:
+        trend = dict(trend or self._usage_trend_cache or {})
+        if not trend:
             return
-
-        trend = store.build_trends(self.usage_period_key)
         canvas = self.usage_chart_canvas
         canvas.delete('all')
         width = max(canvas.winfo_width(), 640)
@@ -1324,7 +1326,55 @@ class HomePage:
                 return
             self._ensure_usage_summary_cards()
 
-        summary = store.summarize(self.usage_period_key)
+        snapshot = self._build_usage_query_snapshot()
+        self._usage_refresh_token += 1
+        refresh_token = self._usage_refresh_token
+
+        self.usage_task_runner.run(
+            work=lambda: self._collect_usage_panel_data(store, snapshot),
+            on_success=lambda payload, token=refresh_token: self._apply_usage_panel_data(payload, token),
+            on_error=lambda exc, token=refresh_token: self._handle_usage_refresh_error(exc, token),
+        )
+
+    def _build_usage_query_snapshot(self):
+        return {
+            'period_key': self.usage_period_key,
+            'page_id': self.usage_page_label_to_id.get(self.usage_log_page_var.get(), ''),
+            'status': self.usage_status_label_to_value.get(self.usage_log_status_var.get(), ''),
+            'provider_keyword': self.usage_log_provider_var.get(),
+            'model_keyword': self.usage_log_model_var.get(),
+            'start_text': self.usage_log_start_var.get(),
+            'end_text': self.usage_log_end_var.get(),
+        }
+
+    @staticmethod
+    def _collect_usage_panel_data(store, snapshot):
+        period_key = snapshot['period_key']
+        return {
+            'summary': store.summarize(period_key),
+            'trend': store.build_trends(period_key),
+            'request_rows': store.query_events(
+                period_key,
+                page_id=snapshot['page_id'],
+                status=snapshot['status'],
+                provider_keyword=snapshot['provider_keyword'],
+                model_keyword=snapshot['model_keyword'],
+                start_text=snapshot['start_text'],
+                end_text=snapshot['end_text'],
+            ),
+            'provider_rows': store.provider_stats(period_key),
+            'model_rows': store.model_stats(period_key),
+        }
+
+    def _apply_usage_panel_data(self, payload, refresh_token):
+        if refresh_token != self._usage_refresh_token:
+            return
+        summary = dict(payload.get('summary') or {})
+        trend = dict(payload.get('trend') or {})
+        request_rows = list(payload.get('request_rows') or [])
+        provider_rows = list(payload.get('provider_rows') or [])
+        model_rows = list(payload.get('model_rows') or [])
+
         self.usage_summary_labels['total_requests']['value'].configure(text=str(summary['total_requests']))
         self.usage_summary_labels['total_cost']['value'].configure(text=format_currency(summary['total_cost']))
         self.usage_summary_labels['total_tokens']['value'].configure(text=format_token_count(summary['total_tokens']))
@@ -1343,29 +1393,22 @@ class HomePage:
             )
         )
 
-        self._draw_usage_chart()
-        self._refresh_request_logs()
-        self._refresh_provider_stats()
-        self._refresh_model_stats()
+        self._usage_trend_cache = trend
+        self._draw_usage_chart(trend)
+        self._refresh_request_logs(rows=request_rows)
+        self._refresh_provider_stats(rows=provider_rows)
+        self._refresh_model_stats(rows=model_rows)
         self._refresh_pricing_rules()
 
-    def _refresh_request_logs(self):
+    def _handle_usage_refresh_error(self, exc, refresh_token):
+        if refresh_token != self._usage_refresh_token:
+            return
+        self.set_status(f'用量统计刷新失败：{exc}', COLORS['warning'])
+
+    def _refresh_request_logs(self, rows=None):
         if not self.usage_log_tree:
             return
-        store = self._get_usage_store()
-        if store is None:
-            return
-        page_id = self.usage_page_label_to_id.get(self.usage_log_page_var.get(), '')
-        status = self.usage_status_label_to_value.get(self.usage_log_status_var.get(), '')
-        rows = store.query_events(
-            self.usage_period_key,
-            page_id=page_id,
-            status=status,
-            provider_keyword=self.usage_log_provider_var.get(),
-            model_keyword=self.usage_log_model_var.get(),
-            start_text=self.usage_log_start_var.get(),
-            end_text=self.usage_log_end_var.get(),
-        )
+        rows = list(rows or [])
         tree = self.usage_log_tree
         tree.delete(*tree.get_children())
         for item in rows:
@@ -1387,13 +1430,10 @@ class HomePage:
                 ),
             )
 
-    def _refresh_provider_stats(self):
+    def _refresh_provider_stats(self, rows=None):
         if not self.usage_provider_tree:
             return
-        store = self._get_usage_store()
-        if store is None:
-            return
-        rows = store.provider_stats(self.usage_period_key)
+        rows = list(rows or [])
         tree = self.usage_provider_tree
         tree.delete(*tree.get_children())
         for item in rows:
@@ -1414,13 +1454,10 @@ class HomePage:
                 ),
             )
 
-    def _refresh_model_stats(self):
+    def _refresh_model_stats(self, rows=None):
         if not self.usage_model_tree:
             return
-        store = self._get_usage_store()
-        if store is None:
-            return
-        rows = store.model_stats(self.usage_period_key)
+        rows = list(rows or [])
         tree = self.usage_model_tree
         tree.delete(*tree.get_children())
         for item in rows:
@@ -1550,7 +1587,7 @@ class HomePage:
         start_text, end_text = default_query_time_range_strings()
         self.usage_log_start_var.set(start_text)
         self.usage_log_end_var.set(end_text)
-        self._refresh_request_logs()
+        self._refresh_usage_panel()
 
     def _execute_system_status_action(self, item):
         action_kind = item.get('action_kind', '')
