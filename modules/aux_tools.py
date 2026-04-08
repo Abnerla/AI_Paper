@@ -96,8 +96,11 @@ class AuxTools:
     def import_docx(self, filepath: str) -> str:
         """导入Word文档，返回文本内容"""
         try:
+            normalized_path = os.path.abspath(os.path.expanduser(str(filepath or '').strip()))
+            if not normalized_path.lower().endswith('.docx'):
+                raise RuntimeError('仅支持导入 .docx 格式的 Word 文档')
             import docx
-            doc = docx.Document(filepath)
+            doc = docx.Document(normalized_path)
             paragraphs = []
             for para in doc.paragraphs:
                 if para.text.strip():

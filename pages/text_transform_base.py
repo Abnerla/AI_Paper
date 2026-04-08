@@ -133,6 +133,13 @@ class TextTransformPageBase(WorkspaceStateMixin):
         'low': ('#7B61FF', '#FFFDF8'),
         'safe': ('#15161A', '#FFFDF8'),
     }
+    ANNOTATION_SOURCE_COLOR_STYLES = {
+        'red': {'highlight': '#F8C9D1', 'badge': ('#D9485F', '#FFFDF8')},
+        'orange': {'highlight': '#FFDAB5', 'badge': ('#E67700', '#FFFDF8')},
+        'purple': {'highlight': '#E6E1FF', 'badge': ('#7B61FF', '#FFFDF8')},
+        'black': {'highlight': '#E9ECEF', 'badge': ('#15161A', '#FFFDF8')},
+        'gray': {'highlight': '#ECEFF3', 'badge': ('#6B7280', '#FFFFFF')},
+    }
 
     DETECT_CARD_TITLE = '检测核验区'
     DETECT_CARD_HINT = ''
@@ -1716,6 +1723,58 @@ class TextTransformPageBase(WorkspaceStateMixin):
                 pass
         self._annotation_badges = {}
 
+    @classmethod
+    def _normalize_annotation_source_color(cls, value):
+        alias_map = {
+            '': 'unknown',
+            'unknown': 'unknown',
+            'none': 'unknown',
+            'red': 'red',
+            'orange': 'orange',
+            'purple': 'purple',
+            'violet': 'purple',
+            'pink': 'purple',
+            'magenta': 'purple',
+            'black': 'black',
+            'gray': 'gray',
+            'grey': 'gray',
+            '红色': 'red',
+            '橙色': 'orange',
+            '橘色': 'orange',
+            '紫色': 'purple',
+            '黑色': 'black',
+            '灰色': 'gray',
+        }
+        current = str(value or 'unknown').strip().lower()
+        return alias_map.get(current, alias_map.get(str(value or '').strip(), 'unknown'))
+
+    @classmethod
+    def _format_source_color_label(cls, source_color):
+        label_map = {
+            'red': '红色',
+            'orange': '橙色',
+            'purple': '紫色',
+            'black': '黑色',
+            'gray': '灰色',
+            'unknown': '未识别颜色',
+        }
+        current = cls._normalize_annotation_source_color(source_color)
+        return label_map.get(current, '未识别颜色')
+
+    def _get_annotation_highlight_color(self, annotation):
+        source_color = self._normalize_annotation_source_color(getattr(annotation, 'source_color', 'unknown'))
+        style = self.ANNOTATION_SOURCE_COLOR_STYLES.get(source_color)
+        if style is not None:
+            return style['highlight']
+        return self.ANNOTATION_RISK_COLORS.get(annotation.risk_level, self.ANNOTATION_RISK_COLORS['safe'])
+
+    def _get_annotation_badge_colors(self, annotation):
+        source_color = self._normalize_annotation_source_color(getattr(annotation, 'source_color', 'unknown'))
+        style = self.ANNOTATION_SOURCE_COLOR_STYLES.get(source_color)
+        if style is not None:
+            return style['badge']
+        return self.ANNOTATION_BADGE_COLORS.get(annotation.risk_level, self.ANNOTATION_BADGE_COLORS['safe'])
+
     def _render_import_annotations(self):
         self._clear_annotation_visuals()
         if not self.import_session or self.input_text is None:
@@ -1730,7 +1789,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
             self._annotation_tag_names.add(tag_name)
             self.input_text.tag_configure(
                 tag_name,
-                background=self.ANNOTATION_RISK_COLORS.get(annotation.risk_level, self.ANNOTATION_RISK_COLORS['safe']),
+                background=self._get_annotation_highlight_color(annotation),
                 foreground=COLORS['text_main'],
             )
             self.input_text.tag_add(
@@ -1760,10 +1819,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
         badge_text = self._format_annotation_badge_text(annotation)
         if not badge_text:
             return None
-        badge_bg, badge_fg = self.ANNOTATION_BADGE_COLORS.get(
-            annotation.risk_level,
-            self.ANNOTATION_BADGE_COLORS['safe'],
-        )
+        badge_bg, badge_fg = self._get_annotation_badge_colors(annotation)
         badge = tk.Label(
             self.input_text,
             text=badge_text,
@@ -1809,13 +1865,18 @@ class TextTransformPageBase(WorkspaceStateMixin):
 
     def _format_annotation_badge_text(self, annotation):
         prefix = '跳过 | ' if not annotation.include_in_run else ''
+        source_color = self._normalize_annotation_source_color(getattr(annotation, 'source_color', 'unknown'))
         if self._is_ai_annotation_page():
             if annotation.ai_score is None:
+                if source_color != 'unknown' and annotation.risk_level != 'safe':
+                    return f'{prefix}{self._format_source_color_label(source_color)}标记'
                 return ''
             return f'{prefix}AI {round(annotation.ai_score):.0f}%'
         if self._is_plagiarism_annotation_page():
             if annotation.repeat_score is not None:
                 return f'{prefix}查重 {round(annotation.repeat_score):.0f}%'
+            if source_color != 'unknown' and annotation.risk_level != 'safe':
+                return f'{prefix}{self._format_source_color_label(source_color)}标记'
             return ''
         return ''
 
@@ -1830,6 +1891,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
         return '是' if value else '否'
 
     def _format_annotation_tooltip(self, annotation):
+        source_color = self._normalize_annotation_source_color(getattr(annotation, 'source_color', 'unknown'))
         if self._is_ai_annotation_page():
             lines = [
                 f'AI率：{self._format_annotation_score(annotation.ai_score)}',
@@ -1837,6 +1899,8 @@ class TextTransformPageBase(WorkspaceStateMixin):
                 f'本次是否执行：{self._format_yes_no_flag(annotation.include_in_run)}',
                 f'是否片段匹配：{self._format_yes_no_flag(bool((annotation.source_excerpt or "").strip()))}',
             ]
+            if source_color != 'unknown':
+                lines.append(f'报告颜色：{self._format_source_color_label(source_color)}')
             return '\n'.join(lines)
         if self._is_plagiarism_annotation_page():
             lines = [
@@ -1845,11 +1909,15 @@ class TextTransformPageBase(WorkspaceStateMixin):
                 f'本次是否执行：{self._format_yes_no_flag(annotation.include_in_run)}',
                 f'是否片段匹配：{self._format_yes_no_flag(bool((annotation.source_excerpt or "").strip()))}',
             ]
+            if source_color != 'unknown':
+                lines.append(f'报告颜色：{self._format_source_color_label(source_color)}')
             return '\n'.join(lines)
         lines = [
             f'风险级别：{self.ANNOTATION_RISK_LABELS.get(annotation.risk_level, annotation.risk_level)}',
             f'本次是否执行：{self._format_yes_no_flag(annotation.include_in_run)}',
         ]
+        if source_color != 'unknown':
+            lines.append(f'报告颜色：{self._format_source_color_label(source_color)}')
         return '\n'.join(lines)
 
     def _schedule_annotation_layout(self):
