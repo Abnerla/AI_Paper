@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 纸研社 v1.2.1
 独立运行的 Windows 桌面应用
@@ -338,6 +338,7 @@ class SmartPaperTool:
         self.tool_button_shells = []
         self.tool_button_borders = []
         self.tool_button_images = {}
+        self._top_tool_icon_cache = {}
         self.theme_tool_button = None
         self.dialogs = []
         self.brand_logo = None
@@ -1889,6 +1890,7 @@ class SmartPaperTool:
             button._tool_tip = tip
             button._tool_icon_file = icon_file
             button._tool_icon_bg = COLORS['toolbar_icon_bg']
+            button._tool_icon_fg = COLORS['toolbar_icon_fg']
             button._tool_icon_image = icon_image
             button._tool_has_badge = role == 'notice' and self._bell_badge_visible
             button.pack(side=tk.LEFT, padx=(0, 4))
@@ -2338,6 +2340,10 @@ class SmartPaperTool:
         )
 
     def _load_top_tool_icon(self, filename, *, max_size=(24, 24)):
+        cache_key = (filename, tuple(max_size or ()), COLORS['toolbar_icon_fg'])
+        cached = self._top_tool_icon_cache.get(cache_key)
+        if cached is not None:
+            return cached
         try:
             from PIL import Image as _PILImage
             from PIL import ImageTk as _ImageTk
@@ -2348,24 +2354,29 @@ class SmartPaperTool:
                 if max_size:
                     resampling = getattr(getattr(_PILImage, 'Resampling', _PILImage), 'LANCZOS', getattr(_PILImage, 'LANCZOS', 1))
                     image.thumbnail(max_size, resampling)
-                background = _PILImage.new('RGBA', image.size, COLORS['toolbar_icon_bg'])
-                background.alpha_composite(image)
-            return _ImageTk.PhotoImage(background)
+                alpha = image.getchannel('A')
+                tinted = _PILImage.new('RGBA', image.size, COLORS['toolbar_icon_fg'])
+                tinted.putalpha(alpha)
+            icon_image = _ImageTk.PhotoImage(tinted)
         except Exception:
-            return load_image(filename, max_size=max_size)
+            icon_image = load_image(filename, max_size=max_size)
+        self._top_tool_icon_cache[cache_key] = icon_image
+        return icon_image
 
     def _render_top_tool_canvas(self, canvas):
         if canvas is None:
             return
         icon_file = getattr(canvas, '_tool_icon_file', '')
         icon_bg = getattr(canvas, '_tool_icon_bg', None)
-        if icon_file and icon_bg != COLORS['toolbar_icon_bg']:
+        icon_fg = getattr(canvas, '_tool_icon_fg', None)
+        if icon_file and (icon_bg != COLORS['toolbar_icon_bg'] or icon_fg != COLORS['toolbar_icon_fg']):
             try:
                 icon_image = self._load_top_tool_icon(icon_file, max_size=(26, 26))
             except Exception:
                 icon_image = None
             canvas._tool_icon_image = icon_image
             canvas._tool_icon_bg = COLORS['toolbar_icon_bg']
+            canvas._tool_icon_fg = COLORS['toolbar_icon_fg']
             role = getattr(canvas, '_tool_role', '')
             if role:
                 self.tool_button_images[role] = icon_image
@@ -2995,6 +3006,11 @@ class SmartPaperTool:
         title_fg = COLORS['text_main']
         subtitle_fg = COLORS['text_sub']
         icon_fg = COLORS['primary'] if selected else COLORS['text_main']
+        title_font = (FONTS['body'][0], 9)
+        subtitle_font = (FONTS['tiny'][0], 7)
+        text_width = 220
+        text_height = 66
+        subtitle_wraplength = 216
 
         row = tk.Frame(parent, bg=selected_bg if selected else base_bg, cursor='hand2')
         row.pack(fill=tk.X, padx=4, pady=0)
@@ -3013,14 +3029,14 @@ class SmartPaperTool:
         )
         icon_canvas.pack(expand=True)
 
-        text_wrap = tk.Frame(row, bg=row.cget('bg'), width=142, height=30)
+        text_wrap = tk.Frame(row, bg=row.cget('bg'), width=text_width, height=text_height)
         text_wrap.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 8), pady=7)
         text_wrap.pack_propagate(False)
 
         title_label = tk.Label(
             text_wrap,
             text=title,
-            font=FONTS['body'],
+            font=title_font,
             fg=title_fg,
             bg=row.cget('bg'),
             anchor='w',
@@ -3030,13 +3046,38 @@ class SmartPaperTool:
         subtitle_label = tk.Label(
             text_wrap,
             text=subtitle,
-            font=FONTS['tiny'],
+            font=subtitle_font,
             fg=subtitle_fg,
             bg=row.cget('bg'),
             anchor='w',
-            wraplength=138,
+            justify='left',
+            wraplength=subtitle_wraplength,
         )
         subtitle_label.pack(anchor='w', pady=(1, 0))
+
+        option_widgets = []
+        restore_job = {'id': None}
+
+        def cancel_restore_job():
+            job_id = restore_job['id']
+            if job_id is None:
+                return
+            try:
+                row.after_cancel(job_id)
+            except tk.TclError:
+                pass
+            restore_job['id'] = None
+
+        def is_pointer_inside_option():
+            if not row.winfo_exists():
+                return False
+            try:
+                target = row.winfo_containing(row.winfo_pointerx(), row.winfo_pointery())
+            except tk.TclError:
+                return False
+            if not target:
+                return False
+            return any(target is widget or str(target).startswith(str(widget)) for widget in option_widgets)
 
         def apply_visual(bg, *, active=False):
             icon_color = COLORS['primary'] if active else COLORS['text_main']
@@ -3049,21 +3090,37 @@ class SmartPaperTool:
             self._draw_theme_menu_icon(icon_canvas, icon_kind, icon_color)
 
         def on_enter(_event=None):
+            cancel_restore_job()
             if selected:
                 return
             apply_visual(hover_bg)
 
         def on_leave(_event=None):
-            apply_visual(selected_bg if selected else base_bg, active=selected)
+            cancel_restore_job()
+            if selected:
+                apply_visual(selected_bg, active=True)
+                return
+
+            def restore_if_pointer_outside():
+                restore_job['id'] = None
+                if is_pointer_inside_option():
+                    return
+                apply_visual(base_bg)
+
+            # 鼠标在同一行的子控件之间移动时，Tk 会连续派发 Enter/Leave。
+            # 延后一次再判断真实位置，避免主题子菜单在两种样式间闪烁。
+            restore_job['id'] = row.after(16, restore_if_pointer_outside)
 
         def on_click(_event=None):
+            cancel_restore_job()
             self._close_theme_menu()
             self._apply_theme(value)
             return 'break'
 
         apply_visual(selected_bg if selected else base_bg, active=selected)
+        option_widgets = [row, icon_wrap, icon_canvas, text_wrap, title_label, subtitle_label]
 
-        for widget in (row, icon_wrap, icon_canvas, text_wrap, title_label, subtitle_label):
+        for widget in option_widgets:
             widget.bind('<Enter>', on_enter, add='+')
             widget.bind('<Leave>', on_leave, add='+')
             widget.bind('<Button-1>', on_click, add='+')

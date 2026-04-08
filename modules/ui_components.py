@@ -230,13 +230,61 @@ def configure_fonts(root):
             pass
 
 
-def get_resource_path(filename):
-    """获取打包后也可用的资源路径"""
+def _iter_resource_base_dirs():
+    """按优先级枚举资源根目录，兼容源码运行、单文件打包和外置资源目录。"""
+    seen = set()
+    candidates = []
+
     if getattr(sys, 'frozen', False):
-        base_dir = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-    else:
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.normpath(os.path.join(base_dir, filename)).replace('\\', '/')
+        meipass_dir = getattr(sys, '_MEIPASS', '')
+        if meipass_dir:
+            candidates.append(meipass_dir)
+        candidates.append(os.path.dirname(os.path.abspath(sys.executable)))
+
+    candidates.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    candidates.append(os.getcwd())
+
+    for base_dir in candidates:
+        if not base_dir:
+            continue
+        normalized = os.path.normpath(base_dir)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        yield normalized
+
+
+def _iter_resource_candidate_paths(filename):
+    normalized_name = os.path.normpath(str(filename or '').strip())
+    if not normalized_name:
+        return
+    if os.path.isabs(normalized_name):
+        yield normalized_name
+        return
+    for base_dir in _iter_resource_base_dirs():
+        yield os.path.normpath(os.path.join(base_dir, normalized_name))
+
+
+def _build_missing_resource_error(filename):
+    search_paths = list(_iter_resource_candidate_paths(filename))
+    joined_paths = '\n'.join(search_paths)
+    return FileNotFoundError(f'未找到资源文件：{filename}\n已检查路径：\n{joined_paths}')
+
+
+def get_resource_path(filename):
+    """获取实际存在的资源路径，找不到时返回首选候选路径。"""
+    candidate_paths = list(_iter_resource_candidate_paths(filename))
+    for candidate in candidate_paths:
+        if os.path.exists(candidate):
+            return candidate.replace('\\', '/')
+    if candidate_paths:
+        return candidate_paths[0].replace('\\', '/')
+    return os.path.normpath(str(filename or '')).replace('\\', '/')
+
+
+def _get_pillow_resample_filter(pil_image_module):
+    resampling = getattr(pil_image_module, 'Resampling', pil_image_module)
+    return getattr(resampling, 'LANCZOS', getattr(pil_image_module, 'LANCZOS', 1))
 
 
 def parse_window_size(geometry, default_width=1200, default_height=900):
@@ -326,10 +374,30 @@ def load_image(filename, max_size=None):
     cached = _IMAGE_CACHE.get(cache_key)
     if cached is not None:
         return cached
+    if not os.path.exists(path):
+        raise _build_missing_resource_error(filename)
+
+    pil_error = None
+    try:
+        from PIL import Image as _PILImage
+        from PIL import ImageTk as _ImageTk
+
+        with _PILImage.open(path) as source:
+            image = source.convert('RGBA')
+            if max_size:
+                image.thumbnail(max_size, _get_pillow_resample_filter(_PILImage))
+            return _ImageTk.PhotoImage(image)
+    except Exception as exc:
+        pil_error = exc
 
     with open(path, 'rb') as file_obj:
         raw = base64.b64encode(file_obj.read()).decode('ascii')
-    image = tk.PhotoImage(data=raw)
+    try:
+        image = tk.PhotoImage(data=raw)
+    except tk.TclError as exc:
+        if pil_error is not None:
+            raise RuntimeError(f'图像资源加载失败：{filename}；Pillow 错误：{pil_error}；Tk 错误：{exc}') from exc
+        raise
     if max_size:
         w_limit, h_limit = max_size
         factor = max(
@@ -565,6 +633,20 @@ def apply_theme_to_tree(widget, previous_colors=None):
         except tk.TclError:
             pass
 
+        border_key = getattr(current, '_home_shell_border_key', None)
+        border_color = COLORS.get(border_key) if border_key else getattr(current, '_home_shell_border_color', None)
+        if border_color:
+            try:
+                current.configure(bg=border_color)
+            except tk.TclError:
+                pass
+
+        if hasattr(current, 'set_style') and hasattr(current, 'style_name'):
+            try:
+                current.set_style(current.style_name)
+            except tk.TclError:
+                pass
+
         for child in current.winfo_children():
             recolor(child)
 
@@ -642,8 +724,10 @@ def create_home_shell_button(
 ):
     """创建与首页“系统公告”同款的外壳按钮。"""
 
+    shell_border_key = None
     if border_color is None:
-        border_color = COLORS['card_border']
+        shell_border_key = 'card_border'
+        border_color = COLORS[shell_border_key]
     shell = tk.Frame(parent, bg=border_color, bd=0, highlightthickness=0)
     button = ModernButton(
         shell,
@@ -657,7 +741,32 @@ def create_home_shell_button(
         **button_kwargs,
     )
     button.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+    shell._home_shell_border_key = shell_border_key
+    shell._home_shell_border_color = None if shell_border_key else border_color
+    shell._home_shell_button = button
+    button._home_shell = shell
     return shell, button
+
+
+def refresh_home_shell_button(shell, button=None):
+    if shell is None:
+        return
+
+    target_button = button or getattr(shell, '_home_shell_button', None)
+    border_key = getattr(shell, '_home_shell_border_key', None)
+    border_color = COLORS.get(border_key) if border_key else getattr(shell, '_home_shell_border_color', None)
+
+    if border_color:
+        try:
+            shell.configure(bg=border_color)
+        except tk.TclError:
+            pass
+
+    if target_button is not None and hasattr(target_button, 'set_style'):
+        try:
+            target_button.set_style(target_button.style_name)
+        except tk.TclError:
+            pass
 
 
 def create_selector_card(
@@ -1231,6 +1340,13 @@ class ModernButton(tk.Button):
             'activebackground': COLORS['btn_hover'],
             'activeforeground': COLORS['text_main'],
             'highlightbackground': COLORS['card_border'],
+        },
+        'primary_fixed': lambda: {
+            'bg': THEMES['light']['accent'],
+            'fg': THEMES['light']['text_main'],
+            'activebackground': THEMES['light']['btn_hover'],
+            'activeforeground': THEMES['light']['text_main'],
+            'highlightbackground': THEMES['light']['card_border'],
         },
         'secondary': lambda: {
             'bg': COLORS['card_bg'],

@@ -30,6 +30,7 @@ from modules.ui_components import (
     bind_responsive_two_pane,
     create_scrolled_text,
     set_ellipsized_label_text,
+    THEMES,
 )
 from modules.workspace_state import WorkspaceStateMixin
 
@@ -284,7 +285,8 @@ class CorrectionPage(WorkspaceStateMixin):
             control_row,
             '开始智能纠错',
             command=self._run_correction,
-            style='primary',
+            style='primary_fixed',
+            border_color=THEMES['light']['card_border'],
             padx=12,
             pady=8,
         )

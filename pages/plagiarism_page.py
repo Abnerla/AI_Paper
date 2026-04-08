@@ -54,6 +54,7 @@ class PlagiarismPage(TextTransformPageBase):
     SHOW_OUTPUT_HEADER_REPLACE_ACTION = True
 
     ACTION_BUTTON_TEXT = '开始降重'
+    ACTION_BUTTON_STYLE = 'primary_fixed'
     ACTION_TIP_TEXT = '降重完成后，结果将自动同步至“历史记录”页面，支持一键导出；下方核验区可继续完成重复风险模拟与差异比对。'
     ACTION_START_STATUS = '降重中...'
     ACTION_LOADING_TEXT = '正在执行降重...'
@@ -69,6 +70,7 @@ class PlagiarismPage(TextTransformPageBase):
     COMPARE_DETECT_HELP_TEXT = '附属功能区，仅用于复核当前降重结果；不影响上方模式选择与主流程执行。'
     COMPARE_DETECT_COLLAPSED_HINT = '默认收起，按需展开降重效果复核。'
     PRIMARY_ANALYSIS_BUTTON_TEXT = '效果复核'
+    PRIMARY_ANALYSIS_BUTTON_STYLE = 'primary_fixed'
     PREVIEW_REFRESH_BUTTON_TEXT = '刷新'
     SECONDARY_ANALYSIS_BUTTON_TEXT = '引用规范检查'
     PRIMARY_ANALYSIS_EMPTY_WARNING = '请先输入待降重原文或生成降重处理结果。'
@@ -137,7 +139,7 @@ class PlagiarismPage(TextTransformPageBase):
 
     def _get_detect_button_specs(self):
         return (
-            (self.PRIMARY_ANALYSIS_BUTTON_TEXT, 'primary', self._run_primary_analysis),
+            (self.PRIMARY_ANALYSIS_BUTTON_TEXT, self.PRIMARY_ANALYSIS_BUTTON_STYLE, self._run_primary_analysis),
             (self.PREVIEW_REFRESH_BUTTON_TEXT, 'accent', self._refresh_diff_view),
         )
 
@@ -151,7 +153,7 @@ class PlagiarismPage(TextTransformPageBase):
 
     def _get_analysis_summary_title_button_specs(self):
         return (
-            (self.PRIMARY_ANALYSIS_BUTTON_TEXT, 'primary', self._run_primary_analysis),
+            (self.PRIMARY_ANALYSIS_BUTTON_TEXT, self.PRIMARY_ANALYSIS_BUTTON_STYLE, self._run_primary_analysis),
         )
 
     def _get_preview_title_button_specs(self):

@@ -28,6 +28,8 @@ from modules.ui_components import (
     FONTS,
     ModernButton,
     ResponsiveButtonBar,
+    refresh_home_shell_button,
+    THEMES,
     ToolIconButton,
     load_image,
 )
@@ -141,19 +143,17 @@ class HomePage:
         self._build_dashboard()
         self.refresh_dashboard()
 
-    def _make_hero_shell_button(self, parent, text, style, command, padx, pady, font, min_width):
-        shell = tk.Frame(parent, bg=COLORS['card_border'], bd=0, highlightthickness=0)
-        button = ModernButton(
-            shell,
+    def _make_hero_shell_button(self, parent, text, style, command, padx, pady, font, min_width, border_color=None):
+        shell, button = create_home_shell_button(
+            parent,
             text,
-            style=style,
             command=command,
+            style=style,
             padx=padx,
             pady=pady,
             font=font,
-            highlightthickness=0,
+            border_color=border_color,
         )
-        button.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         # 记录 min_width，延迟到窗口可见后由 _fix_hero_button_sizes 统一固定尺寸
         shell._min_width = min_width
         self.hero_button_shells.append((shell, button))
@@ -194,26 +194,10 @@ class HomePage:
 
     def _refresh_primary_action_button_styles(self):
         for shell, button in self.hero_button_shells:
-            try:
-                shell.configure(bg=COLORS['card_border'])
-            except tk.TclError:
-                continue
-            if hasattr(button, 'set_style'):
-                try:
-                    button.set_style(button.style_name)
-                except tk.TclError:
-                    pass
+            refresh_home_shell_button(shell, button)
 
         for shell, button in self.dashboard_shell_buttons:
-            try:
-                shell.configure(bg=COLORS['card_border'])
-            except tk.TclError:
-                continue
-            if hasattr(button, 'set_style'):
-                try:
-                    button.set_style(button.style_name)
-                except tk.TclError:
-                    pass
+            refresh_home_shell_button(shell, button)
 
     def _build_hero(self):
         self.hero_panel = tk.Frame(self.frame, bg=COLORS['shadow'])
@@ -308,12 +292,13 @@ class HomePage:
             self._make_hero_shell_button(
                 self.hero_actions_bar,
                 '开始使用',
-                'primary',
+                'primary_fixed',
                 self._start_using,
                 padx=18,
                 pady=6,
                 font=FONTS['body_bold'],
                 min_width=176,
+                border_color=THEMES['light']['card_border'],
             )
         )
         self.hero_actions_bar.add(
@@ -362,12 +347,13 @@ class HomePage:
             self._make_hero_shell_button(
                 self.hero_text,
                 '开始使用',
-                'primary',
+                'primary_fixed',
                 self._start_using,
                 padx=18,
                 pady=6,
                 font=FONTS['body_bold'],
                 min_width=176,
+                border_color=THEMES['light']['card_border'],
             ),
             self._make_hero_shell_button(
                 self.hero_text,
@@ -560,11 +546,12 @@ class HomePage:
         self.status_continue_button_shell, self.status_continue_button = self._create_dashboard_shell_button(
             self.status_card.inner,
             '继续当前任务',
-            style='primary',
+            style='primary_fixed',
             command=self._continue_current_task,
             padx=20,
             pady=10,
             font=FONTS['body_bold'],
+            border_color=THEMES['light']['card_border'],
         )
         self.status_continue_button_shell.pack(anchor='w')
 
@@ -776,11 +763,12 @@ class HomePage:
         query_shell, _query_button = self._create_dashboard_shell_button(
             action_row,
             '查询',
-            style='primary',
+            style='primary_fixed',
             command=self._refresh_request_logs,
             padx=16,
             pady=8,
             font=FONTS['body_bold'],
+            border_color=THEMES['light']['card_border'],
         )
         query_shell.pack(side=tk.RIGHT)
         reset_shell, _reset_button = self._create_dashboard_shell_button(
@@ -1174,11 +1162,12 @@ class HomePage:
         save_shell, _save_button = self._create_dashboard_shell_button(
             action_shell,
             '保存',
-            style='primary',
+            style='primary_fixed',
             command=self._save_pricing_rule,
             padx=12,
             pady=8,
             font=FONTS['body_bold'],
+            border_color=THEMES['light']['card_border'],
         )
         save_shell.pack(side=tk.RIGHT, padx=(0, 8))
 
@@ -2101,7 +2090,7 @@ class HomePage:
 
                 select_shell, select_button = create_home_shell_button(
                     btn_col,
-                    '启用' if is_active else '关闭',
+                    '当前使用' if is_active else '启用',
                     command=(lambda: None) if is_active else (lambda aid=api_id, model_name=name: _activate_model(aid, model_name)),
                     style='primary' if is_active else 'secondary',
                     padx=8,
@@ -2130,27 +2119,43 @@ class HomePage:
                 )
                 detail_btn.grid(row=0, column=1, padx=(0, 6), sticky='e')
 
-                if not is_active:
-                    _name = name
-                    def _delete(aid=api_id, n=_name):
-                        if not messagebox.askyesno('删除模型',
-                                f'确定要删除「{n}」的配置吗？此操作不可撤销。',
-                                parent=win):
-                            return
-                        self.config.delete_api_config(aid)
-                        self.config.save()
-                        _populate()
-                    del_btn = _create_action_icon(
-                        btn_col,
-                        icon='⌦',
-                        tooltip='删除',
-                        fg=COLORS['error'],
-                        command=_delete,
-                        active_bg=COLORS['error'],
-                        active_fg='#FFFFFF',
-                        image_name='Delete.png',
-                    )
-                    del_btn.grid(row=0, column=2, sticky='e')
+                _name = name
+
+                def _delete(aid=api_id, n=_name, active=is_active):
+                    if active:
+                        confirm_message = (
+                            f'确定要删除当前模型「{n}」的配置吗？此操作不可撤销。\n'
+                            '删除后会自动切换到下一条可用模型；若无剩余模型则清空当前模型。'
+                        )
+                    else:
+                        confirm_message = f'确定要删除「{n}」的配置吗？此操作不可撤销。'
+                    if not messagebox.askyesno('删除模型', confirm_message, parent=win):
+                        return
+
+                    backup_cfg = self.config.get_api_config(aid)
+                    previous_active_api = self.config.active_api
+                    self.config.delete_api_config(aid)
+                    if not self.config.save():
+                        if backup_cfg:
+                            self.config.set_api_config(aid, backup_cfg)
+                        self.config.active_api = previous_active_api
+                        messagebox.showerror('删除失败', '模型配置保存失败，请稍后重试。', parent=win)
+                        return
+
+                    self.refresh_dashboard()
+                    _populate()
+
+                del_btn = _create_action_icon(
+                    btn_col,
+                    icon='⌦',
+                    tooltip='删除',
+                    fg=COLORS['error'],
+                    command=_delete,
+                    active_bg=COLORS['error'],
+                    active_fg='#FFFFFF',
+                    image_name='Delete.png',
+                )
+                del_btn.grid(row=0, column=2, sticky='e')
 
             if not any_shown:
                 tk.Label(inner, text='暂无已配置的模型，请前往「模型配置」页面添加。',
@@ -2165,7 +2170,7 @@ class HomePage:
 
         _populate()
         self._model_list_refresh = _populate
-        win.bind('<FocusIn>', lambda e: _populate())
+        win.after_idle(win.focus_force)
         win.protocol('WM_DELETE_WINDOW', lambda: [setattr(self, '_model_list_refresh', None), win.destroy()])
 
     def _start_using(self):

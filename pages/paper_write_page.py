@@ -34,7 +34,9 @@ from modules.ui_components import (
     create_scrolled_text,
     get_resource_path,
     load_image,
+    refresh_home_shell_button,
     show_tooltip,
+    THEMES,
 )
 from modules.workspace_state import WorkspaceStateMixin
 
@@ -95,6 +97,25 @@ class PaperWritePage(WorkspaceStateMixin):
         '格式刷': 'png/Format_Painter.png',
         '字色': 'png/Color.png',
         '字体格式': 'png/Font.png',
+    }
+    TOOLBAR_TEXT_FALLBACKS = {
+        '撤回': '撤',
+        '重做': '重',
+        '格式刷': '刷',
+        '字体格式': '字',
+        '字色': '色',
+        '底色': '底',
+        '加粗': 'B',
+        '斜体': 'I',
+        '下划线': 'U',
+        '删除线': 'S',
+        '上标': 'x²',
+        '下标': 'x₂',
+        '缩进': '缩',
+        '项目符号': '•',
+        '编号': '1.',
+        '引用': '引',
+        '查替': '查',
     }
     WORD_CN_FONT_FAMILIES = (
         '宋体', '黑体', '楷体', '仿宋', '微软雅黑',
@@ -191,6 +212,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self._editor_bg_swatch_images = {}
         self._editor_tool_separators = []
         self._editor_bg_indicator_color = self.DEFAULT_BG_SWATCH_COLOR
+        self._fixed_primary_shell_buttons = []
         self._editor_numbering_window = None
         self._editor_bullet_window = None
         self._editor_palette_window = None
@@ -427,12 +449,14 @@ class PaperWritePage(WorkspaceStateMixin):
                 self._settings_primary_action_row,
                 label,
                 command=cmd,
-                style='primary',
+                style='primary_fixed',
+                border_color=THEMES['light']['card_border'],
             )
             right_gap = button_gap_x if index < len(primary_btn_specs) - 1 else 0
             shell.pack(side=tk.LEFT, padx=(0, right_gap), pady=button_gap_y)
             self._settings_action_buttons[label] = button
             self._settings_action_shells[label] = shell
+            self._fixed_primary_shell_buttons.append(shell)
 
         for index, (label, cmd) in enumerate(secondary_btn_specs):
             shell, button = create_home_shell_button(
@@ -497,6 +521,9 @@ class PaperWritePage(WorkspaceStateMixin):
         canvas.bind('<Configure>', self._on_outline_canvas_configure, add='+')
         self._outline_canvas = canvas
         self._outline_empty_label = None
+        self._bind_outline_mousewheel(list_frame)
+        self._bind_outline_mousewheel(canvas)
+        self._bind_outline_mousewheel(self._outline_list)
 
         # 大纲原文文本（折叠区，用于生成大纲时回显）
         self.outline_text = tk.Text(
@@ -564,6 +591,51 @@ class PaperWritePage(WorkspaceStateMixin):
         for row_info in getattr(self, '_outline_row_widgets', {}).values():
             row_info['title'].configure(wraplength=wraplength)
 
+    def _bind_outline_mousewheel(self, widget):
+        if widget is None or getattr(widget, '_outline_mousewheel_bound', False):
+            return
+
+        widget.bind('<MouseWheel>', self._on_outline_mousewheel, add='+')
+        widget.bind('<Button-4>', self._on_outline_mousewheel, add='+')
+        widget.bind('<Button-5>', self._on_outline_mousewheel, add='+')
+        widget._outline_mousewheel_bound = True
+
+    def _outline_list_has_scrollable_content(self):
+        if not hasattr(self, '_outline_canvas') or not hasattr(self, '_outline_list'):
+            return False
+
+        try:
+            self._outline_canvas.update_idletasks()
+        except Exception:
+            return False
+
+        bbox = self._outline_canvas.bbox('all')
+        if not bbox:
+            return False
+
+        content_height = max(bbox[3] - bbox[1], 0)
+        canvas_height = max(self._outline_canvas.winfo_height(), 0)
+        return content_height > canvas_height + 1
+
+    def _on_outline_mousewheel(self, event=None):
+        if not self._outline_list_has_scrollable_content():
+            return
+
+        if getattr(event, 'num', None) == 4:
+            delta = -1
+        elif getattr(event, 'num', None) == 5:
+            delta = 1
+        else:
+            raw_delta = getattr(event, 'delta', 0)
+            if raw_delta == 0:
+                return
+            delta = int(-raw_delta / 120)
+            if delta == 0:
+                delta = -1 if raw_delta > 0 else 1
+
+        self._outline_canvas.yview_scroll(delta, 'units')
+        return 'break'
+
     # ── 右栏 ─────────────────────────────────────
 
     def _build_right_panel(self, parent):
@@ -614,12 +686,14 @@ class PaperWritePage(WorkspaceStateMixin):
             top_row,
             '写当前章节',
             command=self._write_section,
-            style='primary',
+            style='primary_fixed',
             padx=14,
             pady=6,
             font=FONTS['body_bold'],
+            border_color=THEMES['light']['card_border'],
         )
         self._write_section_button_shell.pack(side=tk.LEFT)
+        self._fixed_primary_shell_buttons.append(self._write_section_button_shell)
 
         tool_row = tk.Frame(inner, bg=COLORS['card_bg'])
         tool_row.pack(fill=tk.X, pady=(0, 8))
@@ -652,10 +726,10 @@ class PaperWritePage(WorkspaceStateMixin):
                     padx=3,
                     pady=4,
                     font=FONTS['small'],
-                    image=self._load_toolbar_icon(label),
                     compound='center',
                 )
                 self._configure_toolbar_icon_button(btn, label)
+                self._apply_toolbar_button_content(btn, label)
                 btn.grid(row=0, column=column, padx=(0, 3), sticky='ew')
                 tool_row.grid_columnconfigure(column, weight=1, uniform='editor_toolbar')
                 show_tooltip(btn, label)
@@ -868,6 +942,16 @@ class PaperWritePage(WorkspaceStateMixin):
             cursor='hand2',
         )
 
+    def _toolbar_text_fallback(self, label):
+        return self.TOOLBAR_TEXT_FALLBACKS.get(label, (label or '')[:2])
+
+    def _apply_toolbar_button_content(self, button, label):
+        image = self._load_toolbar_icon(label)
+        if image:
+            button.configure(image=image, text='')
+            return
+        button.configure(image='', text=self._toolbar_text_fallback(label))
+
     def _toolbar_icon_foreground(self):
         return COLORS['text_main']
 
@@ -951,7 +1035,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self._editor_bg_swatch_images = {}
         for label, button in self._editor_tool_buttons.items():
             self._configure_toolbar_icon_button(button, label)
-            button.configure(image=self._load_toolbar_icon(label))
+            self._apply_toolbar_button_content(button, label)
         for separator in self._editor_tool_separators:
             if separator.winfo_exists():
                 separator.configure(
@@ -4633,6 +4717,86 @@ class PaperWritePage(WorkspaceStateMixin):
         self.set_status('已插入新标题，请直接输入标题名称')
         return new_title
 
+    def _clear_section_display(self):
+        if hasattr(self, '_outline_selected') and self._outline_selected is not None:
+            self._outline_selected.set('')
+        self.edit_text.delete('1.0', tk.END)
+        self.section_entry.delete(0, tk.END)
+        self._editor_section_source = ''
+        self._editor_bg_indicator_color = self.DEFAULT_BG_SWATCH_COLOR
+        self._refresh_editor_toolbar_icons()
+        self._selection_snapshot = None
+        self._editor_selection_range = None
+        self._reset_editor_undo_stack()
+        self._update_stats()
+
+    def _delete_outline_title(self, title):
+        if title not in self._section_order:
+            return False
+
+        subtree = self._get_section_subtree_titles(title)
+        if not subtree:
+            return False
+
+        message = f'确定删除“{title}”吗？此操作不可撤销。'
+        if len(subtree) > 1:
+            message = f'确定删除“{title}”及其下级标题（共 {len(subtree)} 项）吗？此操作不可撤销。'
+        if not messagebox.askyesno('删除大纲', message, parent=self.frame):
+            return False
+
+        self._store_current_editor_content()
+
+        current_title = self._editor_section_source or self.section_entry.get().strip()
+        start_index = self._section_order.index(title)
+        end_index = start_index + len(subtree) - 1
+        replacement_title = ''
+        if current_title and current_title not in subtree:
+            replacement_title = current_title
+        elif end_index + 1 < len(self._section_order):
+            replacement_title = self._section_order[end_index + 1]
+        elif start_index > 0:
+            replacement_title = self._section_order[start_index - 1]
+
+        removed_titles = set(subtree)
+        self._section_order = [candidate for candidate in self._section_order if candidate not in removed_titles]
+        for candidate in subtree:
+            self._sections.pop(candidate, None)
+            self._section_formats.pop(candidate, None)
+            self._section_levels.pop(candidate, None)
+            self._section_parent.pop(candidate, None)
+
+        self._collapsed_sections.difference_update(removed_titles)
+        if self._outline_context_title in removed_titles:
+            self._outline_context_title = ''
+        if self._outline_editing_title in removed_titles:
+            self._outline_editing_title = ''
+
+        self._infer_section_relationships_from_order()
+        self._collapsed_sections = {
+            candidate
+            for candidate in self._collapsed_sections
+            if candidate in self._section_children and self._section_children.get(candidate)
+        }
+        self._sync_outline_text_from_sections()
+        self._refresh_outline_list()
+
+        if replacement_title and replacement_title in self._section_order:
+            if current_title and replacement_title == current_title:
+                self._outline_selected.set(replacement_title)
+                for candidate in list(getattr(self, '_outline_row_widgets', {}).keys()):
+                    self._set_outline_row_visual(candidate)
+                self.frame.after_idle(lambda target=replacement_title: self._scroll_outline_selection_into_view(target))
+                self._update_stats()
+            else:
+                self._select_section(replacement_title, touch_context=False)
+        else:
+            self._clear_section_display()
+
+        self._touch_context_revision()
+        self._schedule_workspace_state_save()
+        self.set_status('已删除所选大纲')
+        return True
+
     def _change_outline_level(self, title, target_level):
         if title not in self._section_order:
             return False
@@ -4962,6 +5126,7 @@ class PaperWritePage(WorkspaceStateMixin):
         menu.add_cascade(label='发送', menu=send_menu)
         menu.add_separator()
         menu.add_command(label='重命名标题', command=lambda t=title: self._begin_outline_title_edit(t))
+        menu.add_command(label='删除', command=lambda t=title: self._delete_outline_title(t))
 
         try:
             menu.tk_popup(getattr(event, 'x_root', 0), getattr(event, 'y_root', 0))
@@ -5096,6 +5261,9 @@ class PaperWritePage(WorkspaceStateMixin):
                 pady=6,
             )
             title_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            self._bind_outline_mousewheel(row)
+            self._bind_outline_mousewheel(toggle)
+            self._bind_outline_mousewheel(title_label)
 
             if show_toggle:
                 toggle.bind('<Button-1>', lambda e, t=title: self._toggle_outline_branch(t))
@@ -5181,6 +5349,8 @@ class PaperWritePage(WorkspaceStateMixin):
         self._update_stats()
 
     def on_show(self):
+        for shell in self._fixed_primary_shell_buttons:
+            refresh_home_shell_button(shell)
         self._refresh_editor_selection_style()
         self._refresh_editor_toolbar_icons()
 
