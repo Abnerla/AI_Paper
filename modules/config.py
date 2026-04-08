@@ -170,6 +170,7 @@ class ConfigManager:
         cfg.setdefault('model_mapping', '')
         cfg.setdefault('model', '')
         cfg.setdefault('extra_json', '')
+        cfg.setdefault('extra_headers', '')
         cfg.setdefault('temperature', '')
         cfg.setdefault('max_tokens', '')
         cfg.setdefault('timeout', '')

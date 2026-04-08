@@ -3205,32 +3205,48 @@ class PaperWritePage(WorkspaceStateMixin):
         )
         if not path:
             return
-        try:
+
+        def work():
             text = self.aux.import_docx(path)
+            parsed = self._build_outline_structure(text)
+            return {'text': text, 'parsed': parsed}
+
+        def on_success(result):
+            text = result['text']
+            parsed = result['parsed']
             title_feedback = self._apply_imported_paper_title(text, path)
             # 先解析大纲，不把全文直接填入编辑区
-            self._parse_and_show_outline(text)
+            self._parse_and_show_outline(text, parsed=parsed)
             # 清空编辑区，等待用户点击章节
             self.edit_text.delete('1.0', tk.END)
             self.section_entry.delete(0, tk.END)
             self._editor_section_source = ''
             self._touch_context_revision()
+            self._update_stats()
             self._schedule_workspace_state_save()
+            if self.config and hasattr(self.config, 'clear_home_last_import_failure'):
+                self.config.clear_home_last_import_failure()
+                self.config.save()
             status_text = f'已导入: {path}，请点击左侧大纲章节查看内容'
             if title_feedback:
                 status_text = f'{status_text}；{title_feedback}'
             self.set_status(status_text)
-            self._update_stats()
-            if self.config and hasattr(self.config, 'clear_home_last_import_failure'):
-                self.config.clear_home_last_import_failure()
-                self.config.save()
-        except Exception as e:
-            if self.config and hasattr(self.config, 'set_home_last_import_failure'):
-                self.config.set_home_last_import_failure('paper_write', os.path.basename(path), str(e))
-                self.config.save()
-            messagebox.showerror('导入失败', str(e), parent=self.frame)
 
-    def _parse_and_show_outline(self, text):
+        def on_error(exc):
+            if self.config and hasattr(self.config, 'set_home_last_import_failure'):
+                self.config.set_home_last_import_failure('paper_write', os.path.basename(path), str(exc))
+                self.config.save()
+            messagebox.showerror('导入失败', str(exc), parent=self.frame)
+
+        self.task_runner.run(
+            work=work,
+            on_success=on_success,
+            on_error=on_error,
+            loading_text='正在导入 DOCX...',
+            status_text='正在导入 DOCX...',
+        )
+
+    def _parse_and_show_outline(self, text, parsed=None):
         """从文本中解析章节标题，填充左侧大纲列表"""
         parsed = parsed if isinstance(parsed, dict) else self._build_outline_structure(text)
         self._sections = dict(parsed['sections'])

@@ -113,6 +113,58 @@ class APIClient:
         return headers
 
     @staticmethod
+    def _load_extra_headers_payload(cfg):
+        raw = str((cfg or {}).get('extra_headers', '') or '').strip()
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f'额外请求头 JSON 格式错误: {exc}') from exc
+        if not isinstance(payload, dict):
+            raise ValueError('额外请求头 JSON 必须是 JSON 对象')
+
+        normalized = {}
+        for key, value in payload.items():
+            header_name = str(key or '').strip()
+            if not header_name:
+                raise ValueError('额外请求头 JSON 不能包含空的请求头名称')
+            if isinstance(value, (dict, list)):
+                raise ValueError(f'额外请求头 {header_name} 的值必须是字符串、数字或布尔值')
+            normalized[header_name] = '' if value is None else str(value)
+        return normalized
+
+    @staticmethod
+    def _merge_extra_headers(base_headers, extra_headers, *, protected_fields=None):
+        merged = dict(base_headers or {})
+        existing = {
+            str(key).strip().lower()
+            for key in merged
+            if str(key).strip()
+        }
+        protected = {
+            str(key).strip().lower()
+            for key in (protected_fields or [])
+            if str(key).strip()
+        }
+        added_keys = []
+        ignored_keys = []
+
+        for key, value in dict(extra_headers or {}).items():
+            header_name = str(key or '').strip()
+            if not header_name:
+                ignored_keys.append(str(key))
+                continue
+            header_name_lower = header_name.lower()
+            if header_name_lower in protected or header_name_lower in existing:
+                ignored_keys.append(header_name)
+                continue
+            merged[header_name] = str(value)
+            existing.add(header_name_lower)
+            added_keys.append(header_name)
+        return merged, sorted(set(added_keys)), sorted(set(ignored_keys))
+
+    @staticmethod
     def _resolve_openai_compat_urls(base_url):
         normalized_base_url = str(base_url or 'https://api.openai.com/v1').strip() or 'https://api.openai.com/v1'
         parts = urllib.parse.urlsplit(normalized_base_url)
@@ -238,7 +290,13 @@ class APIClient:
         }
         extra_json_payload = self._load_extra_json_payload(cfg)
         payload, ignored_keys = self._merge_openai_extra_json(payload, extra_json_payload)
+        extra_headers_payload = self._load_extra_headers_payload(cfg)
         headers = self._build_bearer_headers(key, auth_field=auth_field, include_content_type=True)
+        headers, extra_header_keys, ignored_extra_header_keys = self._merge_extra_headers(
+            headers,
+            extra_headers_payload,
+            protected_fields={'Authorization', auth_field, 'Content-Type'},
+        )
 
         return {
             'url': urls['chat_completions_url'],
@@ -251,6 +309,8 @@ class APIClient:
             'model_mapping_hit': mapping_hit,
             'extra_json_keys': sorted(extra_json_payload.keys()),
             'ignored_extra_json_keys': ignored_keys,
+            'extra_header_keys': extra_header_keys,
+            'ignored_extra_header_keys': ignored_extra_header_keys,
         }
 
     def call(
@@ -494,6 +554,8 @@ class APIClient:
             f'model_mapping_hit={prepared["model_mapping_hit"]} '
             f'extra_json_keys={",".join(prepared["extra_json_keys"]) or "-"} '
             f'ignored_extra_json_keys={",".join(prepared["ignored_extra_json_keys"]) or "-"} '
+            f'extra_header_keys={",".join(prepared["extra_header_keys"]) or "-"} '
+            f'ignored_extra_header_keys={",".join(prepared["ignored_extra_header_keys"]) or "-"} '
             f'timeout={request_timeout}'
         )
         resp = self._http_post(
@@ -718,14 +780,32 @@ class APIClient:
         if not key or not base_url:
             raise ValueError('请先填写 API Key 和请求地址')
         provider_name = self._resolve_handler_name(api_name, cfg)
+        auth_field = self._normalize_auth_field(cfg.get('auth_field', 'Authorization'))
         if provider_name == 'openai':
             url = self._resolve_openai_compat_urls(base_url)['models_url']
         else:
             url = f'{base_url.rstrip("/")}/models'
         headers = self._build_bearer_headers(
             key,
-            auth_field=self._normalize_auth_field(cfg.get('auth_field', 'Authorization')),
+            auth_field=auth_field,
             include_content_type=True,
+        )
+        extra_header_keys = []
+        ignored_extra_header_keys = []
+        if provider_name == 'openai':
+            extra_headers_payload = self._load_extra_headers_payload(cfg)
+            headers, extra_header_keys, ignored_extra_header_keys = self._merge_extra_headers(
+                headers,
+                extra_headers_payload,
+                protected_fields={'Authorization', auth_field, 'Content-Type'},
+            )
+        self._log(
+            '[fetch_models] '
+            f'provider={provider_name} '
+            f'endpoint={self._sanitize_url_for_log(url)} '
+            f'auth_field={auth_field} '
+            f'extra_header_keys={",".join(extra_header_keys) or "-"} '
+            f'ignored_extra_header_keys={",".join(ignored_extra_header_keys) or "-"}'
         )
         req = urllib.request.Request(url, headers=headers, method='GET')
         try:

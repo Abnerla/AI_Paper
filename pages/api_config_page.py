@@ -556,7 +556,7 @@ class APIConfigPage:
             json_label_row,
             '格式化',
             style='secondary',
-            command=lambda: self._format_json(form_key),
+            command=lambda: self._format_json_field(form_key, 'extra_json', '高级请求体 JSON'),
             padx=10,
             pady=4,
         ).pack(side=tk.RIGHT)
@@ -581,6 +581,68 @@ class APIConfigPage:
         if saved_json:
             txt.insert('1.0', saved_json)
         self._entries[form_key]['extra_json'] = txt
+
+        _, header_inner = self._make_card(parent, '额外请求头 JSON')
+        helper_text = self._get_extra_headers_hint()
+
+        header_label_row = tk.Frame(header_inner, bg=COLORS['card_bg'])
+        header_label_row.pack(fill=tk.X)
+        tk.Label(
+            header_label_row,
+            text='附加请求头参数',
+            font=FONTS['body'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['card_bg'],
+        ).pack(side=tk.LEFT)
+        ModernButton(
+            header_label_row,
+            '格式化',
+            style='secondary',
+            command=lambda: self._format_json_field(form_key, 'extra_headers', '额外请求头 JSON'),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.RIGHT)
+
+        tk.Label(
+            header_inner,
+            text=helper_text,
+            font=FONTS['small'],
+            fg=COLORS['text_muted'],
+            bg=COLORS['card_bg'],
+            justify=tk.LEFT,
+            anchor='w',
+            wraplength=720,
+        ).pack(anchor='w', fill=tk.X, pady=(6, 0))
+
+        header_txt_frame = tk.Frame(header_inner, bg=COLORS['card_bg'])
+        header_txt_frame.pack(fill=tk.X, pady=(6, 0))
+        header_txt = tk.Text(
+            header_txt_frame,
+            height=5,
+            font=('Consolas', 10),
+            bg=COLORS['surface_alt'],
+            fg=COLORS['text_main'],
+            insertbackground=COLORS['text_main'],
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=COLORS['card_border'],
+            wrap=tk.NONE,
+        )
+        header_txt.pack(fill=tk.X)
+        saved_headers = cfg.get('extra_headers', '')
+        if saved_headers:
+            header_txt.insert('1.0', saved_headers)
+        self._entries[form_key]['extra_headers'] = header_txt
+
+    def _get_extra_headers_hint(self):
+        if self._current_provider_type == 'openrouter':
+            return (
+                '填写 JSON 对象，为 OpenAI 兼容请求追加自定义请求头。'
+                'OpenRouter 可在此填写 HTTP-Referer、X-Title。'
+                '示例：{"HTTP-Referer": "https://your-app.example", "X-Title": "纸研社"}'
+            )
+        return '填写 JSON 对象，为 OpenAI 兼容请求追加自定义请求头；不会覆盖认证字段和 Content-Type。'
 
     def _build_test_section(self, parent, form_key):
         cfg = self._get_form_config()
@@ -670,8 +732,8 @@ class APIConfigPage:
 
         self._build_collapsible_section(parent, '计费配置', build_body, collapsed=True, right_widget_factory=make_toggle)
 
-    def _format_json(self, form_key):
-        txt = self._entries.get(form_key, {}).get('extra_json')
+    def _format_json_field(self, form_key, field_key, field_label):
+        txt = self._entries.get(form_key, {}).get(field_key)
         if not txt:
             return
         raw = txt.get('1.0', tk.END).strip()
@@ -683,7 +745,7 @@ class APIConfigPage:
             txt.delete('1.0', tk.END)
             txt.insert('1.0', pretty)
         except json.JSONDecodeError as exc:
-            messagebox.showerror('JSON 格式错误', str(exc), parent=self.frame)
+            messagebox.showerror(f'{field_label}格式错误', str(exc), parent=self.frame)
 
     def _collect_api_config(self, form_key):
         entries = self._entries.get(form_key, {})
@@ -728,6 +790,9 @@ class APIConfigPage:
         txt_widget = entries.get('extra_json')
         if txt_widget is not None:
             cfg['extra_json'] = txt_widget.get('1.0', tk.END).strip()
+        header_widget = entries.get('extra_headers')
+        if header_widget is not None:
+            cfg['extra_headers'] = header_widget.get('1.0', tk.END).strip()
 
         cfg['name'] = (cfg.get('name', '') or '').strip()
         cfg['provider_type'] = self._current_provider_type

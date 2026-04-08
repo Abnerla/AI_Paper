@@ -54,6 +54,7 @@ def build_base_form_template(provider_type='custom'):
         'enable_tool_search': False,
         'high_intensity_thinking': False,
         'extra_json': '',
+        'extra_headers': '',
         'temperature': '',
         'max_tokens': '',
         'timeout': '',

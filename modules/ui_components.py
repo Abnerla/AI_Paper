@@ -106,6 +106,7 @@ THEMES = {
 
 COLORS = THEMES['light'].copy()
 _IMAGE_CACHE = {}
+_GIF_FRAME_CACHE = {}
 
 UI_FONT_CANDIDATES = (
     'Microsoft YaHei UI',
@@ -386,7 +387,9 @@ def load_image(filename, max_size=None):
             image = source.convert('RGBA')
             if max_size:
                 image.thumbnail(max_size, _get_pillow_resample_filter(_PILImage))
-            return _ImageTk.PhotoImage(image)
+            photo = _ImageTk.PhotoImage(image)
+            _IMAGE_CACHE[cache_key] = photo
+            return photo
     except Exception as exc:
         pil_error = exc
 
@@ -416,6 +419,14 @@ def load_gif_frames(filename, max_size=None):
     返回 (frames, delays) 两个列表，delays 单位为毫秒。
     """
     path = get_resource_path(filename)
+    size_key = tuple(max_size) if max_size else None
+    cache_key = (os.path.abspath(path), size_key)
+    cached = _GIF_FRAME_CACHE.get(cache_key)
+    if cached is not None:
+        frames, delays = cached
+        return list(frames), list(delays)
+    if not os.path.exists(path):
+        raise _build_missing_resource_error(filename)
 
     delays = []
     try:
@@ -460,7 +471,9 @@ def load_gif_frames(filename, max_size=None):
     if len(delays) != len(frames):
         delays = [33] * len(frames)
 
-    return frames, delays
+    cached_value = (tuple(frames), tuple(delays))
+    _GIF_FRAME_CACHE[cache_key] = cached_value
+    return list(cached_value[0]), list(cached_value[1])
 
 
 def get_system_theme():
@@ -1829,8 +1842,7 @@ class LoadingOverlay(tk.Frame):
         self.card = CardFrame(self, padding=18)
         self.card.pack()
 
-        self.spinner = AnimatedImageLabel(self.card.inner, 'loading.gif', max_size=(72, 72))
-        self.spinner.pack(pady=(0, 12))
+        self.spinner = None
 
         self.label = tk.Label(
             self.card.inner,
@@ -1841,16 +1853,24 @@ class LoadingOverlay(tk.Frame):
         )
         self.label.pack()
 
+    def _ensure_spinner(self):
+        if self.spinner is not None:
+            return self.spinner
+        self.spinner = AnimatedImageLabel(self.card.inner, 'loading.gif', max_size=(72, 72))
+        self.spinner.pack(pady=(0, 12), before=self.label)
+        return self.spinner
+
     def show(self, text=None):
         if self.config_mgr and not self.config_mgr.get_setting('enable_loading_animation', True):
             return
         self.label.configure(text=text or self.default_text)
         self.place(relx=0.5, rely=0.5, anchor='center')
         self.lift()
-        self.spinner.start()
+        self._ensure_spinner().start()
 
     def hide(self):
-        self.spinner.stop()
+        if self.spinner is not None:
+            self.spinner.stop()
         self.place_forget()
 
 

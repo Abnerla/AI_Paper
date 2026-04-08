@@ -634,9 +634,15 @@ class CorrectionPage(WorkspaceStateMixin):
         )
         if not path:
             return
-        try:
-            paper_title = os.path.splitext(os.path.basename(path))[0]
-            text = self.aux.import_docx(path)
+        def work():
+            return {
+                'paper_title': os.path.splitext(os.path.basename(path))[0],
+                'text': self.aux.import_docx(path),
+            }
+
+        def on_success(result):
+            paper_title = result['paper_title']
+            text = result['text']
             source_kind = 'docx_import'
             source_desc = f'已导入 DOCX：{os.path.basename(path)}'
             docx_path = path
@@ -648,15 +654,24 @@ class CorrectionPage(WorkspaceStateMixin):
                 docx_path=docx_path,
             )
             self._set_info_text(f'已导入文稿：{path}', fg=COLORS['text_sub'])
-            self.set_status('文稿导入完成')
             if self.config and hasattr(self.config, 'clear_home_last_import_failure'):
                 self.config.clear_home_last_import_failure()
                 self.config.save()
-        except Exception as exc:
+            self.set_status('文稿导入完成')
+
+        def on_error(exc):
             if self.config and hasattr(self.config, 'set_home_last_import_failure'):
                 self.config.set_home_last_import_failure('correction', os.path.basename(path), str(exc))
                 self.config.save()
             messagebox.showerror('导入失败', str(exc), parent=self.frame)
+
+        self.task_runner.run(
+            work=work,
+            on_success=on_success,
+            on_error=on_error,
+            loading_text='正在导入 DOCX...',
+            status_text='正在导入 DOCX...',
+        )
 
     def _run_ai_style_scan(self):
         text = self._get_input_text()
