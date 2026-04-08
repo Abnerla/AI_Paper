@@ -1,0 +1,10 @@
+*.iml
+*.pyc
+/.idea
+/build
+/dist
+/.claude
+/logs
+/logs
+/logs
+/logs
