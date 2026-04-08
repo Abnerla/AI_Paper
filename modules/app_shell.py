@@ -363,6 +363,9 @@ class SmartPaperTool:
         self._window_drag_origin = None
         self._window_is_maximized = False
         self._window_restore_geometry = None
+        self._top_nav_layout_job = None
+        self._top_nav_last_width = None
+        self._top_nav_last_stack_state = None
         self.settings_window = None
         self._api_config_window = None
         self._dialog_api_page = None
@@ -1849,7 +1852,6 @@ class SmartPaperTool:
                 height=button_height,
             )
             button.bind('<Button-1>', lambda _event, pid=page_id: self._handle_top_nav_click(pid))
-            button.bind('<Configure>', lambda _event, canvas=button: self._render_top_nav_canvas(canvas))
             shell.bind('<Button-1>', lambda _event, pid=page_id: self._handle_top_nav_click(pid))
             border.bind('<Button-1>', lambda _event, pid=page_id: self._handle_top_nav_click(pid))
             self._render_top_nav_canvas(button)
@@ -1924,7 +1926,6 @@ class SmartPaperTool:
             shell._tool_badge = badge
             shell._tool_role = role
 
-            button.bind('<Configure>', lambda _event, target=shell: self._refresh_top_tool_button(target))
             self._refresh_top_tool_button(shell)
             self.tool_button_shells.append(shell)
             self.tool_button_borders.append(None)
@@ -1993,7 +1994,6 @@ class SmartPaperTool:
         )
 
         self.user_canvas.bind('<Button-1>', lambda _event: self._show_about_dialog())
-        self.user_canvas.bind('<Configure>', lambda _event, canvas=self.user_canvas: self._render_user_profile_canvas(canvas))
         for widget in (self.user_box, self.user_inner, self.user_content, self.user_canvas):
             widget.bind('<Button-1>', lambda _event: self._show_about_dialog())
 
@@ -2008,8 +2008,9 @@ class SmartPaperTool:
 
         self.top_nav_inner.update_idletasks()
         self._sync_top_nav_metrics()
-        self.top_nav_inner.bind('<Configure>', self._relayout_top_nav)
-        self.top_nav_inner.after_idle(self._sync_top_nav_metrics)
+        self._relayout_top_nav(force=True)
+        self.top_nav_inner.bind('<Configure>', self._schedule_top_nav_relayout, add='+')
+        self.top_nav_inner.after_idle(lambda: self._relayout_top_nav(refresh_metrics=True, force=True))
 
     def _rebuild_window_chrome_after_show(self):
         if sys.platform != 'win32':
@@ -2070,7 +2071,7 @@ class SmartPaperTool:
         if hasattr(self, 'content_view') and self.content_view.winfo_exists():
             self.top_nav_frame.pack_configure(before=self.content_view)
         self.root.update_idletasks()
-        self._relayout_top_nav()
+        self._relayout_top_nav(refresh_metrics=True, force=True)
         for _page_id, button in self.nav_buttons.items():
             # 顶部一级导航使用自绘样式，当前页保持黄色激活态，其余按钮使用浅色底。
             self._render_top_nav_canvas(button)
@@ -2139,6 +2140,20 @@ class SmartPaperTool:
     def _refresh_top_nav_buttons(self):
         for button in self.nav_buttons.values():
             self._render_top_nav_canvas(button)
+
+    def _schedule_top_nav_relayout(self, _event=None, delay_ms=24):
+        if not getattr(self, 'top_nav_inner', None):
+            return
+        if self._top_nav_layout_job is not None:
+            return
+        try:
+            self._top_nav_layout_job = self.root.after(delay_ms, self._run_scheduled_top_nav_relayout)
+        except tk.TclError:
+            self._top_nav_layout_job = None
+
+    def _run_scheduled_top_nav_relayout(self):
+        self._top_nav_layout_job = None
+        self._relayout_top_nav()
 
     def _measure_top_nav_canvas_size(self, label):
         try:
@@ -2225,6 +2240,19 @@ class SmartPaperTool:
 
         username_text = getattr(self, '_user_display_name', '')
         arrow_text = '\u25BE'
+        render_signature = (
+            width,
+            height,
+            username_text,
+            bool(getattr(self, 'user_logo', None)),
+            COLORS['card_bg'],
+            COLORS['text_main'],
+            COLORS['text_sub'],
+        )
+        if getattr(canvas, '_render_signature', None) == render_signature:
+            return
+        canvas._render_signature = render_signature
+
         row_pad_left = getattr(self, 'user_row_pad_left', 12)
         avatar_slot_width = getattr(self, 'user_avatar_slot_width', 56)
         logo_gap = getattr(self, 'user_logo_gap', 10)
@@ -2347,6 +2375,20 @@ class SmartPaperTool:
         page_id = getattr(canvas, '_nav_page_id', '')
         is_active = page_id == self.current_page_id
         label = getattr(canvas, '_nav_label', '')
+        render_signature = (
+            width,
+            height,
+            is_active,
+            label,
+            nav_outline,
+            nav_normal_fill,
+            nav_active_fill,
+            FONTS['nav'],
+            COLORS['nav_bg'],
+        )
+        if getattr(canvas, '_render_signature', None) == render_signature:
+            return
+        canvas._render_signature = render_signature
         canvas.delete('all')
         canvas.configure(bg=COLORS['nav_bg'], highlightthickness=0, bd=0)
         canvas.create_rectangle(
@@ -2582,14 +2624,31 @@ class SmartPaperTool:
         self.user_box.pack_propagate(False)
         self._layout_user_profile_box(box_width=user_box_width, box_height=nav_height)
 
-    def _relayout_top_nav(self, _event=None):
-        self._sync_top_nav_metrics()
+    def _relayout_top_nav(self, _event=None, *, refresh_metrics=False, force=False):
+        if not getattr(self, 'top_nav_inner', None) or not self.top_nav_inner.winfo_exists():
+            return
+        if refresh_metrics:
+            self._sync_top_nav_metrics()
+        try:
+            available_width = max(self.top_nav_inner.winfo_width(), self.top_nav_inner.winfo_reqwidth(), 1)
+        except tk.TclError:
+            return
+        if not force and not refresh_metrics and available_width == self._top_nav_last_width:
+            return
+        self._top_nav_last_width = available_width
         self._apply_top_nav_spacing()
-        self.top_nav_inner.update_idletasks()
+        if refresh_metrics or force:
+            try:
+                self.top_nav_inner.update_idletasks()
+            except tk.TclError:
+                return
         nav_width = self.nav_center.winfo_reqwidth()
         right_width = self.right_tools.winfo_reqwidth()
-        available_width = max(self.top_nav_inner.winfo_width(), self.top_nav_inner.winfo_reqwidth(), 1)
         stacked = available_width < nav_width + right_width + 24
+
+        if not force and stacked == self._top_nav_last_stack_state:
+            return
+        self._top_nav_last_stack_state = stacked
 
         self.nav_center.grid_forget()
         self.right_tools.grid_forget()

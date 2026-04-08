@@ -107,6 +107,7 @@ THEMES = {
 COLORS = THEMES['light'].copy()
 _IMAGE_CACHE = {}
 _GIF_FRAME_CACHE = {}
+_FONT_MEASURE_CACHE = {}
 
 UI_FONT_CANDIDATES = (
     'Microsoft YaHei UI',
@@ -947,6 +948,55 @@ class CardFrame(tk.Frame):
         self.inner.pack(fill=tk.BOTH, expand=True, padx=padding, pady=(top_pad, padding))
 
 
+def _run_resize_batch(root):
+    state = getattr(root, '_ui_resize_batch_state', None)
+    if not isinstance(state, dict):
+        return
+    state['job'] = None
+    if state.get('running'):
+        return
+    state['running'] = True
+    try:
+        rounds = 0
+        while state.get('callbacks') and rounds < 6:
+            callbacks = list(state.get('callbacks', {}).values())
+            state['callbacks'].clear()
+            for callback in callbacks:
+                try:
+                    callback()
+                except tk.TclError:
+                    continue
+            rounds += 1
+    finally:
+        state['running'] = False
+
+    if state.get('callbacks') and state.get('job') is None:
+        try:
+            state['job'] = root.after(16, lambda current_root=root: _run_resize_batch(current_root))
+        except tk.TclError:
+            state['job'] = None
+
+
+def _schedule_resize_batch(widget, key, callback, delay_ms=16):
+    try:
+        root = widget.winfo_toplevel()
+    except tk.TclError:
+        return
+
+    state = getattr(root, '_ui_resize_batch_state', None)
+    if not isinstance(state, dict):
+        state = {'job': None, 'callbacks': {}, 'running': False}
+        setattr(root, '_ui_resize_batch_state', state)
+
+    state['callbacks'][key] = callback
+    if state.get('running') or state.get('job') is not None:
+        return
+    try:
+        state['job'] = root.after(delay_ms, lambda current_root=root: _run_resize_batch(current_root))
+    except tk.TclError:
+        state['job'] = None
+
+
 class ScrollablePage(tk.Frame):
     """主内容区域滚动容器。"""
 
@@ -963,6 +1013,7 @@ class ScrollablePage(tk.Frame):
             highlightthickness=0,
         )
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._pending_canvas_width = None
 
         self.scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.canvas.yview, style='Thin.Vertical.TScrollbar')
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -1041,10 +1092,29 @@ class ScrollablePage(tk.Frame):
             self.canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
 
     def _on_canvas_configure(self, event):
-        self.canvas.itemconfigure(self.window_id, width=event.width)
+        self._pending_canvas_width = max(int(getattr(event, 'width', 0) or 0), 0)
+        self._schedule_layout_refresh()
 
     def _on_inner_configure(self, _event=None):
-        self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+        self._schedule_layout_refresh()
+
+    def _schedule_layout_refresh(self, delay_ms=16):
+        _schedule_resize_batch(
+            self,
+            ('scrollable_page_layout', str(self)),
+            self._apply_layout_refresh,
+            delay_ms=delay_ms,
+        )
+
+    def _apply_layout_refresh(self):
+        try:
+            width = max(int(self._pending_canvas_width or 0), self.canvas.winfo_width(), 1)
+            self.canvas.itemconfigure(self.window_id, width=width)
+            bbox = self.canvas.bbox('all')
+            self.canvas.configure(scrollregion=bbox or (0, 0, width, max(self.inner.winfo_reqheight(), 1)))
+        except tk.TclError:
+            return
+        self._pending_canvas_width = None
 
     def scroll_to_top(self):
         self.canvas.yview_moveto(0)
@@ -1240,11 +1310,20 @@ class ResponsiveButtonBar(tk.Frame):
         self.gap_y = gap_y
         self.stretch = stretch
         self.widgets = []
-        self.bind('<Configure>', self._relayout)
+        self._last_layout_signature = None
+        self.bind('<Configure>', self._schedule_relayout, add='+')
 
     def add(self, widget):
         self.widgets.append(widget)
-        self.after_idle(self._relayout)
+        self.after_idle(self._schedule_relayout)
+
+    def _schedule_relayout(self, _event=None, delay_ms=16):
+        _schedule_resize_batch(
+            self,
+            ('responsive_button_bar', str(self)),
+            self._relayout,
+            delay_ms=delay_ms,
+        )
 
     def _relayout(self, _event=None):
         if not self.widgets:
@@ -1255,6 +1334,10 @@ class ResponsiveButtonBar(tk.Frame):
             max(widget.winfo_reqwidth(), self.min_item_width)
             for widget in self.widgets
         ]
+        signature = (width, tuple(requested_widths), self.stretch, self.gap_x, self.gap_y)
+        if self._last_layout_signature == signature:
+            return
+        self._last_layout_signature = signature
         cols = len(self.widgets)
         while cols > 1:
             column_widths = [0] * cols
@@ -1323,23 +1406,45 @@ def bind_responsive_two_pane(
             left_widget.grid(row=0, column=0, sticky='nsew', padx=(0, gap))
             right_widget.grid(row=0, column=1, sticky='nsew')
 
-    container.bind('<Configure>', relayout)
+    def schedule_relayout(_event=None):
+        _schedule_resize_batch(
+            container,
+            ('responsive_two_pane', str(container)),
+            relayout,
+            delay_ms=16,
+        )
+
+    container.bind('<Configure>', schedule_relayout, add='+')
     container.after_idle(relayout)
 
 
 def bind_adaptive_wrap(label, container, padding=40, min_width=180, max_width=None):
     """根据容器宽度动态调整 Label 的 wraplength。"""
 
+    state = {'wraplength': None}
+
     def resize(_event=None):
         width = max(container.winfo_width() - padding, min_width)
         if max_width:
             width = min(width, max_width)
+        width = int(width)
+        if state['wraplength'] == width:
+            return
+        state['wraplength'] = width
         try:
             label.configure(wraplength=width)
         except tk.TclError:
             pass
 
-    container.bind('<Configure>', resize, add='+')
+    def schedule_resize(_event=None):
+        _schedule_resize_batch(
+            container,
+            ('adaptive_wrap', str(label)),
+            resize,
+            delay_ms=16,
+        )
+
+    container.bind('<Configure>', schedule_resize, add='+')
     container.after_idle(resize)
 
 
@@ -2031,7 +2136,14 @@ def show_tooltip(widget, text, *, placement='bottom_center', x_offset=0, y_offse
 
 def _measure_font_text(font_spec, text):
     try:
-        font = tkfont.Font(font=font_spec)
+        cache_key = repr(font_spec)
+        font = _FONT_MEASURE_CACHE.get(cache_key)
+        if font is None:
+            if isinstance(font_spec, str):
+                font = tkfont.nametofont(font_spec)
+            else:
+                font = tkfont.Font(font=font_spec)
+            _FONT_MEASURE_CACHE[cache_key] = font
         return font.measure(text)
     except tk.TclError:
         return len(text) * 7
@@ -2062,11 +2174,15 @@ def _ellipsize_text(text, font_spec, max_width):
 
 
 def bind_ellipsis_tooltip(label, *, padding=0, wraplength=320, tooltip_style='default'):
-    state = {'tooltip': None}
+    state = {'tooltip': None, 'signature': None}
 
     def refresh(_event=None):
         full_text = getattr(label, '_ellipsis_full_text', '') or ''
         available_width = max(label.winfo_width() - padding, 0)
+        signature = (full_text, available_width, repr(label.cget('font')))
+        if state['signature'] == signature:
+            return
+        state['signature'] = signature
         if available_width <= 1:
             label.configure(text=full_text)
             label._ellipsis_tooltip_text = ''
@@ -2096,7 +2212,15 @@ def bind_ellipsis_tooltip(label, *, padding=0, wraplength=320, tooltip_style='de
             state['tooltip'].destroy()
             state['tooltip'] = None
 
-    label.bind('<Configure>', refresh, add='+')
+    def schedule_refresh(_event=None):
+        _schedule_resize_batch(
+            label,
+            ('ellipsis_tooltip', str(label)),
+            refresh,
+            delay_ms=16,
+        )
+
+    label.bind('<Configure>', schedule_refresh, add='+')
     label.bind('<Enter>', show, add='+')
     label.bind('<Leave>', hide, add='+')
     label._refresh_ellipsis_text = refresh

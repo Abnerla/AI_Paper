@@ -131,17 +131,65 @@ class HomePage:
         self.pricing_enabled_var = None
         self.pricing_edit_key = None
         self._usage_layout_after_id = None
+        self._hero_relayout_job = None
+        self._dashboard_relayout_job = None
+        self._usage_chart_redraw_job = None
         self._usage_summary_cards_ready = False
         self.usage_task_runner = TaskRunner(self.frame, set_status=self.set_status)
         self._usage_refresh_token = 0
         self._usage_trend_cache = None
+        self._hero_last_width = None
+        self._dashboard_layout_mode = None
+        self._usage_chart_last_signature = None
 
         self._build()
 
     def _build(self):
         self._build_hero()
         self._build_dashboard()
+        self.frame.after_idle(lambda: self._schedule_hero_relayout(delay_ms=0))
+        self.frame.after_idle(lambda: self._schedule_dashboard_relayout(delay_ms=0))
         self.refresh_dashboard()
+
+    def _cancel_scheduled_job(self, attr_name):
+        job_id = getattr(self, attr_name, None)
+        if job_id is None:
+            return
+        try:
+            self.frame.after_cancel(job_id)
+        except tk.TclError:
+            pass
+        setattr(self, attr_name, None)
+
+    def _schedule_scheduled_job(self, attr_name, callback, delay_ms=24):
+        if getattr(self, attr_name, None) is not None:
+            return
+        try:
+            job_id = self.frame.after(delay_ms, callback)
+        except tk.TclError:
+            job_id = None
+        setattr(self, attr_name, job_id)
+
+    def _schedule_hero_relayout(self, _event=None, delay_ms=24):
+        self._schedule_scheduled_job('_hero_relayout_job', self._run_hero_relayout, delay_ms)
+
+    def _run_hero_relayout(self):
+        self._hero_relayout_job = None
+        self._relayout_hero()
+
+    def _schedule_dashboard_relayout(self, _event=None, delay_ms=24):
+        self._schedule_scheduled_job('_dashboard_relayout_job', self._run_dashboard_relayout, delay_ms)
+
+    def _run_dashboard_relayout(self):
+        self._dashboard_relayout_job = None
+        self._relayout_dashboard()
+
+    def _schedule_usage_chart_redraw(self, _event=None, delay_ms=32):
+        self._schedule_scheduled_job('_usage_chart_redraw_job', self._run_usage_chart_redraw, delay_ms)
+
+    def _run_usage_chart_redraw(self):
+        self._usage_chart_redraw_job = None
+        self._draw_usage_chart()
 
     def _make_hero_shell_button(self, parent, text, style, command, padx, pady, font, min_width, border_color=None):
         shell, button = create_home_shell_button(
@@ -432,7 +480,7 @@ class HomePage:
         self.hero_visual_window = self.hero_canvas.create_window(0, 0, window=self.hero_visual, anchor='nw')
         self.hero_text_window = self.hero_canvas.create_window(0, 0, window=self.hero_text, anchor='nw')
         self.hero_progress_window = self.hero_canvas.create_window(0, 0, window=self.hero_progress, anchor='nw')
-        self.hero_canvas.bind('<Configure>', self._relayout_hero)
+        self.hero_canvas.bind('<Configure>', self._schedule_hero_relayout, add='+')
 
     def _build_dashboard(self):
         self.dashboard_panel = CardFrame(self.frame, padding=16)
@@ -477,8 +525,8 @@ class HomePage:
         self._build_quick_card()
         self._build_notice_card()
 
-        self._relayout_dashboard()
-        self.dashboard_columns.bind('<Configure>', self._relayout_dashboard)
+        self._relayout_dashboard(force=True)
+        self.dashboard_columns.bind('<Configure>', self._schedule_dashboard_relayout, add='+')
 
     def _build_status_card(self):
         self.status_card = CardFrame(self.left_column, padding=22)
@@ -648,7 +696,6 @@ class HomePage:
 
         self.usage_summary_row = tk.Frame(self.notice_card.inner, bg=COLORS['card_bg'])
         self.usage_summary_row.pack(fill=tk.X, pady=(18, 18))
-        self.usage_summary_row.bind('<Configure>', self._relayout_usage_summary, add='+')
 
         trend_card = CardFrame(self.notice_card.inner, padding=16)
         trend_card.pack(fill=tk.X, pady=(0, 18))
@@ -679,7 +726,7 @@ class HomePage:
             height=640,
         )
         self.usage_chart_canvas.pack(fill=tk.X, pady=(12, 0))
-        self.usage_chart_canvas.bind('<Configure>', lambda _event: self._draw_usage_chart())
+        self.usage_chart_canvas.bind('<Configure>', self._schedule_usage_chart_redraw, add='+')
 
         self.usage_notebook = ttk.Notebook(self.notice_card.inner, style='Card.TNotebook')
         self.usage_notebook.pack(fill=tk.BOTH, expand=True)
@@ -1193,17 +1240,36 @@ class HomePage:
         if not trend:
             return
         canvas = self.usage_chart_canvas
-        canvas.delete('all')
         width = max(canvas.winfo_width(), 640)
         height = max(canvas.winfo_height(), 300)
+        labels = tuple(trend.get('labels', []))
+        series = trend.get('series', {})
+        render_signature = (
+            width,
+            height,
+            trend.get('caption', ''),
+            labels,
+            COLORS['card_bg'],
+            COLORS['card_border'],
+            COLORS['divider'],
+            COLORS['text_sub'],
+            tuple(series.get('cost', [])),
+            tuple(series.get('cache_create', [])),
+            tuple(series.get('cache_hit', [])),
+            tuple(series.get('input', [])),
+            tuple(series.get('output', [])),
+        )
+        if render_signature == self._usage_chart_last_signature:
+            return
+        self._usage_chart_last_signature = render_signature
+
+        canvas.delete('all')
         left = 48
         right = width - 56
         top = 18
 
         token_max = max(int(trend.get('token_max', 0) or 0), 1)
         cost_max = max(float(trend.get('cost_max', 0.0) or 0.0), 1.0)
-        labels = trend.get('labels', [])
-        series = trend.get('series', {})
         colors = {
             'cost': '#FF4D6D',
             'cache_create': '#FF7A00',
@@ -1670,7 +1736,6 @@ class HomePage:
         row_height = 0
 
         for window_id, shell in zip(windows, shells):
-            shell.update_idletasks()
             shell_width = shell.winfo_reqwidth()
             shell_height = shell.winfo_reqheight()
 
@@ -1766,17 +1831,21 @@ class HomePage:
         self._draw_hero_text_background(text_width, y)
         return y
 
-    def _relayout_hero(self, _event=None):
+    def _relayout_hero(self, _event=None, *, force=False):
         if not self.hero_canvas:
             return
 
         width = max(self.hero_canvas.winfo_width(), 1)
+        if not force and width == self._hero_last_width:
+            return
+        self._hero_last_width = width
         pad = 22
         top = 22
         gap = 18
         visual_width = 208
         visual_height = 208
         progress_width = 338
+        progress_height = 286
         progress_right_pad = 76
 
         self.hero_visual.configure(width=visual_width, height=visual_height)
@@ -1784,7 +1853,7 @@ class HomePage:
         if width < 1260:
             text_width = min(max(width - pad * 2, 560), 900)
             progress_card_width = min(max(width - pad * 2, 338), 420)
-            self.hero_progress.configure(width=progress_card_width, height=286)
+            self.hero_progress.configure(width=progress_card_width, height=progress_height)
 
             self.hero_canvas.itemconfigure(self.hero_visual_window, width=visual_width, height=visual_height)
             self.hero_canvas.coords(self.hero_visual_window, pad, top)
@@ -1795,16 +1864,15 @@ class HomePage:
 
             progress_y = top + visual_height + 14 + text_height + 14
             self.hero_completion_hint.configure(wraplength=max(progress_card_width - 54, 200))
-            self.hero_canvas.itemconfigure(self.hero_progress_window, width=progress_card_width, height=286)
+            self.hero_canvas.itemconfigure(self.hero_progress_window, width=progress_card_width, height=progress_height)
             self.hero_canvas.coords(self.hero_progress_window, pad, progress_y)
-            self.hero_progress.update_idletasks()
-            canvas_height = progress_y + self.hero_progress.winfo_reqheight() + 24
+            canvas_height = progress_y + progress_height + 24
         else:
             progress_x = width - progress_right_pad - progress_width
             text_x = pad + visual_width + gap
             text_width = min(max(progress_x - text_x - gap, 760), 936)
 
-            self.hero_progress.configure(width=progress_width, height=286)
+            self.hero_progress.configure(width=progress_width, height=progress_height)
             self.hero_canvas.itemconfigure(self.hero_visual_window, width=visual_width, height=visual_height)
             self.hero_canvas.coords(self.hero_visual_window, pad, top + 26)
 
@@ -1815,25 +1883,28 @@ class HomePage:
             self.hero_completion_hint.configure(wraplength=max(progress_width - 54, 220))
             subtitle_box = self.hero_text.bbox(self.hero_subtitle_item)
             progress_top = top + (subtitle_box[1] if subtitle_box else 96)
-            self.hero_canvas.itemconfigure(self.hero_progress_window, width=progress_width, height=286)
+            self.hero_canvas.itemconfigure(self.hero_progress_window, width=progress_width, height=progress_height)
             self.hero_canvas.coords(self.hero_progress_window, progress_x, progress_top)
-            self.hero_progress.update_idletasks()
             canvas_height = max(
                 top + 26 + visual_height,
                 top + text_height,
-                progress_top + self.hero_progress.winfo_reqheight(),
+                progress_top + progress_height,
             ) + 24
 
         self.hero_canvas.configure(height=canvas_height)
         self._draw_hero_background(width, canvas_height)
 
-    def _relayout_dashboard(self, _event=None):
+    def _relayout_dashboard(self, _event=None, *, force=False):
         width = max(self.dashboard_columns.winfo_width(), 1)
+        mode = 'stacked' if width < 1280 else 'split'
+        if not force and mode == self._dashboard_layout_mode:
+            return
+        self._dashboard_layout_mode = mode
 
         self.left_column.pack_forget()
         self.right_column.pack_forget()
 
-        if width < 1280:
+        if mode == 'stacked':
             self.left_column.pack(fill=tk.BOTH, expand=True)
             self.right_column.pack(fill=tk.BOTH, expand=True, pady=(16, 0))
         else:
@@ -2213,13 +2284,13 @@ class HomePage:
         self._render_system_status_items(view_model.get('system_status_items', []))
         self._refresh_usage_panel()
 
-        self._relayout_hero()
-        self._relayout_dashboard()
+        self._relayout_hero(force=True)
+        self._relayout_dashboard(force=True)
 
     def on_show(self):
         self._refresh_primary_action_button_styles()
-        self._relayout_hero()
-        self._relayout_dashboard()
+        self._relayout_hero(force=True)
+        self._relayout_dashboard(force=True)
         self.refresh_dashboard()
         try:
             is_viewable = bool(self.frame.winfo_viewable())

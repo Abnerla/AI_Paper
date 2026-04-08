@@ -200,6 +200,9 @@ class PaperWritePage(WorkspaceStateMixin):
         self._outline_editing_title = ''
         self._outline_drag_job = None
         self._outline_drag_data = None
+        self._outline_layout_job = None
+        self._pending_outline_canvas_width = None
+        self._outline_last_width = None
         self._outline_context_title = ''
         self._selection_snapshot = None
         self._editor_selection_range = None
@@ -220,6 +223,9 @@ class PaperWritePage(WorkspaceStateMixin):
         self._editor_format_fonts = {}
         self._editor_font_render_tags = {}
         self._outline_level_fonts = {}
+        self._stats_layout_job = None
+        self._pending_stats_width = None
+        self._stats_wraplength = None
         self._format_painter_tags = None
         self._level_font_styles = {k: dict(v) for k, v in self.LEVEL_STYLE_DEFAULTS.items()}
         self._current_cn_font = None
@@ -512,8 +518,7 @@ class PaperWritePage(WorkspaceStateMixin):
         canvas = tk.Canvas(list_frame, bg=COLORS['surface_alt'], bd=0, highlightthickness=0)
         sb = tk.Scrollbar(list_frame, orient='vertical', command=canvas.yview)
         self._outline_list = tk.Frame(canvas, bg=COLORS['surface_alt'])
-        self._outline_list.bind('<Configure>',
-            lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        self._outline_list.bind('<Configure>', self._on_outline_inner_configure, add='+')
         self._outline_window_id = canvas.create_window((0, 0), window=self._outline_list, anchor='nw')
         canvas.configure(yscrollcommand=sb.set)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -571,7 +576,34 @@ class PaperWritePage(WorkspaceStateMixin):
         return left
 
     def _on_outline_canvas_configure(self, event=None):
-        self._sync_outline_list_width(event.width if event else None)
+        self._pending_outline_canvas_width = getattr(event, 'width', 0) or self._pending_outline_canvas_width
+        self._schedule_outline_layout()
+
+    def _on_outline_inner_configure(self, _event=None):
+        self._schedule_outline_layout()
+
+    def _schedule_outline_layout(self, delay_ms=16):
+        if self._outline_layout_job is not None:
+            return
+        try:
+            self._outline_layout_job = self.frame.after(delay_ms, self._apply_outline_layout)
+        except tk.TclError:
+            self._outline_layout_job = None
+
+    def _apply_outline_layout(self):
+        self._outline_layout_job = None
+        if not hasattr(self, '_outline_canvas') or not hasattr(self, '_outline_window_id'):
+            return
+        canvas_width = self._pending_outline_canvas_width or self._outline_canvas.winfo_width()
+        self._sync_outline_list_width(canvas_width)
+        try:
+            bbox = self._outline_canvas.bbox('all')
+            fallback_width = max(int(canvas_width or 0), 1)
+            fallback_height = max(self._outline_list.winfo_reqheight(), 1)
+            self._outline_canvas.configure(scrollregion=bbox or (0, 0, fallback_width, fallback_height))
+        except tk.TclError:
+            return
+        self._pending_outline_canvas_width = None
 
     def _sync_outline_list_width(self, canvas_width=None):
         if not hasattr(self, '_outline_canvas') or not hasattr(self, '_outline_window_id'):
@@ -581,6 +613,8 @@ class PaperWritePage(WorkspaceStateMixin):
             canvas_width = self._outline_canvas.winfo_width()
         if canvas_width <= 1:
             return
+        canvas_width = int(canvas_width)
+        self._outline_last_width = canvas_width
 
         self._outline_canvas.itemconfigure(self._outline_window_id, width=canvas_width)
 
@@ -1199,10 +1233,26 @@ class PaperWritePage(WorkspaceStateMixin):
     def _on_stats_container_configure(self, event=None):
         if not hasattr(self, 'advice_label') or self.advice_label is None:
             return
-        width = getattr(event, 'width', 0) or self.advice_label.winfo_width()
+        self._pending_stats_width = getattr(event, 'width', 0) or self._pending_stats_width
+        if self._stats_layout_job is not None:
+            return
+        try:
+            self._stats_layout_job = self.frame.after(16, self._apply_stats_container_layout)
+        except tk.TclError:
+            self._stats_layout_job = None
+
+    def _apply_stats_container_layout(self):
+        self._stats_layout_job = None
+        if not hasattr(self, 'advice_label') or self.advice_label is None:
+            return
+        width = self._pending_stats_width or self.advice_label.winfo_width()
         if width <= 1:
             return
-        self.advice_label.configure(wraplength=max(width - 18, 180))
+        wraplength = max(int(width) - 18, 180)
+        if self._stats_wraplength == wraplength:
+            return
+        self._stats_wraplength = wraplength
+        self.advice_label.configure(wraplength=wraplength)
 
     def _collect_stats_texts(self):
         current_text = self._normalize_section_body(self.edit_text.get('1.0', tk.END))

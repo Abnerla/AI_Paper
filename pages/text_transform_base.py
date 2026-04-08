@@ -301,7 +301,10 @@ class TextTransformPageBase(WorkspaceStateMixin):
             self._build_detect_section(parent)
 
     def _bind_top_section_split(self, container, left_host, right_host):
+        state = {'job': None, 'signature': None}
+
         def relayout(_event=None):
+            state['job'] = None
             width = max(container.winfo_width(), container.winfo_reqwidth(), 1)
             gap = self.TOP_SECTION_GAP
             left_card = left_host.winfo_children()[0] if left_host.winfo_children() else None
@@ -311,6 +314,10 @@ class TextTransformPageBase(WorkspaceStateMixin):
 
             if width < self.TOP_SECTION_BREAKPOINT:
                 total_height = left_height + gap + right_height
+                signature = ('stacked', width, total_height, left_height, right_height)
+                if state['signature'] == signature:
+                    return
+                state['signature'] = signature
                 container.configure(height=total_height)
                 left_host.place(x=0, y=0, width=width, height=left_height)
                 right_host.place(x=0, y=left_height + gap, width=width, height=right_height)
@@ -323,12 +330,24 @@ class TextTransformPageBase(WorkspaceStateMixin):
             left_width = min(left_width, max_left)
             right_width = max(self.TOP_SECTION_RIGHT_MINSIZE, usable_width - left_width)
             row_height = max(left_height, right_height)
+            signature = ('split', width, left_width, right_width, row_height)
+            if state['signature'] == signature:
+                return
+            state['signature'] = signature
 
             container.configure(height=row_height)
             left_host.place(x=0, y=0, width=left_width, height=row_height)
             right_host.place(x=left_width + gap, y=0, width=right_width, height=row_height)
 
-        container.bind('<Configure>', relayout, add='+')
+        def schedule_relayout(_event=None):
+            if state.get('job') is not None:
+                return
+            try:
+                state['job'] = container.after(16, relayout)
+            except tk.TclError:
+                state['job'] = None
+
+        container.bind('<Configure>', schedule_relayout, add='+')
         container.after_idle(relayout)
 
     def _build_merged_top_toolbar(self, parent):
@@ -1541,7 +1560,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
             widget.bind('<<Cut>>', lambda _event: self.frame.after_idle(self._on_text_change), add='+')
         if self.input_text is not None:
             for sequence in ('<Configure>', '<MouseWheel>', '<Button-4>', '<Button-5>', '<ButtonRelease-1>'):
-                self.input_text.bind(sequence, lambda _event: self._schedule_annotation_layout(), add='+')
+                self.input_text.bind(sequence, lambda _event: self._schedule_annotation_layout(delay_ms=24), add='+')
 
     def _bind_workspace_state_watchers(self):
         self.mode_var.trace_add('write', lambda *_args: self._schedule_workspace_state_save())
@@ -1920,7 +1939,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
             lines.append(f'报告颜色：{self._format_source_color_label(source_color)}')
         return '\n'.join(lines)
 
-    def _schedule_annotation_layout(self):
+    def _schedule_annotation_layout(self, delay_ms=24):
         if self.input_text is None:
             return
         if self._annotation_layout_job is not None:
@@ -1928,7 +1947,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
                 self.frame.after_cancel(self._annotation_layout_job)
             except tk.TclError:
                 pass
-        self._annotation_layout_job = self.frame.after(40, self._layout_annotation_badges)
+        self._annotation_layout_job = self.frame.after(delay_ms, self._layout_annotation_badges)
 
     def _layout_annotation_badges(self):
         self._annotation_layout_job = None
