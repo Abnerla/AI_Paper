@@ -14,13 +14,26 @@ import uuid
 from datetime import datetime
 from typing import Callable, Optional
 
+from modules.provider_registry import (
+    ANTHROPIC_VERSION,
+    HANDLER_CLAUDE,
+    HANDLER_OPENAI,
+    MODEL_LIST_MANUAL,
+    MODEL_LIST_REMOTE,
+    MODEL_LIST_STATIC,
+    get_preset_definition,
+    get_model_list_manual_message,
+    get_static_models,
+    normalize_provider_type,
+    resolve_handler_name as resolve_provider_handler_name,
+    resolve_model_list_strategy,
+)
 from modules.usage_stats import (
     UsageEvent,
     UsageStatsStore,
     calculate_total_cost,
     extract_claude_usage,
     extract_openai_usage,
-    extract_tongyi_usage,
     find_pricing_rule,
     resolve_event_billing,
 )
@@ -47,35 +60,12 @@ class APIClient:
         return dict(self.config.get_api_config(api_name) or {})
 
     def _resolve_handler_name(self, api_name, cfg):
-        api_format = (cfg.get('api_format', '') or '').strip().lower()
-        provider_type = (cfg.get('provider_type', '') or '').strip().lower()
-        api_name_hint = (api_name or '').strip().lower()
-        provider_hint = provider_type or api_name_hint
+        provider_type = normalize_provider_type(cfg.get('provider_type') or api_name)
+        return resolve_provider_handler_name(provider_type, cfg.get('api_format', 'OpenAI'))
 
-        if api_format == 'claude':
-            return 'claude'
-        if api_format == 'baidu':
-            return 'baidu'
-        if api_format in ('openai', 'custom'):
-            if provider_hint == 'claude':
-                return 'claude'
-            if provider_hint == 'baidu' and cfg.get('api_key') and cfg.get('secret_key'):
-                return 'baidu'
-            if provider_hint == 'spark' and cfg.get('app_id') and cfg.get('api_key') and cfg.get('api_secret'):
-                return 'spark'
-            if provider_hint == 'tongyi' and not cfg.get('base_url'):
-                return 'tongyi'
-            return 'openai'
-
-        if provider_hint == 'claude':
-            return 'claude'
-        if provider_hint == 'baidu' and cfg.get('api_key') and cfg.get('secret_key'):
-            return 'baidu'
-        if provider_hint == 'spark' and cfg.get('app_id') and cfg.get('api_key') and cfg.get('api_secret'):
-            return 'spark'
-        if provider_hint == 'tongyi' and not cfg.get('base_url'):
-            return 'tongyi'
-        return 'openai'
+    def _resolve_model_list_strategy(self, api_name, cfg):
+        provider_type = normalize_provider_type(cfg.get('provider_type') or api_name)
+        return resolve_model_list_strategy(provider_type, cfg.get('api_format', 'OpenAI'))
 
     @staticmethod
     def _coerce_positive_float(value, default=None):
@@ -189,6 +179,28 @@ class APIClient:
         }
 
     @staticmethod
+    def _resolve_claude_urls(base_url):
+        normalized_base_url = str(base_url or 'https://api.anthropic.com').strip() or 'https://api.anthropic.com'
+        parts = urllib.parse.urlsplit(normalized_base_url)
+        path = parts.path.rstrip('/')
+        if path.endswith('/v1/messages'):
+            api_root_path = path[:-len('/messages')]
+        elif path.endswith('/v1/models'):
+            api_root_path = path[:-len('/models')]
+        elif path.endswith('/v1'):
+            api_root_path = path
+        else:
+            api_root_path = f'{path}/v1' if path else '/v1'
+
+        messages_path = f'{api_root_path}/messages'
+        models_path = f'{api_root_path}/models'
+        return {
+            'root_url': urllib.parse.urlunsplit((parts.scheme, parts.netloc, api_root_path, '', '')),
+            'messages_url': urllib.parse.urlunsplit((parts.scheme, parts.netloc, messages_path, '', '')),
+            'models_url': urllib.parse.urlunsplit((parts.scheme, parts.netloc, models_path, '', '')),
+        }
+
+    @staticmethod
     def _parse_model_mapping(raw_mapping):
         mapping = {}
         text = str(raw_mapping or '').strip()
@@ -229,7 +241,7 @@ class APIClient:
 
     def _resolve_request_model_name(self, provider_name, cfg):
         model_name = str((cfg or {}).get('model', '') or '').strip() or 'unknown'
-        if provider_name != 'openai':
+        if provider_name != HANDLER_OPENAI:
             return model_name
         mapped_model, _mapping_hit = self._apply_model_mapping(model_name, cfg)
         return mapped_model or model_name
@@ -312,6 +324,91 @@ class APIClient:
             'extra_header_keys': extra_header_keys,
             'ignored_extra_header_keys': ignored_extra_header_keys,
         }
+
+    def _build_claude_headers(self, cfg):
+        key = str((cfg or {}).get('key', '') or '').strip()
+        if not key:
+            raise ValueError('Claude API Key未配置')
+        headers = {
+            'Content-Type': 'application/json',
+            'x-api-key': key,
+            'anthropic-version': ANTHROPIC_VERSION,
+        }
+        extra_headers_payload = self._load_extra_headers_payload(cfg)
+        headers, _added_keys, _ignored_keys = self._merge_extra_headers(
+            headers,
+            extra_headers_payload,
+            protected_fields={'x-api-key', 'anthropic-version', 'Content-Type'},
+        )
+        return headers
+
+    @staticmethod
+    def _merge_model_candidates(model_ids, current_model=''):
+        merged = []
+        seen = set()
+        current = str(current_model or '').strip()
+        for model_id in ([current] if current else []) + list(model_ids or []):
+            value = str(model_id or '').strip()
+            if not value:
+                continue
+            lowered = value.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            merged.append(value)
+        return merged
+
+    @staticmethod
+    def _extract_model_ids(payload):
+        items = payload.get('data') or payload.get('models') or []
+        result = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get('id') or item.get('name') or ''
+            if model_id:
+                result.append(model_id)
+        return sorted(result)
+
+    def _fetch_remote_models(self, provider_name, cfg, *, timeout=15):
+        key = str(cfg.get('key', '') or '').strip()
+        base_url = str(cfg.get('base_url', '') or '').strip()
+        if not key or not base_url:
+            raise ValueError('请先填写 API Key 和请求地址')
+
+        if provider_name == HANDLER_OPENAI:
+            auth_field = self._normalize_auth_field(cfg.get('auth_field', 'Authorization'))
+            url = self._resolve_openai_compat_urls(base_url)['models_url']
+            headers = self._build_bearer_headers(
+                key,
+                auth_field=auth_field,
+                include_content_type=True,
+            )
+            extra_headers_payload = self._load_extra_headers_payload(cfg)
+            headers, extra_header_keys, ignored_extra_header_keys = self._merge_extra_headers(
+                headers,
+                extra_headers_payload,
+                protected_fields={'Authorization', auth_field, 'Content-Type'},
+            )
+        elif provider_name == HANDLER_CLAUDE:
+            auth_field = 'x-api-key'
+            url = self._resolve_claude_urls(base_url)['models_url']
+            headers = self._build_claude_headers(cfg)
+            extra_header_keys = []
+            ignored_extra_header_keys = []
+        else:
+            raise ValueError(f'不支持的模型列表处理器: {provider_name}')
+
+        self._log(
+            '[fetch_models_remote] '
+            f'provider={provider_name} '
+            f'endpoint={self._sanitize_url_for_log(url)} '
+            f'auth_field={auth_field} '
+            f'extra_header_keys={",".join(extra_header_keys) or "-"} '
+            f'ignored_extra_header_keys={",".join(ignored_extra_header_keys) or "-"}'
+        )
+        payload = self._http_get_json(url, headers=headers, timeout=timeout)
+        return self._extract_model_ids(payload)
 
     def call(
         self,
@@ -426,11 +523,8 @@ class APIClient:
         usage_context=None,
     ):
         handlers = {
-            'openai': self._call_openai_compat,
-            'claude': self._call_claude,
-            'baidu': self._call_baidu,
-            'tongyi': self._call_tongyi,
-            'spark': self._call_spark,
+            HANDLER_OPENAI: self._call_openai_compat,
+            HANDLER_CLAUDE: self._call_claude,
         }
         cfg = self._get_config(api_name, cfg=cfg)
         handler = handlers.get(self._resolve_handler_name(api_name, cfg))
@@ -543,6 +637,42 @@ class APIClient:
             )
             raise RuntimeError(f'网络错误: {e.reason}')
 
+    def _http_get_json(self, url, headers: dict, timeout=15) -> dict:
+        """发送 HTTP GET 请求并解析 JSON。"""
+        req = urllib.request.Request(url, headers=headers, method='GET')
+        safe_url = self._sanitize_url_for_log(url)
+        started_at = time.perf_counter()
+        self._log(f'[http_get] url={safe_url} timeout={timeout}')
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode('utf-8')
+                self._log(
+                    '[http_response] '
+                    f'url={safe_url} status={getattr(resp, "status", "unknown")} '
+                    f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
+                    f'body_chars={len(raw)}'
+                )
+                return json.loads(raw)
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode('utf-8', errors='replace')
+            self._log(
+                '[http_error] '
+                f'url={safe_url} status={exc.code} '
+                f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
+                f'error={err_body[:240]}',
+                level='ERROR',
+            )
+            raise RuntimeError(f'HTTP {exc.code}: {err_body}')
+        except urllib.error.URLError as exc:
+            self._log(
+                '[http_error] '
+                f'url={safe_url} '
+                f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
+                f'error={exc.reason}',
+                level='ERROR',
+            )
+            raise RuntimeError(f'网络错误: {exc.reason}')
+
     def _call_openai_compat(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
         """调用OpenAI兼容接口（包括自定义base_url）"""
         prepared = self._prepare_openai_compat_request(prompt, system, cfg, temperature, max_tokens)
@@ -573,12 +703,8 @@ class APIClient:
 
     def _call_claude(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
         """调用Anthropic Claude API"""
-        key = cfg.get('key', '')
-        if not key:
-            raise ValueError('Claude API Key未配置')
-        base_url = cfg.get('base_url', 'https://api.anthropic.com').rstrip('/')
-        model = cfg.get('model', 'claude-opus-4-6')
-        url = f'{base_url}/v1/messages'
+        urls = self._resolve_claude_urls(cfg.get('base_url', 'https://api.anthropic.com'))
+        model = cfg.get('model', get_preset_definition('claude').get('model', 'claude-sonnet-4-6'))
         data = {
             'model': model,
             'max_tokens': max_tokens,
@@ -586,133 +712,12 @@ class APIClient:
         }
         if system:
             data['system'] = system
-        headers = {
-            'Content-Type': 'application/json',
-            'x-api-key': key,
-            'anthropic-version': '2023-06-01',
-        }
-        resp = self._http_post(url, data, headers, timeout=request_timeout or 60)
+        headers = self._build_claude_headers(cfg)
+        resp = self._http_post(urls['messages_url'], data, headers, timeout=request_timeout or 60)
         return {
             'text': resp['content'][0]['text'],
             'response_model': str(resp.get('model', '') or model),
             'usage': extract_claude_usage(resp),
-        }
-
-    def _call_baidu(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
-        """调用百度文心API"""
-        api_key = cfg.get('api_key', '')
-        secret_key = cfg.get('secret_key', '')
-        if not api_key or not secret_key:
-            raise ValueError('百度文心 API Key或Secret Key未配置')
-        # 获取access_token
-        token_url = f'https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id={api_key}&client_secret={secret_key}'
-        req = urllib.request.Request(token_url)
-        with urllib.request.urlopen(req, timeout=request_timeout or 30) as resp:
-            token_data = json.loads(resp.read().decode('utf-8'))
-        access_token = token_data.get('access_token', '')
-        if not access_token:
-            raise RuntimeError('获取百度access_token失败')
-
-        model = cfg.get('model', 'ERNIE-4.0-8K')
-        model_map = {
-            'ERNIE-4.0-8K': 'ernie-4.0-8k',
-            'ERNIE-3.5-8K': 'ernie-3.5-8k',
-            'ERNIE-Speed': 'ernie-speed-128k',
-        }
-        endpoint = model_map.get(model, 'ernie-4.0-8k')
-        url = f'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/{endpoint}?access_token={access_token}'
-        messages = []
-        if system:
-            messages.append({'role': 'user', 'content': system})
-            messages.append({'role': 'assistant', 'content': '好的，我明白了。'})
-        messages.append({'role': 'user', 'content': prompt})
-        data = {'messages': messages, 'temperature': max(0.01, min(temperature, 1.0))}
-        headers = {'Content-Type': 'application/json'}
-        resp = self._http_post(url, data, headers, timeout=request_timeout or 60)
-        return {
-            'text': resp.get('result', ''),
-            'response_model': str(resp.get('model', '') or model),
-            'usage': {},
-        }
-
-    def _call_tongyi(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
-        """调用阿里通义千问API"""
-        key = cfg.get('key', '')
-        if not key:
-            raise ValueError('千问 API Key未配置')
-        model = cfg.get('model', 'qwen-max')
-        url = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation'
-        messages = []
-        if system:
-            messages.append({'role': 'system', 'content': system})
-        messages.append({'role': 'user', 'content': prompt})
-        data = {
-            'model': model,
-            'input': {'messages': messages},
-            'parameters': {
-                'temperature': temperature,
-                'max_tokens': max_tokens,
-                'result_format': 'message',
-            }
-        }
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {key}',
-        }
-        resp = self._http_post(url, data, headers, timeout=request_timeout or 60)
-        return {
-            'text': resp['output']['choices'][0]['message']['content'],
-            'response_model': str(resp.get('model', '') or resp.get('output', {}).get('model', '') or model),
-            'usage': extract_tongyi_usage(resp),
-        }
-
-    def _call_spark(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
-        """调用讯飞星火API（HTTP版）"""
-        app_id = cfg.get('app_id', '')
-        api_key = cfg.get('api_key', '')
-        api_secret = cfg.get('api_secret', '')
-        if not all([app_id, api_key, api_secret]):
-            raise ValueError('讯飞星火配置不完整（需要app_id、api_key、api_secret）')
-        model = cfg.get('model', 'generalv3.5')
-        # 使用HTTP API
-        import hmac, hashlib, time, base64
-        host = 'spark-api.xf-yun.com'
-        path = f'/v3.5/chat'
-        if model == 'generalv2':
-            path = '/v2.1/chat'
-        elif model == 'general':
-            path = '/v1.1/chat'
-        url = f'https://{host}{path}'
-        # 构造鉴权
-        date = time.strftime('%a, %d %b %Y %H:%M:%S GMT', time.gmtime())
-        sign_str = f'host: {host}\ndate: {date}\nPOST {path} HTTP/1.1'
-        sign = base64.b64encode(
-            hmac.new(api_secret.encode(), sign_str.encode(), digestmod=hashlib.sha256).digest()
-        ).decode()
-        auth = base64.b64encode(
-            f'api_key="{api_key}", algorithm="hmac-sha256", headers="host date request-line", signature="{sign}"'.encode()
-        ).decode()
-        messages = []
-        if system:
-            messages.append({'role': 'system', 'content': system})
-        messages.append({'role': 'user', 'content': prompt})
-        data = {
-            'header': {'app_id': app_id},
-            'parameter': {'chat': {'domain': model, 'temperature': temperature, 'max_tokens': max_tokens}},
-            'payload': {'message': {'text': messages}}
-        }
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'auth="{auth}"',
-            'Date': date,
-            'Host': host,
-        }
-        resp = self._http_post(url, data, headers, timeout=request_timeout or 60)
-        text = resp.get('payload', {}).get('choices', {}).get('text', [{}])
-        return {
-            'text': ''.join(t.get('content', '') for t in text),
-            'response_model': str(resp.get('model', '') or model),
-            'usage': {},
         }
 
     @staticmethod
@@ -775,55 +780,44 @@ class APIClient:
     def fetch_models(self, api_name: str, cfg: dict = None) -> list:
         """获取指定服务商的模型列表，返回模型id字符串列表"""
         cfg = self._get_config(api_name, cfg=cfg)
-        key = str(cfg.get('key', '') or '').strip()
-        base_url = str(cfg.get('base_url', '') or '').strip()
-        if not key or not base_url:
-            raise ValueError('请先填写 API Key 和请求地址')
+        provider_type = normalize_provider_type(cfg.get('provider_type') or api_name)
+        strategy = self._resolve_model_list_strategy(api_name, cfg)
+        current_model = str(cfg.get('model', '') or '').strip()
         provider_name = self._resolve_handler_name(api_name, cfg)
-        auth_field = self._normalize_auth_field(cfg.get('auth_field', 'Authorization'))
-        if provider_name == 'openai':
-            url = self._resolve_openai_compat_urls(base_url)['models_url']
-        else:
-            url = f'{base_url.rstrip("/")}/models'
-        headers = self._build_bearer_headers(
-            key,
-            auth_field=auth_field,
-            include_content_type=True,
-        )
-        extra_header_keys = []
-        ignored_extra_header_keys = []
-        if provider_name == 'openai':
-            extra_headers_payload = self._load_extra_headers_payload(cfg)
-            headers, extra_header_keys, ignored_extra_header_keys = self._merge_extra_headers(
-                headers,
-                extra_headers_payload,
-                protected_fields={'Authorization', auth_field, 'Content-Type'},
+
+        if strategy == MODEL_LIST_STATIC:
+            static_models = get_static_models(provider_type)
+            key = str(cfg.get('key', '') or '').strip()
+            base_url = str(cfg.get('base_url', '') or '').strip()
+            if key and base_url:
+                try:
+                    models = self._fetch_remote_models(provider_name, cfg, timeout=15)
+                    return self._merge_model_candidates(models, current_model)
+                except RuntimeError as exc:
+                    error_text = str(exc)
+                    if not (error_text.startswith('HTTP 404') or error_text.startswith('HTTP 405')):
+                        raise
+                    self._log(
+                        '[fetch_models_static_fallback] '
+                        f'provider={provider_type} '
+                        f'reason={error_text}',
+                        level='WARN',
+                    )
+            models = self._merge_model_candidates(static_models, current_model)
+            self._log(
+                '[fetch_models_static] '
+                f'provider={provider_type} '
+                f'models={",".join(models) or "-"}'
             )
-        self._log(
-            '[fetch_models] '
-            f'provider={provider_name} '
-            f'endpoint={self._sanitize_url_for_log(url)} '
-            f'auth_field={auth_field} '
-            f'extra_header_keys={",".join(extra_header_keys) or "-"} '
-            f'ignored_extra_header_keys={",".join(ignored_extra_header_keys) or "-"}'
-        )
-        req = urllib.request.Request(url, headers=headers, method='GET')
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode('utf-8', errors='replace')
-            raise RuntimeError(f'HTTP {e.code}: {err_body}')
-        except urllib.error.URLError as e:
-            raise RuntimeError(f'网络错误: {e.reason}')
-        # 兼容 {"data": [{"id":...}]} 和 {"models": [{"name":...}]} 两种格式
-        items = data.get('data') or data.get('models') or []
-        result = []
-        for item in items:
-            mid = item.get('id') or item.get('name') or ''
-            if mid:
-                result.append(mid)
-        return sorted(result)
+            return models
+
+        if strategy == MODEL_LIST_MANUAL:
+            if current_model:
+                return [current_model]
+            raise ValueError(get_model_list_manual_message(provider_type))
+
+        result = self._fetch_remote_models(provider_name, cfg, timeout=15)
+        return self._merge_model_candidates(result, current_model)
 
     def test_connection(
         self,

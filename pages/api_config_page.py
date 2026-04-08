@@ -17,6 +17,11 @@ from modules.ui_components import (
     ModernEntry,
     ScrollablePage,
 )
+from modules.provider_registry import (
+    get_credential_hint,
+    get_preset_definition,
+    normalize_provider_type,
+)
 from pages.api_config_support import (
     FORM_KEY,
     PRESET_MAP,
@@ -24,6 +29,12 @@ from pages.api_config_support import (
     build_base_form_template,
     merge_with_preset_defaults,
 )
+
+BILLING_MODE_DISPLAY = {
+    'request_model': '按请求模型匹配',
+    'response_model': '按返回模型匹配',
+}
+BILLING_MODE_REVERSE = {label: key for key, label in BILLING_MODE_DISPLAY.items()}
 
 
 class APIConfigPage:
@@ -96,9 +107,7 @@ class APIConfigPage:
             self._load_preset_draft('openai', reload=reload)
             return
 
-        provider_type = (cfg.get('provider_type') or '').strip().lower()
-        if provider_type not in PRESET_MAP:
-            provider_type = 'custom'
+        provider_type = normalize_provider_type(cfg.get('provider_type') or api_id)
 
         self._save_as_new = False
         self._current_api_id = api_id
@@ -390,6 +399,36 @@ class APIConfigPage:
         self._entries[form_key][key] = var
         return combo, var
 
+    def _billing_mode_row(self, parent, form_key, width=28):
+        row = tk.Frame(parent, bg=COLORS['card_bg'])
+        row.pack(fill=tk.X, pady=4)
+        tk.Label(
+            row,
+            text='计费模式',
+            font=FONTS['body'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['card_bg'],
+            width=16,
+            anchor='e',
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        cfg = self._get_form_config()
+        current_value = str(cfg.get('billing_mode', '') or '').strip()
+        current_label = BILLING_MODE_DISPLAY.get(current_value, '')
+        var = tk.StringVar(value=current_label)
+        combo = ttk.Combobox(
+            row,
+            textvariable=var,
+            values=[''] + list(BILLING_MODE_DISPLAY.values()),
+            style='Modern.TCombobox',
+            width=width,
+            state='readonly',
+        )
+        combo.pack(side=tk.LEFT)
+        bind_combobox_dropdown_mousewheel(combo)
+        self._entries[form_key]['billing_mode'] = var
+        return combo, var
+
     def _build_basic_section(self, parent, form_key):
         def make_reset_button(title_row):
             ModernButton(
@@ -424,16 +463,18 @@ class APIConfigPage:
             fg=COLORS['primary'],
             bg=COLORS['card_bg'],
         ).pack(side=tk.LEFT)
-
-        mode_text = '当前正在编辑已保存记录' if self._current_api_id else '当前为未保存草稿，保存后才会新增一条记录'
-        tk.Label(
-            inner,
-            text=mode_text,
-            font=FONTS['small'],
-            fg=COLORS['text_muted'],
-            bg=COLORS['card_bg'],
-            anchor='w',
-        ).pack(anchor='w', padx=(116, 0), pady=(0, 8))
+        credential_hint = get_credential_hint(self._current_provider_type)
+        if credential_hint:
+            tk.Label(
+                inner,
+                text=f'凭证说明：{credential_hint}',
+                font=FONTS['small'],
+                fg=COLORS['text_muted'],
+                bg=COLORS['card_bg'],
+                anchor='w',
+                justify=tk.LEFT,
+                wraplength=720,
+            ).pack(anchor='w', padx=(116, 0), pady=(0, 8))
 
         self._entry_row(inner, '服务商名称', 'name', form_key, placeholder='请输入服务商名称', width=40)
         self._entry_row(inner, '备注', 'remark', form_key, placeholder='可选备注信息', width=40)
@@ -460,7 +501,7 @@ class APIConfigPage:
             anchor='e',
         ).pack(side=tk.LEFT, padx=(0, 10))
 
-        model_init = cfg.get('model', '') or preset_defaults.get('model', '')
+        model_init = cfg.get('model', '')
         model_var = tk.StringVar(value=model_init)
         self._entries[form_key]['model'] = model_var
         model_combo = ttk.Combobox(
@@ -473,7 +514,7 @@ class APIConfigPage:
         model_combo.pack(side=tk.LEFT)
         bind_combobox_dropdown_mousewheel(model_combo)
         model_sel_lbl = tk.Label(
-            inner,
+            mv_row,
             text=f'已选择：{model_init}' if model_init else '已选择：（未选择）',
             font=FONTS['small'],
             fg=COLORS['text_muted'],
@@ -488,7 +529,7 @@ class APIConfigPage:
             padx=8,
             pady=4,
         ).pack(side=tk.LEFT, padx=(6, 0))
-        model_sel_lbl.pack(anchor='w', padx=(116, 0))
+        model_sel_lbl.pack(side=tk.LEFT, padx=(10, 0))
         model_var.trace_add(
             'write',
             lambda *_args: model_sel_lbl.configure(
@@ -508,12 +549,44 @@ class APIConfigPage:
             self.tip_label.pack(anchor='w', pady=(4, 0))
 
     def _build_advanced_options(self, parent, form_key):
-        self._combo_row(parent, 'API 格式', 'api_format', form_key, ['OpenAI', 'Claude', 'Baidu', 'Custom'])
+        preset_api_format = get_preset_definition(self._current_provider_type).get('api_format', 'OpenAI')
+        if self._current_provider_type == 'custom':
+            self._combo_row(parent, 'API 格式', 'api_format', form_key, ['OpenAI', 'Claude', 'Custom'])
+        else:
+            row = tk.Frame(parent, bg=COLORS['card_bg'])
+            row.pack(fill=tk.X, pady=4)
+            tk.Label(
+                row,
+                text='API 格式',
+                font=FONTS['body'],
+                fg=COLORS['text_sub'],
+                bg=COLORS['card_bg'],
+                width=16,
+                anchor='e',
+            ).pack(side=tk.LEFT, padx=(0, 10))
+            tk.Label(
+                row,
+                text=preset_api_format,
+                font=FONTS['body_bold'],
+                fg=COLORS['primary'],
+                bg=COLORS['card_bg'],
+            ).pack(side=tk.LEFT)
+            self._entries[form_key]['api_format'] = tk.StringVar(value=preset_api_format)
         self._entry_row(parent, '认证字段', 'auth_field', form_key, placeholder='Authorization', width=36)
         self._entry_row(parent, '模型映射', 'model_mapping', form_key, placeholder='源模型名:目标模型名', width=36)
 
     def _build_json_section(self, parent, form_key):
-        _, inner = self._make_card(parent, '高级请求体 JSON')
+        def make_json_format_button(title_row):
+            ModernButton(
+                title_row,
+                '格式化',
+                style='secondary',
+                command=lambda: self._format_json_field(form_key, 'extra_json', '额外请求体 JSON'),
+                padx=10,
+                pady=4,
+            ).pack(side=tk.RIGHT)
+
+        _, inner = self._make_card(parent, '额外请求体 JSON', right_widget_factory=make_json_format_button)
         cfg = self._get_form_config()
 
         checks_frame = tk.Frame(inner, bg=COLORS['card_bg'])
@@ -543,24 +616,6 @@ class APIConfigPage:
             )
             cb.pack(side=tk.LEFT, padx=(0, 18))
 
-        json_label_row = tk.Frame(inner, bg=COLORS['card_bg'])
-        json_label_row.pack(fill=tk.X)
-        tk.Label(
-            json_label_row,
-            text='额外 JSON 参数',
-            font=FONTS['body'],
-            fg=COLORS['text_sub'],
-            bg=COLORS['card_bg'],
-        ).pack(side=tk.LEFT)
-        ModernButton(
-            json_label_row,
-            '格式化',
-            style='secondary',
-            command=lambda: self._format_json_field(form_key, 'extra_json', '高级请求体 JSON'),
-            padx=10,
-            pady=4,
-        ).pack(side=tk.RIGHT)
-
         txt_frame = tk.Frame(inner, bg=COLORS['card_bg'])
         txt_frame.pack(fill=tk.X, pady=(6, 0))
         txt = tk.Text(
@@ -582,37 +637,17 @@ class APIConfigPage:
             txt.insert('1.0', saved_json)
         self._entries[form_key]['extra_json'] = txt
 
-        _, header_inner = self._make_card(parent, '额外请求头 JSON')
-        helper_text = self._get_extra_headers_hint()
+        def make_header_format_button(title_row):
+            ModernButton(
+                title_row,
+                '格式化',
+                style='secondary',
+                command=lambda: self._format_json_field(form_key, 'extra_headers', '额外请求头 JSON'),
+                padx=10,
+                pady=4,
+            ).pack(side=tk.RIGHT)
 
-        header_label_row = tk.Frame(header_inner, bg=COLORS['card_bg'])
-        header_label_row.pack(fill=tk.X)
-        tk.Label(
-            header_label_row,
-            text='附加请求头参数',
-            font=FONTS['body'],
-            fg=COLORS['text_sub'],
-            bg=COLORS['card_bg'],
-        ).pack(side=tk.LEFT)
-        ModernButton(
-            header_label_row,
-            '格式化',
-            style='secondary',
-            command=lambda: self._format_json_field(form_key, 'extra_headers', '额外请求头 JSON'),
-            padx=10,
-            pady=4,
-        ).pack(side=tk.RIGHT)
-
-        tk.Label(
-            header_inner,
-            text=helper_text,
-            font=FONTS['small'],
-            fg=COLORS['text_muted'],
-            bg=COLORS['card_bg'],
-            justify=tk.LEFT,
-            anchor='w',
-            wraplength=720,
-        ).pack(anchor='w', fill=tk.X, pady=(6, 0))
+        _, header_inner = self._make_card(parent, '额外请求头 JSON', right_widget_factory=make_header_format_button)
 
         header_txt_frame = tk.Frame(header_inner, bg=COLORS['card_bg'])
         header_txt_frame.pack(fill=tk.X, pady=(6, 0))
@@ -634,15 +669,6 @@ class APIConfigPage:
         if saved_headers:
             header_txt.insert('1.0', saved_headers)
         self._entries[form_key]['extra_headers'] = header_txt
-
-    def _get_extra_headers_hint(self):
-        if self._current_provider_type == 'openrouter':
-            return (
-                '填写 JSON 对象，为 OpenAI 兼容请求追加自定义请求头。'
-                'OpenRouter 可在此填写 HTTP-Referer、X-Title。'
-                '示例：{"HTTP-Referer": "https://your-app.example", "X-Title": "纸研社"}'
-            )
-        return '填写 JSON 对象，为 OpenAI 兼容请求追加自定义请求头；不会覆盖认证字段和 Content-Type。'
 
     def _build_test_section(self, parent, form_key):
         cfg = self._get_form_config()
@@ -717,7 +743,7 @@ class APIConfigPage:
 
         def build_body(inner):
             self._entry_row(inner, '成本倍率', 'billing_multiplier', form_key, placeholder='1.0（空=沿用全局）', width=30)
-            self._combo_row(inner, '计费模式', 'billing_mode', form_key, ['', 'request_model', 'response_model'], width=28)
+            self._billing_mode_row(inner, form_key, width=28)
 
             def refresh_state(*_args):
                 state = 'normal' if use_separate.get() else 'disabled'
@@ -786,6 +812,7 @@ class APIConfigPage:
             var = entries.get(key)
             if var is not None:
                 cfg[key] = var.get()
+        cfg['billing_mode'] = BILLING_MODE_REVERSE.get(str(cfg.get('billing_mode', '') or '').strip(), cfg.get('billing_mode', ''))
 
         txt_widget = entries.get('extra_json')
         if txt_widget is not None:
@@ -796,6 +823,8 @@ class APIConfigPage:
 
         cfg['name'] = (cfg.get('name', '') or '').strip()
         cfg['provider_type'] = self._current_provider_type
+        if self._current_provider_type != 'custom':
+            cfg['api_format'] = get_preset_definition(self._current_provider_type).get('api_format', 'OpenAI')
         return cfg
 
     def _validate(self):
@@ -904,7 +933,8 @@ class APIConfigPage:
 
     def _test_connection(self):
         cfg = self._collect_api_config(FORM_KEY)
-        use_separate = bool(self._entries.get(FORM_KEY, {}).get('use_separate_test', tk.BooleanVar()).get())
+        use_separate_var = self._entries.get(FORM_KEY, {}).get('use_separate_test')
+        use_separate = bool(use_separate_var.get()) if use_separate_var is not None else False
         if use_separate:
             model_override = cfg.get('test_model', '').strip() or None
             prompt = cfg.get('test_prompt', '').strip() or 'Who are you?'

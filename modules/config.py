@@ -10,9 +10,12 @@ import random
 import time
 from datetime import datetime
 
+from modules.provider_registry import PRESET_REGISTRY, normalize_provider_type
+
 
 LEGACY_PROVIDER_IDS = {
     'custom',
+    'openrouter',
     'openai',
     'claude',
     'deepseek',
@@ -29,11 +32,8 @@ LEGACY_PROVIDER_IDS = {
     'hunyuan',
     'sensenova',
     'stepfun',
-    'lingyi',
     '360ai',
     'tiangong',
-    'hailuo',
-    'jimeng',
 }
 
 CONFIG_DIR_POINTER_FILE = 'config_dir.json'
@@ -154,18 +154,25 @@ class ConfigManager:
 
     def _normalize_api_record(self, api_id, config):
         cfg = dict(config or {})
-        provider_type = (cfg.get('provider_type') or '').strip().lower()
+        provider_type = normalize_provider_type(cfg.get('provider_type') or api_id)
         if not provider_type:
             provider_type = api_id.lower() if api_id in LEGACY_PROVIDER_IDS else 'custom'
         cfg['provider_type'] = provider_type
 
         name = cfg.get('name', '')
         cfg['name'] = name.strip() if isinstance(name, str) else str(name or '').strip()
+        default_api_format = PRESET_REGISTRY.get(provider_type, PRESET_REGISTRY['custom']).get('api_format', 'OpenAI')
+        api_format = str(cfg.get('api_format', default_api_format) or default_api_format).strip().lower()
+        if api_format == 'claude':
+            cfg['api_format'] = 'Claude'
+        elif api_format == 'custom':
+            cfg['api_format'] = 'Custom'
+        else:
+            cfg['api_format'] = 'OpenAI'
         cfg.setdefault('remark', '')
         cfg.setdefault('website', '')
         cfg.setdefault('key', '')
         cfg.setdefault('base_url', '')
-        cfg.setdefault('api_format', 'OpenAI')
         cfg.setdefault('auth_field', 'Authorization')
         cfg.setdefault('model_mapping', '')
         cfg.setdefault('model', '')
@@ -190,10 +197,12 @@ class ConfigManager:
         cfg.setdefault('teammates_mode', False)
         cfg.setdefault('enable_tool_search', False)
         cfg.setdefault('high_intensity_thinking', False)
+        for legacy_key in ('api_key', 'secret_key', 'app_id', 'api_secret'):
+            cfg.pop(legacy_key, None)
         return cfg
 
     def _record_has_credentials(self, cfg):
-        for key in ('key', 'api_key', 'secret_key', 'app_id', 'api_secret'):
+        for key in ('key',):
             value = cfg.get(key, '')
             if isinstance(value, str) and value.strip():
                 return True

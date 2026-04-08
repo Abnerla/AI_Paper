@@ -64,27 +64,7 @@ def active_model_ready(config_mgr):
     if not current:
         return False
 
-    provider_type = (current.get('provider_type', '') or '').strip().lower()
-    api_format = (current.get('api_format', '') or '').strip().lower()
-    if (
-        (api_format == 'baidu' or provider_type == 'baidu')
-        and current.get('api_key')
-        and current.get('secret_key')
-        and not current.get('key')
-    ):
-        required = ('api_key', 'secret_key')
-    elif (
-        provider_type == 'spark'
-        and current.get('app_id')
-        and current.get('api_key')
-        and current.get('api_secret')
-        and not current.get('key')
-    ):
-        required = ('app_id', 'api_key', 'api_secret')
-    else:
-        required = ('name', 'key', 'base_url')
-
-    for field in required:
+    for field in ('name', 'key', 'base_url'):
         if not str(current.get(field, '') or '').strip():
             return False
     return True
