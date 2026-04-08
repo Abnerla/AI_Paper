@@ -595,6 +595,9 @@ class SmartPaperTool:
         self._maximize_window(remember_restore=False)
         self.root.update_idletasks()
         self._rebuild_window_chrome_after_show()
+        # 顶部导航在离屏预布局后，部分子控件的屏幕坐标不会自动修正。
+        # 主窗口真正显示后立即重建一次，避免公告/模式/设置按钮叠在同一位置。
+        self._rebuild_top_nav_after_show()
         if hasattr(self, 'content_view'):
             canvas = self.content_view.canvas
             w = canvas.winfo_width()
@@ -1875,15 +1878,30 @@ class SmartPaperTool:
             except Exception:
                 icon_image = None
             self.tool_button_images[role] = icon_image
-            button = tk.Canvas(
+            shell = tk.Frame(
                 self.right_tools,
                 bg=COLORS['shadow'],
                 bd=0,
                 highlightthickness=0,
-                cursor='hand2',
                 width=84,
                 height=84,
             )
+            shell.pack_propagate(False)
+            shell.pack(side=tk.LEFT, padx=(0, 4))
+
+            button = ToolIconButton(
+                shell,
+                text='',
+                tooltip=tip,
+                command=command,
+                font=FONTS['small'],
+                width=4,
+                padx=0,
+                pady=0,
+                highlightthickness=2,
+                takefocus=0,
+            )
+            button.pack(fill=tk.BOTH, expand=True, padx=(0, self.top_nav_shadow_gap), pady=(0, self.top_nav_shadow_gap))
             button._tool_role = role
             button._tool_label = label
             button._tool_tip = tip
@@ -1892,17 +1910,28 @@ class SmartPaperTool:
             button._tool_icon_fg = COLORS['toolbar_icon_fg']
             button._tool_icon_image = icon_image
             button._tool_has_badge = role == 'notice' and self._bell_badge_visible
-            button.pack(side=tk.LEFT, padx=(0, 4))
-            button.bind('<Button-1>', lambda _event, cb=command: cb())
-            button.bind('<Configure>', lambda _event, canvas=button: self._render_top_tool_canvas(canvas))
-            self._render_top_tool_canvas(button)
-            self.tool_button_shells.append(button)
+            button._tool_shell = shell
+            badge = tk.Canvas(
+                shell,
+                width=10,
+                height=10,
+                bg=COLORS['error'],
+                bd=0,
+                highlightthickness=0,
+            )
+            shell._tool_button = button
+            shell._tool_badge = badge
+            shell._tool_role = role
+
+            button.bind('<Configure>', lambda _event, target=shell: self._refresh_top_tool_button(target))
+            self._refresh_top_tool_button(shell)
+            self.tool_button_shells.append(shell)
             self.tool_button_borders.append(None)
             self.tool_buttons.append(button)
             if role == 'notice':
-                self.bell_button = button
+                self.bell_button = shell
             if role == 'theme':
-                self.theme_tool_button = button
+                self.theme_tool_button = shell
 
         self.user_box = tk.Frame(self.right_tools, bg=COLORS['shadow'])
 
@@ -2420,6 +2449,70 @@ class SmartPaperTool:
                 outline=COLORS['error'],
             )
 
+    @staticmethod
+    def _resolve_tool_button_canvas(widget):
+        if isinstance(widget, tk.Canvas):
+            return widget
+        return getattr(widget, '_tool_canvas', None)
+
+    @staticmethod
+    def _resolve_tool_button(widget):
+        if isinstance(widget, tk.Button):
+            return widget
+        return getattr(widget, '_tool_button', None)
+
+    def _refresh_top_tool_button(self, widget):
+        button = self._resolve_tool_button(widget)
+        if button is None:
+            return
+
+        shell = getattr(button, '_tool_shell', None) or getattr(widget, '_tool_shell', None) or widget
+        if shell is None:
+            return
+
+        icon_file = getattr(button, '_tool_icon_file', '')
+        icon_bg = getattr(button, '_tool_icon_bg', None)
+        icon_fg = getattr(button, '_tool_icon_fg', None)
+        if icon_file and (icon_bg != COLORS['toolbar_icon_bg'] or icon_fg != COLORS['toolbar_icon_fg']):
+            try:
+                icon_image = self._load_top_tool_icon(icon_file, max_size=(26, 26))
+            except Exception:
+                icon_image = None
+            button._tool_icon_image = icon_image
+            button._tool_icon_bg = COLORS['toolbar_icon_bg']
+            button._tool_icon_fg = COLORS['toolbar_icon_fg']
+            role = getattr(button, '_tool_role', '')
+            if role:
+                self.tool_button_images[role] = icon_image
+
+        if hasattr(button, 'set_style'):
+            button.set_style('tool')
+        button.configure(
+            bg=COLORS['toolbar_icon_bg'],
+            fg=COLORS['toolbar_icon_fg'],
+            activebackground=COLORS['accent_light'],
+            activeforeground=COLORS['text_main'],
+            highlightbackground=COLORS['card_border'],
+            compound=tk.CENTER,
+        )
+
+        icon_image = getattr(button, '_tool_icon_image', None)
+        if icon_image is not None:
+            button.configure(image=icon_image, text='')
+            button.image = icon_image
+        else:
+            button.configure(image='', text=getattr(button, '_tool_label', ''))
+
+        shell.configure(bg=COLORS['shadow'])
+        badge = getattr(shell, '_tool_badge', None)
+        if badge is None:
+            return
+        badge.configure(bg=COLORS['error'])
+        if getattr(button, '_tool_has_badge', False):
+            badge.place(relx=1.0, x=-(self.top_nav_shadow_gap + 8), y=8, width=10, height=10, anchor='ne')
+        else:
+            badge.place_forget()
+
     def _sync_top_nav_metrics_legacy_unused(self):
         return
         # 一级导航只使用“历史记录/智能纠错”的尺寸基准，避免其他按钮再被自身文本宽度带偏。
@@ -2478,10 +2571,8 @@ class SmartPaperTool:
 
         for shell in self.tool_button_shells:
             shell.configure(width=nav_height, height=nav_height)
-            if isinstance(shell, tk.Canvas):
-                self._render_top_tool_canvas(shell)
-            else:
-                shell.pack_propagate(False)
+            shell.pack_propagate(False)
+            self._refresh_top_tool_button(shell)
 
         self.user_box.configure(
             width=user_box_width,
@@ -2764,19 +2855,21 @@ class SmartPaperTool:
 
     def _show_bell_badge(self):
         self._bell_badge_visible = True
-        if isinstance(getattr(self, 'bell_button', None), tk.Canvas):
+        bell_button = self._resolve_tool_button(getattr(self, 'bell_button', None))
+        if bell_button is not None:
             try:
-                self.bell_button._tool_has_badge = True
-                self._render_top_tool_canvas(self.bell_button)
+                bell_button._tool_has_badge = True
+                self._refresh_top_tool_button(getattr(self, 'bell_button', None))
             except tk.TclError:
                 pass
 
     def _clear_bell_badge(self):
         self._bell_badge_visible = False
-        if isinstance(getattr(self, 'bell_button', None), tk.Canvas):
+        bell_button = self._resolve_tool_button(getattr(self, 'bell_button', None))
+        if bell_button is not None:
             try:
-                self.bell_button._tool_has_badge = False
-                self._render_top_tool_canvas(self.bell_button)
+                bell_button._tool_has_badge = False
+                self._refresh_top_tool_button(getattr(self, 'bell_button', None))
             except tk.TclError:
                 pass
 
@@ -4335,10 +4428,8 @@ class SmartPaperTool:
         self._refresh_top_nav_buttons()
 
         for shell in self.tool_button_shells:
-            if isinstance(shell, tk.Canvas):
-                self._render_top_tool_canvas(shell)
-            else:
-                shell.configure(bg=COLORS['shadow'])
+            shell.configure(bg=COLORS['shadow'])
+            self._refresh_top_tool_button(shell)
 
         for border in self.tool_button_borders:
             if border is not None:
@@ -4346,13 +4437,14 @@ class SmartPaperTool:
 
         for button in self.tool_buttons:
             if hasattr(button, 'set_style'):
-                button.set_style('tool')
+                self._refresh_top_tool_button(button)
             elif isinstance(button, tk.Canvas):
                 self._render_top_tool_canvas(button)
             else:
                 button.configure(bg=COLORS['toolbar_icon_bg'], fg=COLORS['toolbar_icon_fg'])
-        if isinstance(getattr(self, 'bell_button', None), tk.Canvas):
-            self._render_top_tool_canvas(self.bell_button)
+        bell_button = self._resolve_tool_button(getattr(self, 'bell_button', None))
+        if bell_button is not None:
+            self._refresh_top_tool_button(getattr(self, 'bell_button', None))
 
         if getattr(self, 'user_box', None):
             self.user_box.configure(bg=COLORS['shadow'])
