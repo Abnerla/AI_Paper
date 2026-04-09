@@ -11,6 +11,11 @@ import time
 from datetime import datetime
 
 from modules.provider_registry import PRESET_REGISTRY, normalize_provider_type
+from modules.runtime_paths import (
+    DATA_DIR_POINTER_FILE,
+    persist_runtime_data_root,
+    resolve_runtime_data_root,
+)
 
 
 LEGACY_PROVIDER_IDS = {
@@ -36,7 +41,7 @@ LEGACY_PROVIDER_IDS = {
     'tiangong',
 }
 
-CONFIG_DIR_POINTER_FILE = 'config_dir.json'
+CONFIG_DIR_POINTER_FILE = DATA_DIR_POINTER_FILE
 
 
 def _normalize_directory(path):
@@ -44,34 +49,11 @@ def _normalize_directory(path):
 
 
 def resolve_config_dir(data_dir):
-    base_dir = _normalize_directory(data_dir)
-    pointer_path = os.path.join(base_dir, CONFIG_DIR_POINTER_FILE)
-    if not os.path.exists(pointer_path):
-        return base_dir
-
-    try:
-        with open(pointer_path, 'r', encoding='utf-8') as handle:
-            payload = json.load(handle)
-        config_dir = _normalize_directory(payload.get('config_dir', ''))
-        if config_dir and os.path.isdir(config_dir):
-            return config_dir
-    except Exception:
-        pass
-    return base_dir
+    return resolve_runtime_data_root(_normalize_directory(data_dir))
 
 
 def persist_config_dir(data_dir, config_dir):
-    base_dir = _normalize_directory(data_dir)
-    target_dir = _normalize_directory(config_dir)
-    pointer_path = os.path.join(base_dir, CONFIG_DIR_POINTER_FILE)
-
-    if not target_dir or target_dir == base_dir:
-        if os.path.exists(pointer_path):
-            os.remove(pointer_path)
-        return
-
-    with open(pointer_path, 'w', encoding='utf-8') as handle:
-        json.dump({'config_dir': target_dir}, handle, ensure_ascii=False, indent=2)
+    persist_runtime_data_root(_normalize_directory(data_dir), _normalize_directory(config_dir))
 
 
 class ConfigManager:

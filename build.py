@@ -15,11 +15,11 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
-APP_NAME = '纸研社'
+APP_NAME = 'AI_Paper'
 APP_PACKAGE_ID = 'paperlab-zhiyanshe'
 APP_DESCRIPTION = 'AI 智能论文工作台'
 APP_HOMEPAGE = 'https://github.com/Abnerla/AI_paper'
-APP_MAINTAINER = 'PaperLab <noreply@example.com>'
+APP_MAINTAINER = 'PaperLab <1444170707@qq.com>'
 SPEC_FILE = '纸研社.spec'
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 DIST_DIR = os.path.join(PROJECT_DIR, 'dist')

@@ -23,7 +23,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
-from modules.runtime_paths import get_runtime_paths
+from modules.runtime_paths import get_runtime_paths, refresh_runtime_paths
 
 try:
     import winreg
@@ -33,7 +33,7 @@ except ImportError:
 RUNTIME_PATHS = get_runtime_paths()
 BASE_DIR = RUNTIME_PATHS.resource_root
 APP_DIR = RUNTIME_PATHS.app_root
-DATA_DIR = RUNTIME_PATHS.data_root
+BASE_DATA_DIR = RUNTIME_PATHS.base_data_root
 
 APP_NAME = '纸研社'
 APP_VERSION = 'v1.2.6'
@@ -324,9 +324,10 @@ class SmartPaperTool:
         self.api_client = None
         self.runtime_paths = RUNTIME_PATHS
         self.launch_silently = '--silent-start' in sys.argv
-        self.logs_dir = self.runtime_paths.logs_dir
-        self.temp_dir = self.runtime_paths.temp_dir
-        self.log_path = os.path.join(self.logs_dir, 'paperlab.log')
+        self.logs_dir = ''
+        self.temp_dir = ''
+        self.log_path = ''
+        self._sync_runtime_paths(self.runtime_paths)
         self._runtime_log_hooks_installed = False
         self._runtime_log_closed = False
         self._original_stdout = sys.stdout
@@ -398,6 +399,12 @@ class SmartPaperTool:
         self.task_runner = TaskRunner(self.root, set_status=self._set_status)
 
         self.root.after(0, self._start_startup_sequence)
+
+    def _sync_runtime_paths(self, runtime_paths=None):
+        self.runtime_paths = runtime_paths or refresh_runtime_paths()
+        self.logs_dir = self.runtime_paths.logs_dir
+        self.temp_dir = self.runtime_paths.temp_dir
+        self.log_path = os.path.join(self.logs_dir, 'paperlab.log')
 
     def _configure_scaling(self):
         """根据实际 DPI 让 Tk 使用正确的字体和控件缩放。"""
@@ -500,8 +507,9 @@ class SmartPaperTool:
         self.root.after(0, self._run_next_startup_step)
 
     def _initialize_runtime_services(self):
-        self.config_mgr = ConfigManager(DATA_DIR)
-        self.history_mgr = HistoryManager(DATA_DIR)
+        self._sync_runtime_paths()
+        self.config_mgr = ConfigManager(BASE_DATA_DIR)
+        self.history_mgr = HistoryManager(BASE_DATA_DIR)
         self._ensure_runtime_dirs()
         self._reset_runtime_log_file()
         self._install_runtime_log_hooks()
@@ -513,7 +521,10 @@ class SmartPaperTool:
             f'python={sys.version.split()[0]} '
             f'frozen={bool(getattr(sys, "frozen", False))} '
             f'app_dir={APP_DIR} '
-            f'data_dir={DATA_DIR} '
+            f'base_data_dir={self.runtime_paths.base_data_root} '
+            f'data_dir={self.runtime_paths.data_root} '
+            f'logs_dir={self.runtime_paths.logs_dir} '
+            f'temp_dir={self.runtime_paths.temp_dir} '
             f'resource_dir={BASE_DIR}'
         )
         self._write_app_log(f'[session_args] argv={" ".join(sys.argv)}')
@@ -733,7 +744,7 @@ class SmartPaperTool:
     def _get_startup_loading_palette(self):
         """根据已保存主题为启动加载窗选择配色。"""
         try:
-            theme_mode = ConfigManager(DATA_DIR).get_setting('theme_mode', 'light')
+            theme_mode = ConfigManager(BASE_DATA_DIR).get_setting('theme_mode', 'light')
             resolved = resolve_theme_mode(theme_mode)
         except Exception:
             resolved = 'light'
@@ -4263,7 +4274,7 @@ class SmartPaperTool:
         def change_config_directory():
             selected_dir = filedialog.askdirectory(
                 parent=window,
-                title='选择新的配置文件目录',
+                title='选择新的运行数据目录',
                 initialdir=self.config_mgr.app_dir,
                 mustexist=False,
             )
@@ -4273,20 +4284,25 @@ class SmartPaperTool:
             target_dir = os.path.abspath(selected_dir)
             current_dir = os.path.abspath(self.config_mgr.app_dir)
             if target_dir == current_dir:
-                messagebox.showinfo('配置文件目录', '当前已经在该目录中。', parent=window)
+                messagebox.showinfo('运行数据目录', '当前已经在该目录中。', parent=window)
                 return
 
             try:
                 new_path = self.config_mgr.switch_config_directory(target_dir)
+                self.history_mgr.reload_data_directory()
+                self._sync_runtime_paths()
             except Exception as exc:
-                self._write_app_log(f'调整配置文件目录失败: {exc}', 'ERROR')
-                messagebox.showerror('配置文件目录', f'调整失败：\n{exc}', parent=window)
+                self._write_app_log(f'调整运行数据目录失败: {exc}', 'ERROR')
+                messagebox.showerror('运行数据目录', f'调整失败：\n{exc}', parent=window)
                 return
 
-            self._write_app_log(f'配置文件目录已切换: {current_dir} -> {self.config_mgr.app_dir}')
+            self._write_app_log(
+                f'运行数据目录已切换: {current_dir} -> {self.config_mgr.app_dir} '
+                f'(logs={self.logs_dir}, temp={self.temp_dir})'
+            )
             messagebox.showinfo(
-                '配置文件目录',
-                f'配置文件目录已切换到：\n{self.config_mgr.app_dir}\n\n当前配置文件：\n{new_path}',
+                '运行数据目录',
+                f'运行数据目录已切换到：\n{self.config_mgr.app_dir}\n\n当前配置文件：\n{new_path}',
                 parent=window,
             )
 
@@ -4303,11 +4319,11 @@ class SmartPaperTool:
 
         add_actions(
             advanced_page,
-            '配置文件目录',
-            f'配置文件支持单独切换目录，当前配置文件：{os.path.basename(self.config_mgr.config_path)}。',
+            '运行数据目录',
+            f'模型配置、历史记录、日志与临时目录统一使用同一目录，当前配置文件：{os.path.basename(self.config_mgr.config_path)}。',
             [
                 {'text': '调整目录位置', 'style': 'secondary', 'command': change_config_directory},
-                {'text': '打开配置目录', 'style': 'secondary', 'command': lambda: self._open_directory(self.config_mgr.app_dir)},
+                {'text': '打开当前目录', 'style': 'secondary', 'command': lambda: self._open_directory(self.config_mgr.app_dir)},
             ],
             inline_buttons=True,
         )

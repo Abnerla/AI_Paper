@@ -31,15 +31,15 @@ jobs:
         include:
           - os: windows-latest
             platform: windows
-            artifact_name: 纸研社-Windows
+            artifact_name: AI_Paper-Windows
             artifact_ext: .exe
           - os: macos-latest
             platform: macos
-            artifact_name: 纸研社-macOS
+            artifact_name: AI_Paper-macOS
             artifact_ext: .dmg
           - os: ubuntu-latest
             platform: linux
-            artifact_name: 纸研社-Linux
+            artifact_name: AI_Paper-Linux
             artifact_ext: .AppImage
 
     runs-on: ${{ matrix.os }}
@@ -94,48 +94,48 @@ jobs:
         if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: 纸研社-Windows-EXE
-          path: dist/纸研社.exe
+          name: AI_Paper-Windows-EXE
+          path: dist/AI_Paper.exe
           if-no-files-found: error
 
       - name: 上传 Windows 安装程序
         if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: 纸研社-Windows-Installer
-          path: dist/纸研社_Setup_v*.exe
+          name: AI_Paper-Windows-Installer
+          path: dist/AI_Paper_Setup_v*.exe
           if-no-files-found: error
 
       - name: 上传 macOS 安装程序
         if: matrix.platform == 'macos'
         uses: actions/upload-artifact@v4
         with:
-          name: 纸研社-macOS-DMG
-          path: dist/纸研社_v*.dmg
+          name: AI_Paper-macOS-DMG
+          path: dist/AI_Paper_v*.dmg
           if-no-files-found: error
 
       - name: 上传 Linux AppImage
         if: matrix.platform == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: 纸研社-Linux-AppImage
-          path: dist/纸研社-v*.AppImage
+          name: AI_Paper-Linux-AppImage
+          path: dist/AI_Paper-v*.AppImage
           if-no-files-found: error
 
       - name: 上传 Linux DEB
         if: matrix.platform == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: 纸研社-Linux-DEB
-          path: dist/纸研社-v*-*.deb
+          name: AI_Paper-Linux-DEB
+          path: dist/AI_Paper-v*-*.deb
           if-no-files-found: error
 
       - name: 上传 Linux RPM
         if: matrix.platform == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: 纸研社-Linux-RPM
-          path: dist/纸研社-v*-*.rpm
+          name: AI_Paper-Linux-RPM
+          path: dist/AI_Paper-v*-*.rpm
           if-no-files-found: error
 
   release:

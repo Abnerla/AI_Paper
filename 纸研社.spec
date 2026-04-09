@@ -100,7 +100,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='\u7eb8\u7814\u793e',
+    name='AI_Paper',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -120,11 +120,11 @@ exe = EXE(
 if sys.platform == 'darwin':
     app = BUNDLE(
         exe,
-        name='\u7eb8\u7814\u793e.app',
+        name='AI_Paper.app',
         icon=ICON_FILE,
         bundle_identifier='com.paperlab.zhiyanshe',
         info_plist={
-            'CFBundleName': '\u7eb8\u7814\u793e',
+            'CFBundleName': 'AI_Paper',
             'CFBundleDisplayName': '\u7eb8\u7814\u793e',
             'CFBundleShortVersionString': APP_VERSION,
             'CFBundleVersion': APP_VERSION,

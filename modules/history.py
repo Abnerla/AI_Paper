@@ -18,6 +18,7 @@ from modules.app_metadata import (
     MODULE_POLISH,
     SOURCE_KIND_LABELS,
 )
+from modules.runtime_paths import resolve_runtime_data_root
 
 
 class HistoryManager:
@@ -48,7 +49,15 @@ class HistoryManager:
     }
 
     def __init__(self, data_dir):
-        self.data_dir = os.path.abspath(str(data_dir or '.'))
+        self.base_data_dir = os.path.abspath(str(data_dir or '.'))
+        self.data_dir = self.base_data_dir
+        self.app_dir = self.data_dir
+        self.history_path = os.path.join(self.data_dir, self.HISTORY_FILE)
+        self._records = []
+        self.reload_data_directory()
+
+    def reload_data_directory(self):
+        self.data_dir = resolve_runtime_data_root(self.base_data_dir)
         self.app_dir = self.data_dir
         self.history_path = os.path.join(self.data_dir, self.HISTORY_FILE)
         self._records = self._load()
