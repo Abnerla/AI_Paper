@@ -39,7 +39,7 @@ def detect_platform():
 
 
 def run_pyinstaller():
-    """Run PyInstaller with the cross-platform spec file."""
+    """使用跨平台 spec 调用 PyInstaller。"""
     cmd = [
         sys.executable, '-m', 'PyInstaller',
         '--clean',
@@ -54,13 +54,12 @@ def run_pyinstaller():
 
 
 def create_dmg():
-    """Create a .dmg installer for macOS."""
+    """生成 macOS 的 .dmg 安装程序。"""
     app_path = os.path.join(DIST_DIR, f'{APP_NAME}.app')
     dmg_path = os.path.join(DIST_DIR, f'{APP_NAME}_{APP_VERSION}.dmg')
 
     if not os.path.isdir(app_path):
-        print(f'[build] Warning: {app_path} not found, skipping DMG creation')
-        return
+        raise FileNotFoundError(f'[build] Missing app bundle: {app_path}')
 
     if os.path.exists(dmg_path):
         os.remove(dmg_path)
@@ -79,16 +78,14 @@ def create_dmg():
 
 
 def create_appimage():
-    """Create an AppImage for Linux (requires appimagetool on PATH)."""
+    """生成 Linux 的 AppImage 安装程序。"""
     exe_path = os.path.join(DIST_DIR, APP_NAME)
     if not os.path.isfile(exe_path):
-        print(f'[build] Warning: {exe_path} not found, skipping AppImage creation')
-        return
+        raise FileNotFoundError(f'[build] Missing Linux executable: {exe_path}')
 
     appimage_tool = shutil.which('appimagetool')
     if not appimage_tool:
-        print('[build] Warning: appimagetool not found on PATH, skipping AppImage creation')
-        return
+        raise FileNotFoundError('[build] Missing dependency: appimagetool')
 
     appdir = os.path.join(BUILD_DIR, f'{APP_NAME}.AppDir')
     if os.path.isdir(appdir):
@@ -128,11 +125,10 @@ exec "$HERE/usr/bin/""" + APP_NAME + """ "$@"
 
 
 def create_inno_setup_installer():
-    """Create a Windows installer using Inno Setup (if installed)."""
+    """使用 Inno Setup 生成 Windows 安装程序。"""
     iss_path = os.path.join(PROJECT_DIR, 'installers', 'windows_setup.iss')
     if not os.path.isfile(iss_path):
-        print('[build] Warning: installers/windows_setup.iss not found, skipping installer')
-        return
+        raise FileNotFoundError('[build] Missing installer script: installers/windows_setup.iss')
 
     iscc = None
     for candidate in [
@@ -145,8 +141,7 @@ def create_inno_setup_installer():
             break
 
     if not iscc:
-        print('[build] Warning: Inno Setup (ISCC) not found, skipping installer')
-        return
+        raise FileNotFoundError('[build] Missing dependency: Inno Setup (ISCC)')
 
     cmd = [iscc, iss_path]
     print(f'[build] Creating Windows installer with Inno Setup')
