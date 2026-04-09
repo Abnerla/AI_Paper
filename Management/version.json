@@ -1,13 +1,13 @@
 {
-  "version": 5,
-  "latest_version": "v1.2.3",
+  "version": 6,
+  "latest_version": "v1.2.6",
   "min_supported_version": "v1.2.1",
-  "release_date": "2026-04-08",
+  "release_date": "2026-04-09",
   "download_url": "https://github.com/Abnerla/AI_paper/releases",
   "changelog": [
     {
-      "version": "v1.2.3",
-      "date": "2026-04-08",
+      "version": "v1.2.6",
+      "date": "2026-04-9",
       "changes": [
       "修复 统一自定义 API 测速与正式调用的请求结构",
       "修复 窗口拉伸时的明显迟滞",

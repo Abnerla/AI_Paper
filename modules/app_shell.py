@@ -36,7 +36,7 @@ APP_DIR = RUNTIME_PATHS.app_root
 DATA_DIR = RUNTIME_PATHS.data_root
 
 APP_NAME = '纸研社'
-APP_VERSION = 'v1.2.3'
+APP_VERSION = 'v1.2.6'
 STARTUP_REG_PATH = r'Software\Microsoft\Windows\CurrentVersion\Run'
 STARTUP_VALUE_NAME = APP_NAME
 TOP_NAV_ITEMS = (
