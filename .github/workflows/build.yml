@@ -82,7 +82,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk squashfs-tools
+          sudo apt-get install -y python3-tk squashfs-tools rpm
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
           chmod +x appimagetool
           sudo mv appimagetool /usr/local/bin/appimagetool
@@ -114,12 +114,28 @@ jobs:
           path: dist/纸研社_v*.dmg
           if-no-files-found: error
 
-      - name: 上传 Linux 安装程序
+      - name: 上传 Linux AppImage
         if: matrix.platform == 'linux'
         uses: actions/upload-artifact@v4
         with:
           name: 纸研社-Linux-AppImage
           path: dist/纸研社-v*.AppImage
+          if-no-files-found: error
+
+      - name: 上传 Linux DEB
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: 纸研社-Linux-DEB
+          path: dist/纸研社-v*-*.deb
+          if-no-files-found: error
+
+      - name: 上传 Linux RPM
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: 纸研社-Linux-RPM
+          path: dist/纸研社-v*-*.rpm
           if-no-files-found: error
 
   release:

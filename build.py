@@ -9,6 +9,7 @@
 
 import argparse
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -23,11 +24,27 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
         pass
 
 APP_NAME = '纸研社'
+APP_PACKAGE_ID = 'paperlab-zhiyanshe'
+APP_DESCRIPTION = 'AI 智能论文工作台'
+APP_HOMEPAGE = 'https://github.com/Abnerla/AI_paper'
+APP_MAINTAINER = 'PaperLab <noreply@example.com>'
 SPEC_FILE = '纸研社.spec'
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 DIST_DIR = os.path.join(PROJECT_DIR, 'dist')
 BUILD_DIR = os.path.join(PROJECT_DIR, 'build')
 VERSION_PATTERN = re.compile(r'^v?(?P<version>\d+\.\d+\.\d+)$')
+DEB_ARCH_MAP = {
+    'x86_64': 'amd64',
+    'amd64': 'amd64',
+    'aarch64': 'arm64',
+    'arm64': 'arm64',
+}
+RPM_ARCH_MAP = {
+    'x86_64': 'x86_64',
+    'amd64': 'x86_64',
+    'aarch64': 'aarch64',
+    'arm64': 'aarch64',
+}
 
 
 def read_command_output(command):
@@ -86,6 +103,77 @@ def resolve_version():
 APP_VERSION, APP_VERSION_TAG = resolve_version()
 
 
+def require_path(path, description):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f'[build] Missing {description}: {path}')
+    return path
+
+
+def require_command(name):
+    command = shutil.which(name)
+    if not command:
+        raise FileNotFoundError(f'[build] Missing dependency: {name}')
+    return command
+
+
+def write_text_file(path, content, executable=False):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8', newline='\n') as file:
+        file.write(content)
+    if executable:
+        os.chmod(path, 0o755)
+
+
+def get_linux_paths():
+    executable_path = require_path(os.path.join(DIST_DIR, APP_NAME), 'Linux executable')
+    desktop_source = require_path(
+        os.path.join(PROJECT_DIR, 'installers', 'linux', f'{APP_NAME}.desktop'),
+        'Linux desktop file',
+    )
+    icon_source = require_path(os.path.join(PROJECT_DIR, 'logo.png'), 'Linux icon')
+    return executable_path, desktop_source, icon_source
+
+
+def get_linux_architectures():
+    machine = platform.machine().lower()
+    deb_arch = DEB_ARCH_MAP.get(machine)
+    rpm_arch = RPM_ARCH_MAP.get(machine)
+    if not deb_arch or not rpm_arch:
+        raise ValueError(f'[build] Unsupported Linux architecture: {machine}')
+    return deb_arch, rpm_arch
+
+
+def create_linux_payload():
+    executable_path, desktop_source, icon_source = get_linux_paths()
+    payload_root = os.path.join(BUILD_DIR, 'linux-payload')
+
+    if os.path.isdir(payload_root):
+        shutil.rmtree(payload_root)
+
+    app_dir = os.path.join(payload_root, 'opt', APP_PACKAGE_ID)
+    installed_executable = os.path.join(app_dir, APP_NAME)
+    wrapper_path = os.path.join(payload_root, 'usr', 'bin', APP_NAME)
+    desktop_target = os.path.join(payload_root, 'usr', 'share', 'applications', f'{APP_NAME}.desktop')
+    icon_target = os.path.join(payload_root, 'usr', 'share', 'pixmaps', f'{APP_NAME}.png')
+
+    os.makedirs(app_dir, exist_ok=True)
+    shutil.copy2(executable_path, installed_executable)
+    os.chmod(installed_executable, 0o755)
+
+    wrapper_content = f"""#!/bin/sh
+exec "/opt/{APP_PACKAGE_ID}/{APP_NAME}" "$@"
+"""
+    write_text_file(wrapper_path, wrapper_content, executable=True)
+
+    os.makedirs(os.path.dirname(desktop_target), exist_ok=True)
+    shutil.copy2(desktop_source, desktop_target)
+
+    os.makedirs(os.path.dirname(icon_target), exist_ok=True)
+    shutil.copy2(icon_source, icon_target)
+
+    return payload_root
+
+
 def detect_platform():
     if sys.platform == 'win32':
         return 'windows'
@@ -139,34 +227,17 @@ def create_dmg():
 
 def create_appimage():
     """生成 Linux 的 AppImage 安装程序。"""
-    exe_path = os.path.join(DIST_DIR, APP_NAME)
-    if not os.path.isfile(exe_path):
-        raise FileNotFoundError(f'[build] Missing Linux executable: {exe_path}')
-
-    appimage_tool = shutil.which('appimagetool')
-    if not appimage_tool:
-        raise FileNotFoundError('[build] Missing dependency: appimagetool')
+    executable_path, desktop_source, icon_source = get_linux_paths()
+    appimage_tool = require_command('appimagetool')
 
     appdir = os.path.join(BUILD_DIR, f'{APP_NAME}.AppDir')
     if os.path.isdir(appdir):
         shutil.rmtree(appdir)
     os.makedirs(os.path.join(appdir, 'usr', 'bin'), exist_ok=True)
 
-    shutil.copy2(exe_path, os.path.join(appdir, 'usr', 'bin', APP_NAME))
-
-    icon_src = os.path.join(PROJECT_DIR, 'logo.png')
-    if os.path.exists(icon_src):
-        shutil.copy2(icon_src, os.path.join(appdir, f'{APP_NAME}.png'))
-
-    desktop_content = f"""[Desktop Entry]
-Name={APP_NAME}
-Exec={APP_NAME}
-Icon={APP_NAME}
-Type=Application
-Categories=Office;Education;
-"""
-    with open(os.path.join(appdir, f'{APP_NAME}.desktop'), 'w', encoding='utf-8') as f:
-        f.write(desktop_content)
+    shutil.copy2(executable_path, os.path.join(appdir, 'usr', 'bin', APP_NAME))
+    shutil.copy2(icon_source, os.path.join(appdir, f'{APP_NAME}.png'))
+    shutil.copy2(desktop_source, os.path.join(appdir, f'{APP_NAME}.desktop'))
 
     apprun_content = """#!/bin/bash
 HERE="$(dirname "$(readlink -f "$0")")"
@@ -182,6 +253,111 @@ exec "$HERE/usr/bin/""" + APP_NAME + """ "$@"
     print(f'[build] Creating AppImage: {output_path}')
     subprocess.check_call(cmd)
     print(f'[build] AppImage created: {output_path}')
+
+
+def create_deb_package():
+    """生成 Linux 的 .deb 安装包。"""
+    dpkg_deb = require_command('dpkg-deb')
+    deb_arch, _rpm_arch = get_linux_architectures()
+    payload_root = create_linux_payload()
+    package_root = os.path.join(BUILD_DIR, 'linux-deb', APP_PACKAGE_ID)
+
+    if os.path.isdir(package_root):
+        shutil.rmtree(package_root)
+    shutil.copytree(payload_root, package_root)
+
+    control_content = f"""Package: {APP_PACKAGE_ID}
+Version: {APP_VERSION}
+Section: utils
+Priority: optional
+Architecture: {deb_arch}
+Maintainer: {APP_MAINTAINER}
+Homepage: {APP_HOMEPAGE}
+Description: {APP_DESCRIPTION}
+ AI smart paper workbench.
+"""
+    write_text_file(os.path.join(package_root, 'DEBIAN', 'control'), control_content)
+
+    output_path = os.path.join(DIST_DIR, f'{APP_NAME}-{APP_VERSION_TAG}-{deb_arch}.deb')
+    cmd = [dpkg_deb]
+    if '--root-owner-group' in read_command_output([dpkg_deb, '--help']):
+        cmd.append('--root-owner-group')
+    cmd.extend(['--build', package_root, output_path])
+    print(f'[build] Creating DEB: {output_path}')
+    subprocess.check_call(cmd)
+    print(f'[build] DEB created: {output_path}')
+
+
+def create_rpm_package():
+    """生成 Linux 的 .rpm 安装包。"""
+    rpmbuild = require_command('rpmbuild')
+    _deb_arch, rpm_arch = get_linux_architectures()
+    payload_root = create_linux_payload()
+    rpm_root = os.path.join(BUILD_DIR, 'linux-rpm')
+    spec_dir = os.path.join(rpm_root, 'SPECS')
+
+    if os.path.isdir(rpm_root):
+        shutil.rmtree(rpm_root)
+
+    for directory_name in ('BUILD', 'BUILDROOT', 'RPMS', 'SOURCES', 'SPECS', 'SRPMS'):
+        os.makedirs(os.path.join(rpm_root, directory_name), exist_ok=True)
+
+    spec_content = f"""%global debug_package %{{nil}}
+Name: {APP_PACKAGE_ID}
+Version: {APP_VERSION}
+Release: 1
+Summary: AI smart paper workbench
+License: MIT
+URL: {APP_HOMEPAGE}
+BuildArch: {rpm_arch}
+AutoReqProv: no
+
+%description
+AI smart paper workbench.
+
+%prep
+
+%build
+
+%install
+rm -rf %{{buildroot}}
+install -d %{{buildroot}}
+cp -a "{payload_root}/." "%{{buildroot}}/"
+
+%files
+%attr(0755,root,root) /opt/{APP_PACKAGE_ID}/{APP_NAME}
+%attr(0755,root,root) /usr/bin/{APP_NAME}
+%attr(0644,root,root) /usr/share/applications/{APP_NAME}.desktop
+%attr(0644,root,root) /usr/share/pixmaps/{APP_NAME}.png
+"""
+    spec_path = os.path.join(spec_dir, f'{APP_PACKAGE_ID}.spec')
+    write_text_file(spec_path, spec_content)
+
+    print(f'[build] Creating RPM package')
+    subprocess.check_call([
+        rpmbuild,
+        '--define', f'_topdir {rpm_root}',
+        '--define', '_build_name_fmt %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}.rpm',
+        '-bb',
+        spec_path,
+    ])
+
+    built_rpm_dir = os.path.join(rpm_root, 'RPMS', rpm_arch)
+    built_rpm_name = f'{APP_PACKAGE_ID}-{APP_VERSION}-1.{rpm_arch}.rpm'
+    built_rpm_path = os.path.join(built_rpm_dir, built_rpm_name)
+    if not os.path.isfile(built_rpm_path):
+        raise FileNotFoundError(f'[build] RPM output not found in {built_rpm_dir}')
+
+    output_path = os.path.join(DIST_DIR, f'{APP_NAME}-{APP_VERSION_TAG}-{rpm_arch}.rpm')
+    shutil.copy2(built_rpm_path, output_path)
+    print(f'[build] RPM created: {output_path}')
+
+
+def create_linux_installers():
+    """生成 Linux 安装包。"""
+    create_appimage()
+    create_deb_package()
+    create_rpm_package()
 
 
 def create_inno_setup_installer():
@@ -233,7 +409,7 @@ def main():
         elif platform == 'macos':
             create_dmg()
         elif platform == 'linux':
-            create_appimage()
+            create_linux_installers()
 
     print(f'[build] Done! Output in {DIST_DIR}')
 
