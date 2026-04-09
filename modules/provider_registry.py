@@ -8,6 +8,7 @@ from __future__ import annotations
 
 HANDLER_OPENAI = 'openai'
 HANDLER_CLAUDE = 'claude'
+HANDLER_GEMINI = 'gemini'
 
 MODEL_LIST_REMOTE = 'remote'
 MODEL_LIST_STATIC = 'static'
@@ -30,6 +31,7 @@ _PRESET_DEFINITIONS = (
         'base_url': '',
         'model': '',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_REMOTE,
         'static_models': (),
@@ -44,6 +46,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://openrouter.ai/api/v1',
         'model': 'openai/gpt-4o-mini',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_REMOTE,
         'static_models': (),
@@ -62,6 +65,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.openai.com/v1',
         'model': 'gpt-4o',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_REMOTE,
         'static_models': (),
@@ -76,11 +80,87 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.anthropic.com',
         'model': 'claude-sonnet-4-6',
         'api_format': 'Claude',
+        'auth_field': 'x-api-key',
         'handler_name': HANDLER_CLAUDE,
         'model_list_strategy': MODEL_LIST_REMOTE,
         'static_models': (),
         'extra_headers_hint': 'Claude 原生接口使用固定请求头，不需要在这里追加额外认证字段。',
         'credential_hint': '请填写 Anthropic Console 中生成的 API Key。',
+    },
+    {
+        'id': 'gemini',
+        'label': 'Google Gemini',
+        'website': 'https://ai.google.dev',
+        'docs_url': 'https://ai.google.dev/api/rest/generativelanguage/models/list',
+        'base_url': 'https://generativelanguage.googleapis.com/v1beta',
+        'model': 'gemini-2.5-flash',
+        'api_format': 'Gemini',
+        'auth_field': 'x-goog-api-key',
+        'handler_name': HANDLER_GEMINI,
+        'model_list_strategy': MODEL_LIST_REMOTE,
+        'static_models': (),
+        'extra_headers_hint': DEFAULT_EXTRA_HEADERS_HINT,
+        'credential_hint': '请填写 Google Gemini Developer API 密钥。',
+    },
+    {
+        'id': 'newapi_openai',
+        'label': 'New API·OpenAI',
+        'website': 'https://www.newapi.ai/',
+        'docs_url': 'https://www.newapi.ai/zh/docs',
+        'base_url': 'https://your-newapi-domain/v1',
+        'model': '',
+        'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
+        'handler_name': HANDLER_OPENAI,
+        'model_list_strategy': MODEL_LIST_REMOTE,
+        'static_models': (),
+        'extra_headers_hint': DEFAULT_EXTRA_HEADERS_HINT,
+        'credential_hint': '请填写 New API 站点提供的访问令牌。',
+    },
+    {
+        'id': 'newapi_gemini',
+        'label': 'New API·Gemini',
+        'website': 'https://www.newapi.ai/',
+        'docs_url': 'https://www.newapi.ai/zh/docs',
+        'base_url': 'https://your-newapi-domain/v1beta',
+        'model': 'gemini-2.5-flash',
+        'api_format': 'Gemini',
+        'auth_field': 'Authorization',
+        'handler_name': HANDLER_GEMINI,
+        'model_list_strategy': MODEL_LIST_REMOTE,
+        'static_models': (),
+        'extra_headers_hint': DEFAULT_EXTRA_HEADERS_HINT,
+        'credential_hint': '请填写 New API 站点提供的访问令牌。',
+    },
+    {
+        'id': 'sub2api_openai',
+        'label': 'Sub2API·OpenAI',
+        'website': 'https://github.com/Wei-Shaw/sub2api',
+        'docs_url': 'https://github.com/Wei-Shaw/sub2api',
+        'base_url': 'https://your-sub2api-domain/v1',
+        'model': '',
+        'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
+        'handler_name': HANDLER_OPENAI,
+        'model_list_strategy': MODEL_LIST_REMOTE,
+        'static_models': (),
+        'extra_headers_hint': DEFAULT_EXTRA_HEADERS_HINT,
+        'credential_hint': '请填写 Sub2API 站点提供的访问令牌。',
+    },
+    {
+        'id': 'sub2api_gemini',
+        'label': 'Sub2API·Gemini',
+        'website': 'https://github.com/Wei-Shaw/sub2api',
+        'docs_url': 'https://github.com/Wei-Shaw/sub2api',
+        'base_url': 'https://your-sub2api-domain/v1beta',
+        'model': 'gemini-2.5-flash',
+        'api_format': 'Gemini',
+        'auth_field': 'Authorization',
+        'handler_name': HANDLER_GEMINI,
+        'model_list_strategy': MODEL_LIST_REMOTE,
+        'static_models': (),
+        'extra_headers_hint': DEFAULT_EXTRA_HEADERS_HINT,
+        'credential_hint': '请填写 Sub2API 站点提供的访问令牌。',
     },
     {
         'id': 'deepseek',
@@ -90,6 +170,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.deepseek.com/v1',
         'model': 'deepseek-chat',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('deepseek-chat', 'deepseek-reasoner'),
@@ -104,6 +185,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://ark.cn-beijing.volces.com/api/v3',
         'model': 'doubao-pro-4k',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('doubao-pro-4k',),
@@ -118,6 +200,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://open.bigmodel.cn/api/paas/v4',
         'model': 'glm-4-plus',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('glm-4-plus', 'glm-4-air', 'glm-4-flash'),
@@ -132,6 +215,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
         'model': 'qwen-plus',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('qwen-plus', 'qwen-turbo', 'qwen-max'),
@@ -146,6 +230,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://qianfan.baidubce.com/v2',
         'model': 'ernie-4.5-8k-preview',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('ernie-4.5-8k-preview',),
@@ -163,6 +248,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://spark-api-open.xf-yun.com/v1',
         'model': '4.0Ultra',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('4.0Ultra', 'generalv3.5', 'max-32k', 'generalv3', 'pro-128k', 'lite'),
@@ -177,6 +263,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.minimaxi.chat/v1',
         'model': 'MiniMax-Text-01',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('MiniMax-Text-01',),
@@ -191,6 +278,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.moonshot.cn/v1',
         'model': 'moonshot-v1-8k',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'),
@@ -205,6 +293,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.lingyiwanwu.com/v1',
         'model': 'yi-large',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('yi-large', 'yi-lightning'),
@@ -219,6 +308,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.siliconflow.cn/v1',
         'model': 'deepseek-ai/DeepSeek-V3',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('deepseek-ai/DeepSeek-V3', 'deepseek-ai/DeepSeek-R1'),
@@ -233,6 +323,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.baichuan-ai.com/v1',
         'model': 'Baichuan4',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('Baichuan4',),
@@ -247,6 +338,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.hunyuan.cloud.tencent.com/v1',
         'model': 'hunyuan-turbo',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('hunyuan-turbo',),
@@ -261,6 +353,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.sensenova.cn/compatible-mode/v1',
         'model': 'SenseChat-5',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('SenseChat-5',),
@@ -275,6 +368,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.stepfun.com/v1',
         'model': 'step-2-16k',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('step-2-16k',),
@@ -289,6 +383,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://api.360.cn/v1',
         'model': '360gpt2-pro',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('360gpt2-pro',),
@@ -303,6 +398,7 @@ _PRESET_DEFINITIONS = (
         'base_url': 'https://sky-api.singularity-ai.com/saas/api/v4',
         'model': 'tiangong-pro',
         'api_format': 'OpenAI',
+        'auth_field': 'Authorization',
         'handler_name': HANDLER_OPENAI,
         'model_list_strategy': MODEL_LIST_STATIC,
         'static_models': ('tiangong-pro',),
@@ -325,6 +421,7 @@ PRESET_OPTIONS = [
             'base_url': item['base_url'],
             'model': item['model'],
             'api_format': item['api_format'],
+            'auth_field': item['auth_field'],
         },
     )
     for item in _PRESET_DEFINITIONS
@@ -338,6 +435,7 @@ PRESET_MAP = {
             'base_url': item['base_url'],
             'model': item['model'],
             'api_format': item['api_format'],
+            'auth_field': item['auth_field'],
         },
         'docs_url': item['docs_url'],
         'handler_name': item['handler_name'],
@@ -369,6 +467,8 @@ def resolve_handler_name(provider_type, api_format='OpenAI'):
     if normalized_provider == 'custom':
         if normalized_format == 'claude':
             return HANDLER_CLAUDE
+        if normalized_format == 'gemini':
+            return HANDLER_GEMINI
         return HANDLER_OPENAI
     return PRESET_REGISTRY[normalized_provider]['handler_name']
 
@@ -382,6 +482,11 @@ def resolve_model_list_strategy(provider_type, api_format='OpenAI'):
 
 def get_static_models(provider_type):
     return list(get_preset_definition(provider_type).get('static_models', ()))
+
+
+def get_docs_url(provider_type):
+    preset = get_preset_definition(provider_type)
+    return preset.get('docs_url') or ''
 
 
 def get_extra_headers_hint(provider_type):

@@ -17,6 +17,7 @@ from typing import Callable, Optional
 from modules.provider_registry import (
     ANTHROPIC_VERSION,
     HANDLER_CLAUDE,
+    HANDLER_GEMINI,
     HANDLER_OPENAI,
     MODEL_LIST_MANUAL,
     MODEL_LIST_REMOTE,
@@ -33,6 +34,7 @@ from modules.usage_stats import (
     UsageStatsStore,
     calculate_total_cost,
     extract_claude_usage,
+    extract_gemini_usage,
     extract_openai_usage,
     find_pricing_rule,
     resolve_event_billing,
@@ -101,6 +103,38 @@ class APIClient:
             headers['Content-Type'] = 'application/json'
         headers[str(auth_field or 'Authorization')] = f'Bearer {key}'
         return headers
+
+    @staticmethod
+    def _build_key_headers(key, *, auth_field, include_content_type=True, use_bearer=False):
+        headers = {}
+        if include_content_type:
+            headers['Content-Type'] = 'application/json'
+        if use_bearer:
+            headers[str(auth_field or 'Authorization')] = f'Bearer {key}'
+        else:
+            headers[str(auth_field or 'x-goog-api-key')] = str(key)
+        return headers
+
+    @staticmethod
+    def _should_use_bearer_auth(auth_field):
+        return str(auth_field or '').strip().lower() in {'authorization', 'proxy-authorization'}
+
+    @staticmethod
+    def _coerce_float(value, default=None):
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _coerce_positive_int(value, default=None):
+        try:
+            number = int(value)
+        except Exception:
+            return default
+        if number <= 0:
+            return default
+        return number
 
     @staticmethod
     def _load_extra_headers_payload(cfg):
@@ -201,6 +235,45 @@ class APIClient:
         }
 
     @staticmethod
+    def _normalize_gemini_model_name(model_name):
+        value = str(model_name or '').strip()
+        if value.startswith('models/'):
+            return value.split('/', 1)[1].strip()
+        return value
+
+    @classmethod
+    def _resolve_gemini_urls(cls, base_url, model_name=''):
+        normalized_base_url = (
+            str(base_url or 'https://generativelanguage.googleapis.com/v1beta').strip()
+            or 'https://generativelanguage.googleapis.com/v1beta'
+        )
+        parts = urllib.parse.urlsplit(normalized_base_url)
+        path = parts.path.rstrip('/')
+        root_path = path
+
+        if ':generateContent' in path and '/models/' in path:
+            root_path = path.split('/models/', 1)[0]
+        elif path.endswith('/models'):
+            root_path = path[:-len('/models')]
+        elif '/models/' in path:
+            root_path = path.split('/models/', 1)[0]
+
+        if not root_path.endswith('/v1beta') and not root_path.endswith('/v1'):
+            root_path = f'{root_path}/v1beta' if root_path else '/v1beta'
+
+        models_path = f'{root_path}/models'
+        request_model = cls._normalize_gemini_model_name(model_name)
+        encoded_model = urllib.parse.quote(request_model, safe='-._~')
+        generate_content_path = f'{models_path}/{encoded_model}:generateContent' if encoded_model else ''
+        return {
+            'root_url': urllib.parse.urlunsplit((parts.scheme, parts.netloc, root_path, '', '')),
+            'models_url': urllib.parse.urlunsplit((parts.scheme, parts.netloc, models_path, '', '')),
+            'generate_content_url': urllib.parse.urlunsplit(
+                (parts.scheme, parts.netloc, generate_content_path, '', '')
+            ) if generate_content_path else '',
+        }
+
+    @staticmethod
     def _parse_model_mapping(raw_mapping):
         mapping = {}
         text = str(raw_mapping or '').strip()
@@ -241,9 +314,11 @@ class APIClient:
 
     def _resolve_request_model_name(self, provider_name, cfg):
         model_name = str((cfg or {}).get('model', '') or '').strip() or 'unknown'
-        if provider_name != HANDLER_OPENAI:
+        if provider_name not in {HANDLER_OPENAI, HANDLER_GEMINI}:
             return model_name
         mapped_model, _mapping_hit = self._apply_model_mapping(model_name, cfg)
+        if provider_name == HANDLER_GEMINI:
+            return self._normalize_gemini_model_name(mapped_model or model_name)
         return mapped_model or model_name
 
     @staticmethod
@@ -263,21 +338,52 @@ class APIClient:
     def _merge_openai_extra_json(base_payload, extra_payload):
         merged = dict(base_payload or {})
         ignored_keys = []
+        removed_keys = []
         protected_keys = {
             'model',
             'messages',
             'system',
-            'temperature',
-            'max_tokens',
             'prompt',
             'input',
         }
         for key, value in dict(extra_payload or {}).items():
-            if key in protected_keys or key in merged:
+            if key in protected_keys:
                 ignored_keys.append(str(key))
                 continue
+            if value is None:
+                if key in merged:
+                    merged.pop(key, None)
+                    removed_keys.append(str(key))
+                continue
             merged[key] = value
-        return merged, sorted(set(ignored_keys))
+
+        if 'max_completion_tokens' in extra_payload and 'max_tokens' in merged and 'max_tokens' not in extra_payload:
+            merged.pop('max_tokens', None)
+            removed_keys.append('max_tokens')
+
+        return merged, sorted(set(ignored_keys)), sorted(set(removed_keys))
+
+    @staticmethod
+    def _merge_gemini_extra_json(base_payload, extra_payload):
+        merged = dict(base_payload or {})
+        ignored_keys = []
+        removed_keys = []
+        protected_keys = {
+            'contents',
+            'systemInstruction',
+            'model',
+        }
+        for key, value in dict(extra_payload or {}).items():
+            if key in protected_keys:
+                ignored_keys.append(str(key))
+                continue
+            if value is None:
+                if key in merged:
+                    merged.pop(key, None)
+                    removed_keys.append(str(key))
+                continue
+            merged[key] = value
+        return merged, sorted(set(ignored_keys)), sorted(set(removed_keys))
 
     def _prepare_openai_compat_request(self, prompt, system, cfg, temperature, max_tokens):
         key = str((cfg or {}).get('key', '') or '').strip()
@@ -301,7 +407,7 @@ class APIClient:
             'max_tokens': max_tokens,
         }
         extra_json_payload = self._load_extra_json_payload(cfg)
-        payload, ignored_keys = self._merge_openai_extra_json(payload, extra_json_payload)
+        payload, ignored_keys, removed_keys = self._merge_openai_extra_json(payload, extra_json_payload)
         extra_headers_payload = self._load_extra_headers_payload(cfg)
         headers = self._build_bearer_headers(key, auth_field=auth_field, include_content_type=True)
         headers, extra_header_keys, ignored_extra_header_keys = self._merge_extra_headers(
@@ -321,8 +427,278 @@ class APIClient:
             'model_mapping_hit': mapping_hit,
             'extra_json_keys': sorted(extra_json_payload.keys()),
             'ignored_extra_json_keys': ignored_keys,
+            'removed_extra_json_keys': removed_keys,
             'extra_header_keys': extra_header_keys,
             'ignored_extra_header_keys': ignored_extra_header_keys,
+        }
+
+    def _build_gemini_headers(self, cfg):
+        key = str((cfg or {}).get('key', '') or '').strip()
+        if not key:
+            raise ValueError('Gemini API Key未配置')
+
+        raw_auth_field = str((cfg or {}).get('auth_field', '') or '').strip()
+        auth_field = raw_auth_field or 'x-goog-api-key'
+        use_bearer = self._should_use_bearer_auth(auth_field)
+        headers = self._build_key_headers(
+            key,
+            auth_field=auth_field,
+            include_content_type=True,
+            use_bearer=use_bearer,
+        )
+        extra_headers_payload = self._load_extra_headers_payload(cfg)
+        headers, extra_header_keys, ignored_extra_header_keys = self._merge_extra_headers(
+            headers,
+            extra_headers_payload,
+            protected_fields={'Content-Type', auth_field},
+        )
+        return {
+            'headers': headers,
+            'auth_field': auth_field,
+            'use_bearer': use_bearer,
+            'extra_header_keys': extra_header_keys,
+            'ignored_extra_header_keys': ignored_extra_header_keys,
+        }
+
+    def _prepare_gemini_request(self, prompt, system, cfg, temperature, max_tokens):
+        key = str((cfg or {}).get('key', '') or '').strip()
+        if not key:
+            raise ValueError('Gemini API Key未配置')
+
+        configured_model = (
+            str((cfg or {}).get('model', '') or '').strip()
+            or get_preset_definition('gemini').get('model', 'gemini-2.5-flash')
+        )
+        request_model, mapping_hit = self._apply_model_mapping(configured_model, cfg)
+        request_model = self._normalize_gemini_model_name(request_model or configured_model)
+        urls = self._resolve_gemini_urls(
+            (cfg or {}).get('base_url', 'https://generativelanguage.googleapis.com/v1beta'),
+            request_model,
+        )
+        if not urls['generate_content_url']:
+            raise ValueError('Gemini 请求地址无效')
+
+        generation_config = {
+            'temperature': temperature,
+            'maxOutputTokens': max_tokens,
+        }
+        top_p = self._coerce_float((cfg or {}).get('top_p', ''), default=None)
+        if top_p is not None:
+            generation_config['topP'] = top_p
+        presence_penalty = self._coerce_float((cfg or {}).get('presence_penalty', ''), default=None)
+        if presence_penalty is not None:
+            generation_config['presencePenalty'] = presence_penalty
+        frequency_penalty = self._coerce_float((cfg or {}).get('frequency_penalty', ''), default=None)
+        if frequency_penalty is not None:
+            generation_config['frequencyPenalty'] = frequency_penalty
+
+        payload = {
+            'contents': [
+                {
+                    'role': 'user',
+                    'parts': [{'text': prompt}],
+                }
+            ],
+            'generationConfig': generation_config,
+        }
+        if system:
+            payload['systemInstruction'] = {
+                'role': 'system',
+                'parts': [{'text': system}],
+            }
+
+        extra_json_payload = self._load_extra_json_payload(cfg)
+        payload, ignored_keys, removed_keys = self._merge_gemini_extra_json(payload, extra_json_payload)
+        header_bundle = self._build_gemini_headers(cfg)
+
+        return {
+            'url': urls['generate_content_url'],
+            'models_url': urls['models_url'],
+            'root_url': urls['root_url'],
+            'payload': payload,
+            'headers': header_bundle['headers'],
+            'auth_field': header_bundle['auth_field'],
+            'use_bearer': header_bundle['use_bearer'],
+            'request_model': request_model,
+            'model_mapping_hit': mapping_hit,
+            'extra_json_keys': sorted(extra_json_payload.keys()),
+            'ignored_extra_json_keys': ignored_keys,
+            'removed_extra_json_keys': removed_keys,
+            'extra_header_keys': header_bundle['extra_header_keys'],
+            'ignored_extra_header_keys': header_bundle['ignored_extra_header_keys'],
+        }
+
+    @staticmethod
+    def _extract_gemini_text_from_part(part):
+        if isinstance(part, str):
+            return part
+        if not isinstance(part, dict):
+            return ''
+        text = part.get('text')
+        if isinstance(text, str):
+            return text
+        return ''
+
+    @classmethod
+    def _extract_gemini_response_text(cls, payload):
+        resp = dict(payload or {})
+        candidates = resp.get('candidates') if isinstance(resp.get('candidates'), list) else []
+        fragments = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            content = candidate.get('content')
+            if not isinstance(content, dict):
+                continue
+            parts = content.get('parts') if isinstance(content.get('parts'), list) else []
+            for part in parts:
+                fragment = cls._extract_gemini_text_from_part(part)
+                if fragment:
+                    fragments.append(fragment)
+
+        text = '\n'.join(fragment for fragment in fragments if fragment).strip()
+        prompt_feedback = resp.get('promptFeedback') if isinstance(resp.get('promptFeedback'), dict) else {}
+        block_reason = str(prompt_feedback.get('blockReason', '') or '').strip()
+        finish_reasons = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            finish_reason = str(candidate.get('finishReason', '') or '').strip()
+            if finish_reason:
+                finish_reasons.append(finish_reason)
+
+        return {
+            'text': text,
+            'text_source': 'candidates.content.parts.text' if text else 'empty',
+            'content_kind': 'gemini_parts' if text else 'empty',
+            'has_choices': bool(candidates),
+            'has_output_text': bool(text),
+            'block_reason': block_reason,
+            'finish_reasons': sorted(set(finish_reasons)),
+        }
+
+    @staticmethod
+    def _extract_openai_text_from_content_item(item):
+        if isinstance(item, str):
+            return item
+        if not isinstance(item, dict):
+            return ''
+
+        text_value = item.get('text')
+        if isinstance(text_value, str):
+            return text_value
+        if isinstance(text_value, dict):
+            nested_text = text_value.get('value') or text_value.get('text') or ''
+            if isinstance(nested_text, str):
+                return nested_text
+
+        output_text = item.get('output_text')
+        if isinstance(output_text, str):
+            return output_text
+        if isinstance(output_text, dict):
+            nested_output_text = output_text.get('value') or output_text.get('text') or ''
+            if isinstance(nested_output_text, str):
+                return nested_output_text
+
+        content_value = item.get('content')
+        if isinstance(content_value, str):
+            return content_value
+        return ''
+
+    @classmethod
+    def _extract_openai_text_from_content(cls, content):
+        if isinstance(content, str):
+            return content, 'string'
+        if isinstance(content, list):
+            fragments = []
+            for item in content:
+                fragment = cls._extract_openai_text_from_content_item(item)
+                if fragment:
+                    fragments.append(fragment)
+            return '\n'.join(fragment for fragment in fragments if fragment), 'array'
+        if isinstance(content, dict):
+            fragment = cls._extract_openai_text_from_content_item(content)
+            if fragment:
+                return fragment, 'object'
+        return '', 'empty'
+
+    @classmethod
+    def _extract_openai_text_from_output_items(cls, output_items):
+        if not isinstance(output_items, list):
+            return ''
+
+        fragments = []
+        for item in output_items:
+            if not isinstance(item, dict):
+                continue
+            content = item.get('content')
+            fragment, _content_kind = cls._extract_openai_text_from_content(content)
+            if fragment:
+                fragments.append(fragment)
+                continue
+            fallback_fragment = cls._extract_openai_text_from_content_item(item)
+            if fallback_fragment:
+                fragments.append(fallback_fragment)
+        return '\n'.join(fragment for fragment in fragments if fragment)
+
+    @classmethod
+    def _extract_openai_response_text(cls, payload):
+        resp = dict(payload or {})
+        has_choices = isinstance(resp.get('choices'), list) and bool(resp.get('choices'))
+        has_output_text = bool(str(resp.get('output_text', '') or '').strip())
+        has_output_items = isinstance(resp.get('output'), list) and bool(resp.get('output'))
+
+        choices = resp.get('choices') if isinstance(resp.get('choices'), list) else []
+        if choices:
+            first_choice = choices[0] if isinstance(choices[0], dict) else {}
+            message = first_choice.get('message') if isinstance(first_choice.get('message'), dict) else {}
+            message_content = message.get('content')
+            text, content_kind = cls._extract_openai_text_from_content(message_content)
+            if text:
+                return {
+                    'text': text,
+                    'text_source': 'choices.message.content',
+                    'content_kind': content_kind,
+                    'has_choices': has_choices,
+                    'has_output_text': has_output_text,
+                }
+
+            choice_text = first_choice.get('text')
+            if isinstance(choice_text, str) and choice_text:
+                return {
+                    'text': choice_text,
+                    'text_source': 'choices.text',
+                    'content_kind': 'legacy_text',
+                    'has_choices': has_choices,
+                    'has_output_text': has_output_text,
+                }
+
+        output_text = resp.get('output_text')
+        if isinstance(output_text, str) and output_text:
+            return {
+                'text': output_text,
+                'text_source': 'output_text',
+                'content_kind': 'responses_output_text',
+                'has_choices': has_choices,
+                'has_output_text': has_output_text,
+            }
+
+        output_items_text = cls._extract_openai_text_from_output_items(resp.get('output'))
+        if output_items_text:
+            return {
+                'text': output_items_text,
+                'text_source': 'output.content',
+                'content_kind': 'responses_output_array',
+                'has_choices': has_choices,
+                'has_output_text': has_output_text or has_output_items,
+            }
+
+        return {
+            'text': '',
+            'text_source': 'empty',
+            'content_kind': 'empty',
+            'has_choices': has_choices,
+            'has_output_text': has_output_text or has_output_items,
         }
 
     def _build_claude_headers(self, cfg):
@@ -370,6 +746,24 @@ class APIClient:
                 result.append(model_id)
         return sorted(result)
 
+    @classmethod
+    def _extract_gemini_model_ids(cls, payload):
+        items = payload.get('models') or payload.get('data') or []
+        result = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            supported_methods = item.get('supportedGenerationMethods')
+            if isinstance(supported_methods, list) and supported_methods:
+                normalized_methods = {str(method or '').strip() for method in supported_methods}
+                if 'generateContent' not in normalized_methods:
+                    continue
+            model_id = item.get('id') or item.get('name') or ''
+            model_id = cls._normalize_gemini_model_name(model_id)
+            if model_id:
+                result.append(model_id)
+        return sorted(set(result), key=lambda item: item.lower())
+
     def _fetch_remote_models(self, provider_name, cfg, *, timeout=15):
         key = str(cfg.get('key', '') or '').strip()
         base_url = str(cfg.get('base_url', '') or '').strip()
@@ -390,12 +784,22 @@ class APIClient:
                 extra_headers_payload,
                 protected_fields={'Authorization', auth_field, 'Content-Type'},
             )
+            extractor = self._extract_model_ids
         elif provider_name == HANDLER_CLAUDE:
             auth_field = 'x-api-key'
             url = self._resolve_claude_urls(base_url)['models_url']
             headers = self._build_claude_headers(cfg)
             extra_header_keys = []
             ignored_extra_header_keys = []
+            extractor = self._extract_model_ids
+        elif provider_name == HANDLER_GEMINI:
+            header_bundle = self._build_gemini_headers(cfg)
+            auth_field = header_bundle['auth_field']
+            url = self._resolve_gemini_urls(base_url)['models_url']
+            headers = header_bundle['headers']
+            extra_header_keys = header_bundle['extra_header_keys']
+            ignored_extra_header_keys = header_bundle['ignored_extra_header_keys']
+            extractor = self._extract_gemini_model_ids
         else:
             raise ValueError(f'不支持的模型列表处理器: {provider_name}')
 
@@ -408,7 +812,7 @@ class APIClient:
             f'ignored_extra_header_keys={",".join(ignored_extra_header_keys) or "-"}'
         )
         payload = self._http_get_json(url, headers=headers, timeout=timeout)
-        return self._extract_model_ids(payload)
+        return extractor(payload)
 
     def call(
         self,
@@ -525,6 +929,7 @@ class APIClient:
         handlers = {
             HANDLER_OPENAI: self._call_openai_compat,
             HANDLER_CLAUDE: self._call_claude,
+            HANDLER_GEMINI: self._call_gemini,
         }
         cfg = self._get_config(api_name, cfg=cfg)
         handler = handlers.get(self._resolve_handler_name(api_name, cfg))
@@ -577,13 +982,19 @@ class APIClient:
             raise
         result_text = str(response_payload.get('text', '') or '')
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        result_preview = result_text.strip().replace('\n', ' ')[:80]
         self._log(
             '[api_response] '
             f'api={api_name or "active"} '
             f'provider={provider_name} '
             f'model={model_name} '
             f'elapsed_ms={elapsed_ms} '
-            f'result_len={len(result_text)}'
+            f'result_len={len(result_text)} '
+            f'text_source={response_payload.get("text_source", "-")} '
+            f'content_kind={response_payload.get("content_kind", "-")} '
+            f'result_preview_len={len(result_preview)} '
+            f'has_choices={int(bool(response_payload.get("has_choices", False)))} '
+            f'has_output_text={int(bool(response_payload.get("has_output_text", False)))}'
         )
         self._record_usage_event(
             request_id=request_id,
@@ -684,6 +1095,7 @@ class APIClient:
             f'model_mapping_hit={prepared["model_mapping_hit"]} '
             f'extra_json_keys={",".join(prepared["extra_json_keys"]) or "-"} '
             f'ignored_extra_json_keys={",".join(prepared["ignored_extra_json_keys"]) or "-"} '
+            f'removed_extra_json_keys={",".join(prepared["removed_extra_json_keys"]) or "-"} '
             f'extra_header_keys={",".join(prepared["extra_header_keys"]) or "-"} '
             f'ignored_extra_header_keys={",".join(prepared["ignored_extra_header_keys"]) or "-"} '
             f'timeout={request_timeout}'
@@ -694,8 +1106,13 @@ class APIClient:
             prepared['headers'],
             timeout=request_timeout,
         )
+        extracted = self._extract_openai_response_text(resp)
         return {
-            'text': resp['choices'][0]['message']['content'],
+            'text': extracted['text'],
+            'text_source': extracted['text_source'],
+            'content_kind': extracted['content_kind'],
+            'has_choices': extracted['has_choices'],
+            'has_output_text': extracted['has_output_text'],
             'response_model': str(resp.get('model', '') or prepared['request_model']),
             'request_model': prepared['request_model'],
             'usage': extract_openai_usage(resp),
@@ -718,6 +1135,47 @@ class APIClient:
             'text': resp['content'][0]['text'],
             'response_model': str(resp.get('model', '') or model),
             'usage': extract_claude_usage(resp),
+        }
+
+    def _call_gemini(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
+        """调用 Gemini 原生 API。"""
+        prepared = self._prepare_gemini_request(prompt, system, cfg, temperature, max_tokens)
+        self._log(
+            '[gemini] '
+            f'endpoint={self._sanitize_url_for_log(prepared["url"])} '
+            f'auth_field={prepared["auth_field"]} '
+            f'use_bearer={int(prepared["use_bearer"])} '
+            f'model={prepared["request_model"]} '
+            f'model_mapping_hit={prepared["model_mapping_hit"]} '
+            f'extra_json_keys={",".join(prepared["extra_json_keys"]) or "-"} '
+            f'ignored_extra_json_keys={",".join(prepared["ignored_extra_json_keys"]) or "-"} '
+            f'removed_extra_json_keys={",".join(prepared["removed_extra_json_keys"]) or "-"} '
+            f'extra_header_keys={",".join(prepared["extra_header_keys"]) or "-"} '
+            f'ignored_extra_header_keys={",".join(prepared["ignored_extra_header_keys"]) or "-"} '
+            f'timeout={request_timeout}'
+        )
+        resp = self._http_post(
+            prepared['url'],
+            prepared['payload'],
+            prepared['headers'],
+            timeout=request_timeout,
+        )
+        extracted = self._extract_gemini_response_text(resp)
+        if not extracted['text']:
+            finish_reasons = ','.join(extracted['finish_reasons']) or '-'
+            block_reason = extracted['block_reason'] or '-'
+            raise RuntimeError(
+                f'Gemini 未返回可显示文本，block_reason={block_reason}，finish_reason={finish_reasons}'
+            )
+        return {
+            'text': extracted['text'],
+            'text_source': extracted['text_source'],
+            'content_kind': extracted['content_kind'],
+            'has_choices': extracted['has_choices'],
+            'has_output_text': extracted['has_output_text'],
+            'response_model': str(resp.get('modelVersion', '') or resp.get('model', '') or prepared['request_model']),
+            'request_model': prepared['request_model'],
+            'usage': extract_gemini_usage(resp),
         }
 
     @staticmethod
@@ -848,8 +1306,13 @@ class APIClient:
                     cfg=cfg,
                 )
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
-                response_preview = (result or '').strip().replace('\n', ' ')
-                response_preview = response_preview[:80] or '已收到空响应'
+                normalized_result = (result or '').strip()
+                if not normalized_result:
+                    last_error = '连接建立但未返回可显示文本，请检查模型类型或响应格式。'
+                    continue
+
+                response_preview = normalized_result.replace('\n', ' ')
+                response_preview = response_preview[:80]
 
                 if degrade_threshold_ms and elapsed_ms > int(degrade_threshold_ms):
                     return True, (

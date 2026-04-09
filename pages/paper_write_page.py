@@ -155,6 +155,7 @@ class PaperWritePage(WorkspaceStateMixin):
         ('无', '', ''),
     )
     OUTLINE_EMPHASIS_MARKERS = ('***', '___', '**', '__', '*', '_')
+    OUTLINE_BULLET_PREFIX_RE = re.compile(r'^\s*[-*•]\s+(.+)$')
     OUTLINE_MARKDOWN_RE = re.compile(r'^(#{1,6})\s+(.+)$')
     OUTLINE_CHAPTER_RE = re.compile(r'^(第[一二三四五六七八九十百千万\d]+(章|节|部分|篇))\s*[:：]?\s*(.+)$')
     OUTLINE_DECIMAL_RE = re.compile(r'^((?:\d+\.)+\d+)\s*[:：]?\s*(.+)$')
@@ -3019,17 +3020,47 @@ class PaperWritePage(WorkspaceStateMixin):
             self.outline_text.insert(tk.END, '生成中，请稍候...')
 
         def on_success(result):
+            prepared = self._prepare_outline_generation_result(result)
+            display_text = prepared['display_text']
             self.outline_text.delete('1.0', tk.END)
-            self.outline_text.insert(tk.END, result)
-            self._parse_and_show_outline(result)
+            if not display_text:
+                self.outline_text.insert(tk.END, '错误：模型未返回可显示内容')
+                self._clear_outline_structure_view()
+                self._write_outline_generation_log(
+                    'empty_result',
+                    level='WARN',
+                    topic=topic,
+                )
+                self.set_status('生成失败：模型未返回可显示内容', COLORS['error'])
+                return
+
+            self.outline_text.insert(tk.END, display_text)
+            if prepared['has_structure']:
+                self._parse_and_show_outline(display_text, parsed=prepared['parsed'])
+                self.set_status('大纲生成完成')
+                self._write_outline_generation_log(
+                    'render_structured',
+                    topic=topic,
+                    heading_count=len(prepared['parsed'].get('order', [])),
+                    result_len=len(display_text),
+                )
+            else:
+                self._clear_outline_structure_view()
+                self._write_outline_generation_log(
+                    'parse_fallback',
+                    level='WARN',
+                    topic=topic,
+                    result_len=len(display_text),
+                )
+                self.set_status('已生成文本，但格式无法解析', COLORS['warning'])
+
             self._schedule_workspace_state_save()
             self._add_history_version(
                 '生成大纲',
                 topic,
-                result,
+                display_text,
                 extra={'paper_title': topic},
             )
-            self.set_status('大纲生成完成')
 
         def on_error(exc):
             self.outline_text.delete('1.0', tk.END)
@@ -3045,6 +3076,57 @@ class PaperWritePage(WorkspaceStateMixin):
             status_text='正在生成大纲...',
             status_color=COLORS['warning'],
         )
+
+    @staticmethod
+    def _normalize_outline_generation_text(text):
+        return str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+
+    @classmethod
+    def _empty_outline_structure(cls):
+        return {
+            'sections': {},
+            'order': [],
+            'levels': {},
+            'parents': {},
+        }
+
+    @classmethod
+    def _prepare_outline_generation_result(cls, text):
+        display_text = cls._normalize_outline_generation_text(text)
+        parsed = cls._build_outline_structure(display_text) if display_text else cls._empty_outline_structure()
+        has_structure = bool(parsed.get('order'))
+        return {
+            'display_text': display_text,
+            'parsed': parsed,
+            'has_structure': has_structure,
+            'preserve_raw_text': bool(display_text) and not has_structure,
+        }
+
+    def _clear_outline_structure_view(self):
+        self._sections = {}
+        self._section_formats = {}
+        self._section_order = []
+        self._section_levels = {}
+        self._section_parent = {}
+        self._section_children = {}
+        self._collapsed_sections = set()
+        if hasattr(self, '_outline_selected') and self._outline_selected is not None:
+            self._outline_selected.set('')
+        self._refresh_outline_list()
+        self.edit_text.delete('1.0', tk.END)
+        self.section_entry.delete(0, tk.END)
+        self._editor_section_source = ''
+        self._touch_context_revision()
+
+    def _write_outline_generation_log(self, event, level='INFO', **fields):
+        if not self.app_bridge or not hasattr(self.app_bridge, 'write_app_log'):
+            return
+        parts = [f'[paper_write_outline] event={event}']
+        for key, value in fields.items():
+            if value is None:
+                continue
+            parts.append(f'{key}={value}')
+        self.app_bridge.write_app_log(' '.join(parts), level=level)
 
     def _add_history_version(self, operation, input_text, output_text, extra=None):
         self.history.add(
@@ -3689,6 +3771,9 @@ class PaperWritePage(WorkspaceStateMixin):
     @classmethod
     def _analyze_outline_heading(cls, line):
         text = cls._strip_outline_emphasis(line)
+        bullet_match = cls.OUTLINE_BULLET_PREFIX_RE.match(text)
+        if bullet_match:
+            text = cls._strip_outline_emphasis(bullet_match.group(1).strip())
         if not text or len(text) > 160:
             return None
 

@@ -127,7 +127,7 @@ for _scene_id, _scene_def in SCENE_DEFS.items():
     PAGE_SCENE_MAP.setdefault(_scene_def['page_id'], []).append(_scene_id)
 
 DEFAULTS_PATH = resolve_resource_path('modules', 'prompt_defaults.json')
-SYSTEM_DEFAULT_SYNC_SCENE_IDS = ('polish.run_task',)
+SYSTEM_DEFAULT_SYNC_SCENE_IDS = ('paper_write.outline', 'polish.run_task')
 
 
 class PromptCenterError(Exception):

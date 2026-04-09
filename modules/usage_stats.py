@@ -374,6 +374,23 @@ def extract_claude_usage(payload: dict | None) -> dict:
     }
 
 
+def extract_gemini_usage(payload: dict | None) -> dict:
+    payload = dict(payload or {})
+    usage = dict(payload.get('usageMetadata', {}) or payload.get('usage', {}) or {})
+    return {
+        'input_tokens': _coerce_non_negative_int(
+            usage.get('promptTokenCount', usage.get('input_tokens', 0))
+        ),
+        'output_tokens': _coerce_non_negative_int(
+            usage.get('candidatesTokenCount', usage.get('output_tokens', 0))
+        ),
+        'cache_create_tokens': 0,
+        'cache_hit_tokens': _coerce_non_negative_int(
+            usage.get('cachedContentTokenCount', usage.get('cache_hit_tokens', 0))
+        ),
+    }
+
+
 def extract_tongyi_usage(payload: dict | None) -> dict:
     payload = dict(payload or {})
     usage = dict(payload.get('usage', {}) or payload.get('output', {}).get('usage', {}) or {})

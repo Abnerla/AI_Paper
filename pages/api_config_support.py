@@ -53,7 +53,7 @@ def merge_with_preset_defaults(cfg, provider_type):
     merged['provider_type'] = provider_type
 
     preset_defaults = PRESET_MAP.get(provider_type, {}).get('defaults', {})
-    for field in ('website', 'base_url', 'api_format'):
+    for field in ('website', 'base_url', 'api_format', 'auth_field'):
         if not str(merged.get(field, '') or '').strip() and preset_defaults.get(field):
             merged[field] = preset_defaults[field]
     return merged

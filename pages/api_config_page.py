@@ -4,6 +4,7 @@
 """
 
 import json
+import subprocess
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -19,6 +20,8 @@ from modules.ui_components import (
 )
 from modules.provider_registry import (
     get_credential_hint,
+    get_docs_url,
+    get_extra_headers_hint,
     get_preset_definition,
     normalize_provider_type,
 )
@@ -463,6 +466,30 @@ class APIConfigPage:
             fg=COLORS['primary'],
             bg=COLORS['card_bg'],
         ).pack(side=tk.LEFT)
+        docs_url = get_docs_url(self._current_provider_type)
+        if docs_url:
+            docs_row = tk.Frame(inner, bg=COLORS['card_bg'])
+            docs_row.pack(anchor='w', padx=(116, 0), pady=(0, 6))
+            tk.Label(
+                docs_row,
+                text='文档链接：',
+                font=FONTS['small'],
+                fg=COLORS['text_muted'],
+                bg=COLORS['card_bg'],
+            ).pack(side=tk.LEFT)
+            docs_link = tk.Label(
+                docs_row,
+                text=docs_url,
+                font=FONTS['small'],
+                fg=COLORS['info'],
+                bg=COLORS['card_bg'],
+                cursor='hand2',
+            )
+            docs_link.pack(side=tk.LEFT)
+            docs_link.bind(
+                '<Button-1>',
+                lambda _event, url=docs_url: subprocess.Popen(['cmd', '/c', 'start', '', url], shell=False),
+            )
         credential_hint = get_credential_hint(self._current_provider_type)
         if credential_hint:
             tk.Label(
@@ -551,7 +578,7 @@ class APIConfigPage:
     def _build_advanced_options(self, parent, form_key):
         preset_api_format = get_preset_definition(self._current_provider_type).get('api_format', 'OpenAI')
         if self._current_provider_type == 'custom':
-            self._combo_row(parent, 'API 格式', 'api_format', form_key, ['OpenAI', 'Claude', 'Custom'])
+            self._combo_row(parent, 'API 格式', 'api_format', form_key, ['OpenAI', 'Claude', 'Gemini', 'Custom'])
         else:
             row = tk.Frame(parent, bg=COLORS['card_bg'])
             row.pack(fill=tk.X, pady=4)
@@ -648,6 +675,18 @@ class APIConfigPage:
             ).pack(side=tk.RIGHT)
 
         _, header_inner = self._make_card(parent, '额外请求头 JSON', right_widget_factory=make_header_format_button)
+        extra_headers_hint = get_extra_headers_hint(self._current_provider_type)
+        if extra_headers_hint:
+            tk.Label(
+                header_inner,
+                text=f'请求头说明：{extra_headers_hint}',
+                font=FONTS['small'],
+                fg=COLORS['text_muted'],
+                bg=COLORS['card_bg'],
+                anchor='w',
+                justify=tk.LEFT,
+                wraplength=720,
+            ).pack(anchor='w', pady=(0, 8))
 
         header_txt_frame = tk.Frame(header_inner, bg=COLORS['card_bg'])
         header_txt_frame.pack(fill=tk.X, pady=(6, 0))

@@ -23,6 +23,11 @@ LEGACY_PROVIDER_IDS = {
     'openrouter',
     'openai',
     'claude',
+    'gemini',
+    'newapi_openai',
+    'newapi_gemini',
+    'sub2api_openai',
+    'sub2api_gemini',
     'deepseek',
     'doubao',
     'zhipu',
@@ -146,10 +151,13 @@ class ConfigManager:
 
         name = cfg.get('name', '')
         cfg['name'] = name.strip() if isinstance(name, str) else str(name or '').strip()
-        default_api_format = PRESET_REGISTRY.get(provider_type, PRESET_REGISTRY['custom']).get('api_format', 'OpenAI')
+        preset_definition = PRESET_REGISTRY.get(provider_type, PRESET_REGISTRY['custom'])
+        default_api_format = preset_definition.get('api_format', 'OpenAI')
         api_format = str(cfg.get('api_format', default_api_format) or default_api_format).strip().lower()
         if api_format == 'claude':
             cfg['api_format'] = 'Claude'
+        elif api_format == 'gemini':
+            cfg['api_format'] = 'Gemini'
         elif api_format == 'custom':
             cfg['api_format'] = 'Custom'
         else:
@@ -158,7 +166,7 @@ class ConfigManager:
         cfg.setdefault('website', '')
         cfg.setdefault('key', '')
         cfg.setdefault('base_url', '')
-        cfg.setdefault('auth_field', 'Authorization')
+        cfg['auth_field'] = str(cfg.get('auth_field', '') or '').strip() or preset_definition.get('auth_field', 'Authorization')
         cfg.setdefault('model_mapping', '')
         cfg.setdefault('model', '')
         cfg.setdefault('extra_json', '')
