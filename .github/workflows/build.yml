@@ -1,4 +1,4 @@
-name: 跨平台构建
+name: 纸研社跨平台构建
 
 on:
   push:
@@ -15,7 +15,7 @@ on:
           - 'true'
           - 'false'
       build_version:
-        description: '手动构建时使用的版本号，例如 v1.2.6'
+        description: '手动构建时使用的版本号'
         required: false
         default: ''
         type: string

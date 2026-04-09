@@ -531,6 +531,7 @@ class HomePage:
     def _build_status_card(self):
         self.status_card = CardFrame(self.left_column, padding=22)
         self.status_card.pack(fill=tk.X, pady=(0, 16))
+        self.status_card.inner.grid_columnconfigure(0, weight=1)
 
         tk.Label(
             self.status_card.inner,
@@ -538,10 +539,13 @@ class HomePage:
             font=(FONTS['title'][0], DASHBOARD_SECTION_TITLE_FONT_SIZE, 'bold'),
             fg=COLORS['text_main'],
             bg=COLORS['card_bg'],
-        ).pack(anchor='w')
+        ).grid(row=0, column=0, sticky='w')
 
-        fields_shell = tk.Frame(self.status_card.inner, bg=COLORS['card_bg'])
-        fields_shell.pack(fill=tk.X, pady=(12, 16))
+        content_shell = tk.Frame(self.status_card.inner, bg=COLORS['card_bg'])
+        content_shell.grid(row=1, column=0, sticky='ew', pady=(12, 0))
+
+        fields_shell = tk.Frame(content_shell, bg=COLORS['card_bg'])
+        fields_shell.pack(fill=tk.X)
 
         field_specs = (
             ('当前文稿主题', 'paper_topic'),
@@ -591,8 +595,11 @@ class HomePage:
             bind_adaptive_wrap(value_label, value_shell, padding=0, min_width=180)
             self.status_value_labels[key] = value_label
 
+        button_host = tk.Frame(content_shell, bg=COLORS['card_bg'])
+        button_host.pack(fill=tk.X, pady=(8, 0))
+
         self.status_continue_button_shell, self.status_continue_button = self._create_dashboard_shell_button(
-            self.status_card.inner,
+            button_host,
             '继续当前任务',
             style='primary_fixed',
             command=self._continue_current_task,
@@ -1096,8 +1103,9 @@ class HomePage:
 
         header = tk.Frame(shell.inner, bg=COLORS['card_bg'])
         header.pack(fill=tk.X)
+        header.grid_columnconfigure(0, weight=1)
         title_shell = tk.Frame(header, bg=COLORS['card_bg'])
-        title_shell.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        title_shell.grid(row=0, column=0, sticky='ew')
         tk.Label(
             title_shell,
             text='成本定价',
@@ -1122,7 +1130,7 @@ class HomePage:
             pady=8,
             font=FONTS['body_bold'],
         )
-        pricing_toggle_shell.pack(side=tk.RIGHT)
+        pricing_toggle_shell.grid(row=0, column=1, sticky='ne', padx=(12, 0))
 
         self.pricing_panel_body = tk.Frame(shell.inner, bg=COLORS['card_bg'])
 

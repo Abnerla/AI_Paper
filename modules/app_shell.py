@@ -1491,7 +1491,7 @@ class SmartPaperTool:
             if not requires_forced_update:
                 ModernButton(
                     footer,
-                    '此版本不再提醒',
+                    '本次更新不再提示',
                     style='secondary',
                     command=ignore_current_version,
                 ).pack(side=tk.RIGHT, padx=(0, 10))
@@ -2885,11 +2885,11 @@ class SmartPaperTool:
         window.resizable(True, True)
         apply_adaptive_window_geometry(window, geometry, min_width=min_width, min_height=min_height)
 
+        footer = tk.Frame(body, bg=COLORS['card_bg'])
+        footer.pack(side=tk.BOTTOM, fill=tk.X, padx=24, pady=(16, 24))
+
         content_view = ScrollablePage(body, bg=COLORS['card_bg'])
         content_view.pack(fill=tk.BOTH, expand=True, padx=24, pady=(24, 0))
-
-        footer = tk.Frame(body, bg=COLORS['card_bg'])
-        footer.pack(fill=tk.X, padx=24, pady=(16, 24))
 
         window.after_idle(content_view.scroll_to_top)
         return window, content_view.inner, footer

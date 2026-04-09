@@ -1,12 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-纸研社 跨平台构建脚本
-
-用法:
-    python build.py                    # 自动检测当前平台并构建
-    python build.py --installer        # 同时生成安装程序
-"""
-
 import argparse
 import os
 import platform
