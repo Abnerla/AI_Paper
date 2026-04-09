@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 SPEC_DIR = os.path.abspath(SPECPATH)
 sys.path.insert(0, SPEC_DIR)
+APP_VERSION = os.environ.get('APP_VERSION', '0.0.0')
 
 # --- Platform-aware icon selection ---
 if sys.platform == 'darwin':
@@ -125,8 +126,8 @@ if sys.platform == 'darwin':
         info_plist={
             'CFBundleName': '\u7eb8\u7814\u793e',
             'CFBundleDisplayName': '\u7eb8\u7814\u793e',
-            'CFBundleShortVersionString': '1.2.3',
-            'CFBundleVersion': '1.2.3',
+            'CFBundleShortVersionString': APP_VERSION,
+            'CFBundleVersion': APP_VERSION,
             'NSHighResolutionCapable': True,
         },
     )

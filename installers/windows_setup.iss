@@ -2,7 +2,9 @@
 ; 需要 Inno Setup 6.0+
 
 #define MyAppName "纸研社"
+#ifndef MyAppVersion
 #define MyAppVersion "1.2.3"
+#endif
 #define MyAppPublisher "PaperLab"
 #define MyAppURL "https://github.com/Abnerla/AI_paper"
 #define MyAppExeName "纸研社.exe"
@@ -30,7 +32,7 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesesimplified"; MessagesFile: ".\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]

@@ -62,6 +62,14 @@ jobs:
         if: matrix.platform == 'windows'
         run: choco install innosetup --no-progress -y
 
+      - name: 下载 Windows 中文语言文件
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/ChineseSimplified.isl" `
+            -OutFile "installers/ChineseSimplified.isl"
+
       - name: 安装 Linux 打包依赖
         if: matrix.platform == 'linux'
         run: |
