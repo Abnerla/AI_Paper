@@ -13,6 +13,14 @@ import shutil
 import subprocess
 import sys
 
+# 确保 Windows CI 环境下 print 不会因中文编码报错
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 APP_NAME = '纸研社'
 APP_VERSION = 'v1.2.3'
 SPEC_FILE = '纸研社.spec'
