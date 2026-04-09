@@ -303,6 +303,8 @@ def create_rpm_package():
         os.makedirs(os.path.join(rpm_root, directory_name), exist_ok=True)
 
     spec_content = f"""%global debug_package %{{nil}}
+%global __strip /bin/true
+%global __objdump /bin/true
 Name: {APP_PACKAGE_ID}
 Version: {APP_VERSION}
 Release: 1
@@ -342,11 +344,15 @@ cp -a "{payload_root}/." "%{{buildroot}}/"
         spec_path,
     ])
 
-    built_rpm_dir = os.path.join(rpm_root, 'RPMS', rpm_arch)
+    built_rpm_root = os.path.join(rpm_root, 'RPMS')
     built_rpm_name = f'{APP_PACKAGE_ID}-{APP_VERSION}-1.{rpm_arch}.rpm'
-    built_rpm_path = os.path.join(built_rpm_dir, built_rpm_name)
-    if not os.path.isfile(built_rpm_path):
-        raise FileNotFoundError(f'[build] RPM output not found in {built_rpm_dir}')
+    built_rpm_path = None
+    for current_root, _dirnames, filenames in os.walk(built_rpm_root):
+        if built_rpm_name in filenames:
+            built_rpm_path = os.path.join(current_root, built_rpm_name)
+            break
+    if not built_rpm_path:
+        raise FileNotFoundError(f'[build] RPM output not found in {built_rpm_root}')
 
     output_path = os.path.join(DIST_DIR, f'{APP_NAME}-{APP_VERSION_TAG}-{rpm_arch}.rpm')
     shutil.copy2(built_rpm_path, output_path)
