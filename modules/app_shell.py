@@ -14,7 +14,10 @@ import subprocess
 import threading
 import time
 import webbrowser
-from ctypes import wintypes
+try:
+    from ctypes import wintypes
+except (ImportError, ValueError):
+    wintypes = None
 from datetime import datetime
 import tkinter as tk
 import tkinter.font as tkfont
@@ -120,13 +123,16 @@ def enable_high_dpi():
         pass
 
 
-class MONITORINFO(ctypes.Structure):
-    _fields_ = [
-        ('cbSize', wintypes.DWORD),
-        ('rcMonitor', wintypes.RECT),
-        ('rcWork', wintypes.RECT),
-        ('dwFlags', wintypes.DWORD),
-    ]
+if wintypes is not None:
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [
+            ('cbSize', wintypes.DWORD),
+            ('rcMonitor', wintypes.RECT),
+            ('rcWork', wintypes.RECT),
+            ('dwFlags', wintypes.DWORD),
+        ]
+else:
+    MONITORINFO = None
 
 
 class WindowControlButton(tk.Canvas):

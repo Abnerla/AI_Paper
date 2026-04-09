@@ -34,9 +34,18 @@ def _resolve_data_root():
     if not getattr(sys, 'frozen', False):
         return _project_root()
 
-    local_appdata = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA')
-    if local_appdata:
-        return _normalize_path(os.path.join(local_appdata, APP_DATA_DIR_NAME))
+    if sys.platform == 'win32':
+        local_appdata = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA')
+        if local_appdata:
+            return _normalize_path(os.path.join(local_appdata, APP_DATA_DIR_NAME))
+    elif sys.platform == 'darwin':
+        support_dir = os.path.expanduser('~/Library/Application Support')
+        if os.path.isdir(support_dir):
+            return _normalize_path(os.path.join(support_dir, APP_DATA_DIR_NAME))
+    else:
+        xdg_data = os.environ.get('XDG_DATA_HOME') or os.path.expanduser('~/.local/share')
+        return _normalize_path(os.path.join(xdg_data, APP_DATA_DIR_NAME))
+
     return _normalize_path(os.path.join(_resolve_app_root(), 'user_data'))
 
 

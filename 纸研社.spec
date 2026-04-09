@@ -9,9 +9,16 @@ from PyInstaller.utils.hooks import collect_submodules
 SPEC_DIR = os.path.abspath(SPECPATH)
 sys.path.insert(0, SPEC_DIR)
 
-ICON_FILE = os.path.join(SPEC_DIR, 'logo.ico')
-if not os.path.exists(ICON_FILE):
-    raise FileNotFoundError(f'Missing icon file: {ICON_FILE}')
+# --- Platform-aware icon selection ---
+if sys.platform == 'darwin':
+    _icns = os.path.join(SPEC_DIR, 'logo.icns')
+    ICON_FILE = _icns if os.path.exists(_icns) else None
+elif sys.platform == 'win32':
+    ICON_FILE = os.path.join(SPEC_DIR, 'logo.ico')
+    if not os.path.exists(ICON_FILE):
+        raise FileNotFoundError(f'Missing icon file: {ICON_FILE}')
+else:
+    ICON_FILE = None
 
 RESOURCE_FILES = (
     ('logo.png', '.'),
@@ -36,6 +43,12 @@ HIDDENIMPORTS = list(
         ]
     )
 )
+
+# Exclude pywin32 on non-Windows
+if sys.platform != 'win32':
+    EXCLUDES = ['win32api', 'win32com', 'win32con', 'pywintypes', 'pythoncom', 'winreg']
+else:
+    EXCLUDES = []
 
 
 def _require_path(relative_path):
@@ -74,7 +87,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=EXCLUDES,
     noarchive=False,
     optimize=0,
 )
@@ -101,3 +114,19 @@ exe = EXE(
     entitlements_file=None,
     icon=ICON_FILE,
 )
+
+# macOS: generate .app bundle
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        exe,
+        name='\u7eb8\u7814\u793e.app',
+        icon=ICON_FILE,
+        bundle_identifier='com.paperlab.zhiyanshe',
+        info_plist={
+            'CFBundleName': '\u7eb8\u7814\u793e',
+            'CFBundleDisplayName': '\u7eb8\u7814\u793e',
+            'CFBundleShortVersionString': '1.2.3',
+            'CFBundleVersion': '1.2.3',
+            'NSHighResolutionCapable': True,
+        },
+    )

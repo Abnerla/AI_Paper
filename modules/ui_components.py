@@ -476,20 +476,57 @@ def load_gif_frames(filename, max_size=None):
 
 
 def get_system_theme():
-    """读取Windows系统主题，失败时回退浅色。"""
-    if not winreg or sys.platform != 'win32':
+    """读取系统主题（Windows / macOS / Linux），失败时回退浅色。"""
+    if sys.platform == 'win32' and winreg:
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+            )
+            value, _ = winreg.QueryValueEx(key, 'AppsUseLightTheme')
+            winreg.CloseKey(key)
+            return 'light' if value else 'dark'
+        except Exception:
+            return 'light'
+
+    if sys.platform == 'darwin':
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['defaults', 'read', '-g', 'AppleInterfaceStyle'],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0 and 'dark' in result.stdout.strip().lower():
+                return 'dark'
+        except Exception:
+            pass
         return 'light'
 
-    try:
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r'SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'
-        )
-        value, _ = winreg.QueryValueEx(key, 'AppsUseLightTheme')
-        winreg.CloseKey(key)
-        return 'light' if value else 'dark'
-    except Exception:
+    # Linux: check common desktop environment settings
+    if sys.platform.startswith('linux'):
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['gsettings', 'get', 'org.gnome.desktop.interface', 'color-scheme'],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0 and 'dark' in result.stdout.strip().lower():
+                return 'dark'
+        except Exception:
+            pass
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['gsettings', 'get', 'org.gnome.desktop.interface', 'gtk-theme'],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0 and 'dark' in result.stdout.strip().lower():
+                return 'dark'
+        except Exception:
+            pass
         return 'light'
+
+    return 'light'
 
 
 def resolve_theme_mode(mode):
