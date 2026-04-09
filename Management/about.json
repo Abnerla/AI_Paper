@@ -11,5 +11,8 @@
     {"label": "GitHub 仓库", "url": "https://github.com/Abnerla/AI_paper"},
     {"label": "问题反馈", "url": "https://github.com/Abnerla/AI_paper/issues"}
   ],
+  "acknowledgements": [
+    "小黑盒：Sakirooooo、棉扇"
+  ],
   "copyright": "© 2026 纸研社"
 }

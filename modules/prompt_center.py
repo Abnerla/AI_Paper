@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import time
 from string import Formatter
+
+from modules.runtime_paths import resolve_resource_path
 
 
 PROMPT_MODE_INSTRUCTION = 'instruction'
@@ -125,7 +126,7 @@ PAGE_SCENE_MAP = {}
 for _scene_id, _scene_def in SCENE_DEFS.items():
     PAGE_SCENE_MAP.setdefault(_scene_def['page_id'], []).append(_scene_id)
 
-DEFAULTS_PATH = os.path.join(os.path.dirname(__file__), 'prompt_defaults.json')
+DEFAULTS_PATH = resolve_resource_path('modules', 'prompt_defaults.json')
 SYSTEM_DEFAULT_SYNC_SCENE_IDS = ('polish.run_task',)
 
 

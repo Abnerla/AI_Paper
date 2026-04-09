@@ -20,20 +20,20 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
+from modules.runtime_paths import get_runtime_paths
+
 try:
     import winreg
 except ImportError:
     winreg = None
 
-if getattr(sys, 'frozen', False):
-    BASE_DIR = sys._MEIPASS
-    APP_DIR = os.path.dirname(sys.executable)
-else:
-    APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    BASE_DIR = APP_DIR
+RUNTIME_PATHS = get_runtime_paths()
+BASE_DIR = RUNTIME_PATHS.resource_root
+APP_DIR = RUNTIME_PATHS.app_root
+DATA_DIR = RUNTIME_PATHS.data_root
 
 APP_NAME = '纸研社'
-APP_VERSION = 'v1.2.2'
+APP_VERSION = 'v1.2.3'
 STARTUP_REG_PATH = r'Software\Microsoft\Windows\CurrentVersion\Run'
 STARTUP_VALUE_NAME = APP_NAME
 TOP_NAV_ITEMS = (
@@ -316,9 +316,10 @@ class SmartPaperTool:
         self.config_mgr = None
         self.history_mgr = None
         self.api_client = None
+        self.runtime_paths = RUNTIME_PATHS
         self.launch_silently = '--silent-start' in sys.argv
-        self.logs_dir = os.path.join(APP_DIR, 'logs')
-        self.temp_dir = os.path.join(APP_DIR, 'temp')
+        self.logs_dir = self.runtime_paths.logs_dir
+        self.temp_dir = self.runtime_paths.temp_dir
         self.log_path = os.path.join(self.logs_dir, 'paperlab.log')
         self._runtime_log_hooks_installed = False
         self._runtime_log_closed = False
@@ -493,8 +494,8 @@ class SmartPaperTool:
         self.root.after(0, self._run_next_startup_step)
 
     def _initialize_runtime_services(self):
-        self.config_mgr = ConfigManager(APP_DIR)
-        self.history_mgr = HistoryManager(APP_DIR)
+        self.config_mgr = ConfigManager(DATA_DIR)
+        self.history_mgr = HistoryManager(DATA_DIR)
         self._ensure_runtime_dirs()
         self._reset_runtime_log_file()
         self._install_runtime_log_hooks()
@@ -505,7 +506,9 @@ class SmartPaperTool:
             f'pid={os.getpid()} '
             f'python={sys.version.split()[0]} '
             f'frozen={bool(getattr(sys, "frozen", False))} '
-            f'app_dir={APP_DIR}'
+            f'app_dir={APP_DIR} '
+            f'data_dir={DATA_DIR} '
+            f'resource_dir={BASE_DIR}'
         )
         self._write_app_log(f'[session_args] argv={" ".join(sys.argv)}')
 
@@ -724,7 +727,7 @@ class SmartPaperTool:
     def _get_startup_loading_palette(self):
         """根据已保存主题为启动加载窗选择配色。"""
         try:
-            theme_mode = ConfigManager(APP_DIR).get_setting('theme_mode', 'light')
+            theme_mode = ConfigManager(DATA_DIR).get_setting('theme_mode', 'light')
             resolved = resolve_theme_mode(theme_mode)
         except Exception:
             resolved = 'light'
@@ -3063,6 +3066,14 @@ class SmartPaperTool:
                     link_label = tk.Label(content, text=label_text, font=FONTS['body'], fg=COLORS['primary'], bg=COLORS['card_bg'], anchor='w', cursor='hand2')
                     link_label.pack(anchor='w', fill=tk.X)
                     link_label.bind('<Button-1>', lambda e, u=url: webbrowser.open(u))
+            acknowledgements = data.get('acknowledgements', [])
+            if acknowledgements:
+                tk.Label(content, text='致谢', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(10, 4))
+                for item in acknowledgements:
+                    name = str(item or '').strip()
+                    if not name:
+                        continue
+                    tk.Label(content, text=f'  - {name}', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X)
             copyright_text = data.get('copyright', '')
             if copyright_text:
                 tk.Label(content, text=copyright_text, font=FONTS['small'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(12, 0))

@@ -1,37 +1,76 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+import sys
+
+from PyInstaller.utils.hooks import collect_submodules
 
 
 SPEC_DIR = os.path.abspath(SPECPATH)
+sys.path.insert(0, SPEC_DIR)
+
 ICON_FILE = os.path.join(SPEC_DIR, 'logo.ico')
 if not os.path.exists(ICON_FILE):
-    raise FileNotFoundError(f'未找到图标文件: {ICON_FILE}')
+    raise FileNotFoundError(f'Missing icon file: {ICON_FILE}')
 
-RESOURCE_ITEMS = [
+RESOURCE_FILES = (
     ('logo.png', '.'),
     ('loading.gif', '.'),
+    ('modules/prompt_defaults.json', 'modules'),
+)
+
+RESOURCE_DIRS = (
     ('png', 'png'),
     ('Management', 'Management'),
     ('Introduction', 'Introduction'),
-    ('modules', 'modules'),
-    ('pages', 'pages'),
-]
+)
 
-DATAS = []
-for source, target in RESOURCE_ITEMS:
-    source_path = os.path.join(SPEC_DIR, source)
-    if not os.path.exists(source_path):
-        raise FileNotFoundError(f'未找到打包资源: {source_path}')
-    DATAS.append((source, target))
+PAGE_HIDDENIMPORTS = tuple(sorted(collect_submodules('pages')))
+HIDDENIMPORTS = list(
+    dict.fromkeys(
+        [
+            'docx',
+            'docx.shared',
+            'docx.enum.text',
+            *PAGE_HIDDENIMPORTS,
+        ]
+    )
+)
+
+
+def _require_path(relative_path):
+    absolute_path = os.path.join(SPEC_DIR, *relative_path.split('/'))
+    if not os.path.exists(absolute_path):
+        raise FileNotFoundError(f'Missing resource: {absolute_path}')
+    return absolute_path
+
+
+def _build_datas():
+    datas = []
+
+    for relative_path, target_dir in RESOURCE_FILES:
+        datas.append((_require_path(relative_path), target_dir))
+
+    for relative_dir, target_root in RESOURCE_DIRS:
+        source_root = _require_path(relative_dir)
+        for current_root, _dirnames, filenames in os.walk(source_root):
+            relative_subdir = os.path.relpath(current_root, source_root)
+            destination_dir = target_root if relative_subdir == '.' else os.path.join(target_root, relative_subdir)
+            for filename in filenames:
+                datas.append((os.path.join(current_root, filename), destination_dir))
+
+    return datas
+
+
+DATAS = _build_datas()
 
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=[SPEC_DIR],
     binaries=[],
     datas=DATAS,
-    hiddenimports=['docx', 'docx.shared', 'docx.enum.text'],
+    hiddenimports=HIDDENIMPORTS,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -386,8 +386,9 @@ def extract_tongyi_usage(payload: dict | None) -> dict:
 
 
 class UsageStatsStore:
-    def __init__(self, app_dir: str, config_mgr=None, filename: str = USAGE_EVENTS_FILE):
-        base_dir = os.path.abspath(str(app_dir or '.'))
+    def __init__(self, data_dir: str, config_mgr=None, filename: str = USAGE_EVENTS_FILE):
+        base_dir = os.path.abspath(str(data_dir or '.'))
+        self.data_dir = base_dir
         self.app_dir = base_dir
         self.config = config_mgr
         self.file_path = os.path.join(base_dir, filename)

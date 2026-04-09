@@ -14,6 +14,8 @@ import tkinter.font as tkfont
 from tkinter import ttk
 from datetime import datetime
 
+from modules.runtime_paths import get_runtime_paths
+
 try:
     import winreg
 except ImportError:
@@ -235,16 +237,12 @@ def configure_fonts(root):
 def _iter_resource_base_dirs():
     """按优先级枚举资源根目录，兼容源码运行、单文件打包和外置资源目录。"""
     seen = set()
-    candidates = []
-
-    if getattr(sys, 'frozen', False):
-        meipass_dir = getattr(sys, '_MEIPASS', '')
-        if meipass_dir:
-            candidates.append(meipass_dir)
-        candidates.append(os.path.dirname(os.path.abspath(sys.executable)))
-
-    candidates.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    candidates.append(os.getcwd())
+    runtime_paths = get_runtime_paths()
+    candidates = [
+        runtime_paths.resource_root,
+        runtime_paths.app_root,
+        os.getcwd(),
+    ]
 
     for base_dir in candidates:
         if not base_dir:

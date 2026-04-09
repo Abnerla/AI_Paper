@@ -43,8 +43,8 @@ def _normalize_directory(path):
     return os.path.abspath(os.path.expanduser(str(path or '').strip()))
 
 
-def resolve_config_dir(app_dir):
-    base_dir = _normalize_directory(app_dir)
+def resolve_config_dir(data_dir):
+    base_dir = _normalize_directory(data_dir)
     pointer_path = os.path.join(base_dir, CONFIG_DIR_POINTER_FILE)
     if not os.path.exists(pointer_path):
         return base_dir
@@ -60,8 +60,8 @@ def resolve_config_dir(app_dir):
     return base_dir
 
 
-def persist_config_dir(app_dir, config_dir):
-    base_dir = _normalize_directory(app_dir)
+def persist_config_dir(data_dir, config_dir):
+    base_dir = _normalize_directory(data_dir)
     target_dir = _normalize_directory(config_dir)
     pointer_path = os.path.join(base_dir, CONFIG_DIR_POINTER_FILE)
 
@@ -80,10 +80,13 @@ class ConfigManager:
     CONFIG_FILE = 'config.enc'
     _KEY = b'SmartPaperTool2024SecretKey12345'  # 32字节密钥
 
-    def __init__(self, app_dir):
-        self.base_app_dir = _normalize_directory(app_dir)
-        self.app_dir = resolve_config_dir(self.base_app_dir)
-        self.config_path = os.path.join(self.app_dir, self.CONFIG_FILE)
+    def __init__(self, data_dir):
+        self.base_data_dir = _normalize_directory(data_dir)
+        self.base_app_dir = self.base_data_dir
+        os.makedirs(self.base_data_dir, exist_ok=True)
+        self.data_dir = resolve_config_dir(self.base_data_dir)
+        self.app_dir = self.data_dir
+        self.config_path = os.path.join(self.data_dir, self.CONFIG_FILE)
         self._data = self._load()
 
     def _xor_encrypt(self, data: bytes) -> bytes:
@@ -328,6 +331,7 @@ class ConfigManager:
     def save(self):
         """保存配置到文件"""
         try:
+            os.makedirs(self.data_dir, exist_ok=True)
             self._data = self._sanitize_loaded_data(dict(self._data))
             data = json.dumps(self._data, ensure_ascii=False, indent=2)
             encrypted = self._xor_encrypt(data.encode('utf-8'))
@@ -343,17 +347,19 @@ class ConfigManager:
             raise ValueError('配置目录不能为空。')
 
         os.makedirs(target_dir, exist_ok=True)
-        previous_dir = self.app_dir
+        previous_dir = self.data_dir
         previous_path = self.config_path
 
+        self.data_dir = target_dir
         self.app_dir = target_dir
         self.config_path = os.path.join(target_dir, self.CONFIG_FILE)
 
         try:
             if not self.save():
                 raise RuntimeError('新的配置目录写入失败。')
-            persist_config_dir(self.base_app_dir, target_dir)
+            persist_config_dir(self.base_data_dir, target_dir)
         except Exception:
+            self.data_dir = previous_dir
             self.app_dir = previous_dir
             self.config_path = previous_path
             raise

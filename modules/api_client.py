@@ -45,8 +45,8 @@ class APIClient:
     def __init__(self, config_mgr, log_callback=None):
         self.config = config_mgr
         self.log_callback = log_callback
-        app_dir = getattr(config_mgr, 'app_dir', '') or '.'
-        self.usage_store = UsageStatsStore(app_dir, config_mgr=config_mgr)
+        data_dir = getattr(config_mgr, 'data_dir', '') or getattr(config_mgr, 'app_dir', '') or '.'
+        self.usage_store = UsageStatsStore(data_dir, config_mgr=config_mgr)
 
     def set_log_callback(self, log_callback):
         self.log_callback = log_callback

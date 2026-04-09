@@ -47,9 +47,10 @@ class HistoryManager:
         '全面润色': 'full',
     }
 
-    def __init__(self, app_dir):
-        self.app_dir = app_dir
-        self.history_path = os.path.join(app_dir, self.HISTORY_FILE)
+    def __init__(self, data_dir):
+        self.data_dir = os.path.abspath(str(data_dir or '.'))
+        self.app_dir = self.data_dir
+        self.history_path = os.path.join(self.data_dir, self.HISTORY_FILE)
         self._records = self._load()
 
     def _load(self):
@@ -73,6 +74,7 @@ class HistoryManager:
 
     def _save(self):
         try:
+            os.makedirs(self.data_dir, exist_ok=True)
             with open(self.history_path, 'w', encoding='utf-8') as f:
                 json.dump(self._records, f, ensure_ascii=False, indent=2)
         except Exception:
