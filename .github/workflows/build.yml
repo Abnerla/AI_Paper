@@ -39,6 +39,8 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     name: 构建 ${{ matrix.platform }}
+    env:
+      PYTHONIOENCODING: utf-8
 
     steps:
       - name: 检出代码
