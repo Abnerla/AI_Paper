@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-API客户端模块 - 支持多个AI服务商
+API閻庡箍鍨洪崺娑氱博椤栨丹渚€宕?- 闁衡偓椤栨稑鐦鑸电煯闁叉穾I闁哄牆绉存慨鐔煎疮?
 """
 
 import json
+import http.client
 import re
+import ssl
 import time
 import urllib.request
 import urllib.error
@@ -16,15 +18,21 @@ from typing import Callable, Optional
 
 from modules.provider_registry import (
     ANTHROPIC_VERSION,
+    API_FORMAT_AWS_BEDROCK_RESERVED,
+    AUTH_VALUE_MODE_BEARER,
+    AUTH_VALUE_MODE_RAW,
+    HANDLER_BEDROCK_RESERVED,
     HANDLER_CLAUDE,
     HANDLER_GEMINI,
     HANDLER_OPENAI,
     MODEL_LIST_MANUAL,
     MODEL_LIST_REMOTE,
     MODEL_LIST_STATIC,
+    MODEL_LIST_UNAVAILABLE,
     get_preset_definition,
     get_model_list_manual_message,
     get_static_models,
+    normalize_api_format,
     normalize_provider_type,
     resolve_handler_name as resolve_provider_handler_name,
     resolve_model_list_strategy,
@@ -42,7 +50,25 @@ from modules.usage_stats import (
 
 
 class APIClient:
-    """统一的AI API客户端"""
+    """Unified AI API client."""
+
+    DEFAULT_SPOOFED_USER_AGENT = (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/135.0.0.0 Safari/537.36'
+    )
+    DEFAULT_BROWSER_ACCEPT = 'application/json, text/plain, */*'
+    DEFAULT_BROWSER_ACCEPT_LANGUAGE = 'zh-CN,zh;q=0.9,en;q=0.8'
+    DEFAULT_TRANSPORT_RETRY_ATTEMPTS = 3
+    DEFAULT_TRANSPORT_RETRY_DELAY_SECONDS = 0.35
+    RETRYABLE_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+    PROTECTED_AUTH_FIELDS = {
+        'Authorization',
+        'Proxy-Authorization',
+        'x-api-key',
+        'api-key',
+        'x-goog-api-key',
+    }
 
     def __init__(self, config_mgr, log_callback=None):
         self.config = config_mgr
@@ -63,11 +89,11 @@ class APIClient:
 
     def _resolve_handler_name(self, api_name, cfg):
         provider_type = normalize_provider_type(cfg.get('provider_type') or api_name)
-        return resolve_provider_handler_name(provider_type, cfg.get('api_format', 'OpenAI'))
+        return resolve_provider_handler_name(provider_type, cfg.get('api_format', ''))
 
     def _resolve_model_list_strategy(self, api_name, cfg):
         provider_type = normalize_provider_type(cfg.get('provider_type') or api_name)
-        return resolve_model_list_strategy(provider_type, cfg.get('api_format', 'OpenAI'))
+        return resolve_model_list_strategy(provider_type, cfg.get('api_format', ''))
 
     @staticmethod
     def _coerce_positive_float(value, default=None):
@@ -97,27 +123,38 @@ class APIClient:
         return value or 'Authorization'
 
     @staticmethod
-    def _build_bearer_headers(key, *, auth_field='Authorization', include_content_type=True):
-        headers = {}
-        if include_content_type:
-            headers['Content-Type'] = 'application/json'
-        headers[str(auth_field or 'Authorization')] = f'Bearer {key}'
-        return headers
+    def _normalize_auth_value_mode(value, default=AUTH_VALUE_MODE_BEARER):
+        normalized = str(value or '').strip().lower()
+        if normalized in {AUTH_VALUE_MODE_BEARER, AUTH_VALUE_MODE_RAW}:
+            return normalized
+        return default
 
-    @staticmethod
-    def _build_key_headers(key, *, auth_field, include_content_type=True, use_bearer=False):
+    @classmethod
+    def _build_auth_headers(
+        cls,
+        key,
+        *,
+        auth_field='Authorization',
+        auth_value_mode=AUTH_VALUE_MODE_BEARER,
+        include_content_type=True,
+    ):
         headers = {}
         if include_content_type:
             headers['Content-Type'] = 'application/json'
-        if use_bearer:
-            headers[str(auth_field or 'Authorization')] = f'Bearer {key}'
+        normalized_field = str(auth_field or 'Authorization').strip() or 'Authorization'
+        normalized_mode = cls._normalize_auth_value_mode(auth_value_mode)
+        if normalized_mode == AUTH_VALUE_MODE_RAW:
+            headers[normalized_field] = str(key)
         else:
-            headers[str(auth_field or 'x-goog-api-key')] = str(key)
+            headers[normalized_field] = f'Bearer {key}'
         return headers
 
     @staticmethod
-    def _should_use_bearer_auth(auth_field):
-        return str(auth_field or '').strip().lower() in {'authorization', 'proxy-authorization'}
+    def _contains_header(headers, header_name):
+        wanted = str(header_name or '').strip().lower()
+        if not wanted:
+            return False
+        return any(str(key or '').strip().lower() == wanted for key in dict(headers or {}))
 
     @staticmethod
     def _coerce_float(value, default=None):
@@ -144,17 +181,17 @@ class APIClient:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise ValueError(f'额外请求头 JSON 格式错误: {exc}') from exc
+            raise ValueError(f'Invalid extra_headers JSON: {exc}') from exc
         if not isinstance(payload, dict):
-            raise ValueError('额外请求头 JSON 必须是 JSON 对象')
+            raise ValueError('Extra headers JSON must be an object')
 
         normalized = {}
         for key, value in payload.items():
             header_name = str(key or '').strip()
             if not header_name:
-                raise ValueError('额外请求头 JSON 不能包含空的请求头名称')
+                raise ValueError('Extra headers JSON contains an empty header name')
             if isinstance(value, (dict, list)):
-                raise ValueError(f'额外请求头 {header_name} 的值必须是字符串、数字或布尔值')
+                raise ValueError(f'Extra header {header_name} must be a scalar value')
             normalized[header_name] = '' if value is None else str(value)
         return normalized
 
@@ -189,8 +226,93 @@ class APIClient:
         return merged, sorted(set(added_keys)), sorted(set(ignored_keys))
 
     @staticmethod
-    def _resolve_openai_compat_urls(base_url):
+    def _should_apply_user_agent_spoof(cfg):
+        if bool((cfg or {}).get('enable_user_agent_spoof', False)):
+            return True
+        provider_type = normalize_provider_type((cfg or {}).get('provider_type', ''))
+        return provider_type == 'sub2api'
+
+    @classmethod
+    def _apply_user_agent_spoof(cls, headers, cfg):
+        merged = dict(headers or {})
+        if not cls._should_apply_user_agent_spoof(cfg):
+            return merged
+        if cls._contains_header(merged, 'User-Agent'):
+            return merged
+        merged['User-Agent'] = cls.DEFAULT_SPOOFED_USER_AGENT
+        return merged
+
+    @staticmethod
+    def _should_apply_browser_compat_headers(cfg):
+        provider_type = normalize_provider_type((cfg or {}).get('provider_type', ''))
+        return provider_type in {'sub2api', 'newapi'}
+
+    @classmethod
+    def _apply_browser_compat_headers(cls, headers, cfg):
+        merged = dict(headers or {})
+        if not cls._should_apply_browser_compat_headers(cfg):
+            return merged
+        if not cls._contains_header(merged, 'Accept'):
+            merged['Accept'] = cls.DEFAULT_BROWSER_ACCEPT
+        if not cls._contains_header(merged, 'Accept-Language'):
+            merged['Accept-Language'] = cls.DEFAULT_BROWSER_ACCEPT_LANGUAGE
+        if not cls._contains_header(merged, 'Cache-Control'):
+            merged['Cache-Control'] = 'no-cache'
+        if not cls._contains_header(merged, 'Pragma'):
+            merged['Pragma'] = 'no-cache'
+        if not cls._contains_header(merged, 'Connection'):
+            merged['Connection'] = 'close'
+
+        base_url = str((cfg or {}).get('base_url', '') or '').strip()
+        if base_url:
+            parts = urllib.parse.urlsplit(base_url)
+            origin = urllib.parse.urlunsplit((parts.scheme, parts.netloc, '', '', ''))
+            if origin:
+                if not cls._contains_header(merged, 'Origin'):
+                    merged['Origin'] = origin
+                if not cls._contains_header(merged, 'Referer'):
+                    merged['Referer'] = f'{origin}/'
+        return merged
+
+    def _merge_request_headers(self, base_headers, cfg, *, protected_fields=None):
+        extra_headers_payload = self._load_extra_headers_payload(cfg)
+        headers, extra_header_keys, ignored_extra_header_keys = self._merge_extra_headers(
+            base_headers,
+            extra_headers_payload,
+            protected_fields=protected_fields,
+        )
+        headers = self._apply_user_agent_spoof(headers, cfg)
+        headers = self._apply_browser_compat_headers(headers, cfg)
+        return headers, extra_headers_payload, extra_header_keys, ignored_extra_header_keys
+
+    @staticmethod
+    def _normalize_openai_compat_base_url(base_url, provider_type=''):
         normalized_base_url = str(base_url or 'https://api.openai.com/v1').strip() or 'https://api.openai.com/v1'
+        normalized_provider_type = normalize_provider_type(provider_type)
+        if normalized_provider_type not in {'newapi', 'sub2api'}:
+            return normalized_base_url
+
+        parts = urllib.parse.urlsplit(normalized_base_url)
+        path = parts.path.rstrip('/')
+        if path.endswith('/v1beta'):
+            path = f'{path[:-len("/v1beta")]}/v1'
+        elif '/v1beta/' in path:
+            path = path.replace('/v1beta/', '/v1/', 1)
+        elif not path:
+            path = '/v1'
+        elif not (
+            path.endswith('/v1')
+            or '/v1/' in path
+            or path.endswith('/chat/completions')
+            or path.endswith('/models')
+        ):
+            path = f'{path}/v1'
+
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+    @classmethod
+    def _resolve_openai_compat_urls(cls, base_url, provider_type=''):
+        normalized_base_url = cls._normalize_openai_compat_base_url(base_url, provider_type=provider_type)
         parts = urllib.parse.urlsplit(normalized_base_url)
         path = parts.path.rstrip('/')
         chat_suffix = '/chat/completions'
@@ -211,6 +333,49 @@ class APIClient:
             'chat_completions_url': chat_url,
             'models_url': models_url,
         }
+
+    @staticmethod
+    def _build_invalid_json_response_error(raw):
+        content = str(raw or '').strip()
+        if not content:
+            return 'Response body is empty and cannot be parsed as JSON'
+        preview = content.replace('\r', ' ').replace('\n', ' ')
+        preview = preview[:96]
+        if content.lstrip().startswith('<'):
+            return (
+                'Response is HTML instead of JSON. '
+                'The Base URL may point to a website page instead of an API endpoint. '
+                f'Preview: {preview}'
+            )
+        return f'Response is not valid JSON. Preview: {preview}'
+
+    @classmethod
+    def _is_retryable_http_status(cls, status_code):
+        try:
+            code = int(status_code)
+        except Exception:
+            return False
+        return code in cls.RETRYABLE_HTTP_STATUS_CODES
+
+    @classmethod
+    def _format_http_error_message(cls, status_code, raw_body):
+        body = str(raw_body or '').strip()
+        if not body:
+            return f'HTTP {status_code}'
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            detail = cls._build_invalid_json_response_error(body)
+            return f'HTTP {status_code}: {detail}'
+
+        if isinstance(payload, dict):
+            openai_error = cls._extract_openai_error_message(payload)
+            if openai_error:
+                return f'HTTP {status_code}: {openai_error}'
+        preview = json.dumps(payload, ensure_ascii=False)
+        if len(preview) > 240:
+            preview = f'{preview[:240]}...'
+        return f'HTTP {status_code}: {preview}'
 
     @staticmethod
     def _resolve_claude_urls(base_url):
@@ -280,7 +445,7 @@ class APIClient:
         if not text:
             return mapping
 
-        for item in re.split(r'[\r\n,;；，]+', text):
+        for item in re.split(r'[\r\n,;?]+', text):
             entry = str(item or '').strip()
             if not entry:
                 continue
@@ -329,9 +494,9 @@ class APIClient:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise ValueError(f'高级请求体 JSON 格式错误: {exc}') from exc
+            raise ValueError(f'濡ゅ倹顭囨鍥╂嫚闁垮婀村ù?JSON 闁哄秶鍘х槐锟犳煥濞嗘帩鍤? {exc}') from exc
         if not isinstance(payload, dict):
-            raise ValueError('高级请求体 JSON 必须是 JSON 对象')
+            raise ValueError('Extra JSON payload must be a JSON object')
         return payload
 
     @staticmethod
@@ -364,6 +529,58 @@ class APIClient:
         return merged, sorted(set(ignored_keys)), sorted(set(removed_keys))
 
     @staticmethod
+    def _normalize_model_identifier(model_name):
+        return re.sub(r'[\s_]+', '-', str(model_name or '').strip().lower())
+
+    @classmethod
+    def _uses_openai_reasoning_parameter_rules(cls, model_name):
+        normalized = cls._normalize_model_identifier(model_name)
+        if not normalized:
+            return False
+        return normalized.startswith(('gpt-5', 'o1', 'o3', 'o4'))
+
+    @classmethod
+    def _apply_openai_reasoning_parameter_rules(cls, payload, request_model):
+        merged = dict(payload or {})
+        applied_rules = []
+        if not cls._uses_openai_reasoning_parameter_rules(request_model):
+            return merged, applied_rules
+
+        if 'temperature' in merged:
+            merged.pop('temperature', None)
+            applied_rules.append('remove_temperature')
+        if 'max_tokens' in merged and 'max_completion_tokens' not in merged:
+            merged['max_completion_tokens'] = merged.pop('max_tokens')
+            applied_rules.append('max_tokens_to_max_completion_tokens')
+        return merged, applied_rules
+
+    @classmethod
+    def _apply_openai_error_compatibility_retry(cls, payload, error_message):
+        merged = dict(payload or {})
+        message = str(error_message or '').strip()
+        lowered = message.lower()
+        applied_rules = []
+
+        if (
+            'max_tokens' in merged
+            and 'max_completion_tokens' not in merged
+            and 'max_tokens' in lowered
+            and any(fragment in lowered for fragment in ('unsupported', 'not supported', 'reasoning'))
+        ):
+            merged['max_completion_tokens'] = merged.pop('max_tokens')
+            applied_rules.append('max_tokens_to_max_completion_tokens')
+
+        if (
+            'temperature' in merged
+            and 'temperature' in lowered
+            and any(fragment in lowered for fragment in ('unsupported', 'not supported', 'does not support'))
+        ):
+            merged.pop('temperature', None)
+            applied_rules.append('remove_temperature')
+
+        return merged, applied_rules
+
+    @staticmethod
     def _merge_gemini_extra_json(base_payload, extra_payload):
         merged = dict(base_payload or {})
         ignored_keys = []
@@ -388,12 +605,19 @@ class APIClient:
     def _prepare_openai_compat_request(self, prompt, system, cfg, temperature, max_tokens):
         key = str((cfg or {}).get('key', '') or '').strip()
         if not key:
-            raise ValueError('OpenAI API Key未配置')
+            raise ValueError('OpenAI API Key is not configured')
 
-        urls = self._resolve_openai_compat_urls((cfg or {}).get('base_url', 'https://api.openai.com/v1'))
+        urls = self._resolve_openai_compat_urls(
+            (cfg or {}).get('base_url', 'https://api.openai.com/v1'),
+            provider_type=(cfg or {}).get('provider_type', ''),
+        )
         configured_model = str((cfg or {}).get('model', '') or '').strip() or 'gpt-4o'
         request_model, mapping_hit = self._apply_model_mapping(configured_model, cfg)
         auth_field = self._normalize_auth_field((cfg or {}).get('auth_field', 'Authorization'))
+        auth_value_mode = self._normalize_auth_value_mode(
+            (cfg or {}).get('auth_value_mode', AUTH_VALUE_MODE_BEARER),
+            default=AUTH_VALUE_MODE_BEARER,
+        )
 
         messages = []
         if system:
@@ -408,12 +632,22 @@ class APIClient:
         }
         extra_json_payload = self._load_extra_json_payload(cfg)
         payload, ignored_keys, removed_keys = self._merge_openai_extra_json(payload, extra_json_payload)
-        extra_headers_payload = self._load_extra_headers_payload(cfg)
-        headers = self._build_bearer_headers(key, auth_field=auth_field, include_content_type=True)
-        headers, extra_header_keys, ignored_extra_header_keys = self._merge_extra_headers(
+        payload, compatibility_rules = self._apply_openai_reasoning_parameter_rules(payload, request_model)
+        removed_keys.extend(
+            'temperature' if rule == 'remove_temperature' else 'max_tokens'
+            for rule in compatibility_rules
+            if rule in {'remove_temperature', 'max_tokens_to_max_completion_tokens'}
+        )
+        headers = self._build_auth_headers(
+            key,
+            auth_field=auth_field,
+            auth_value_mode=auth_value_mode,
+            include_content_type=True,
+        )
+        headers, extra_headers_payload, extra_header_keys, ignored_extra_header_keys = self._merge_request_headers(
             headers,
-            extra_headers_payload,
-            protected_fields={'Authorization', auth_field, 'Content-Type'},
+            cfg,
+            protected_fields=self.PROTECTED_AUTH_FIELDS | {'Content-Type'},
         )
 
         return {
@@ -424,10 +658,12 @@ class APIClient:
             'headers': headers,
             'request_model': request_model,
             'auth_field': auth_field,
+            'auth_value_mode': auth_value_mode,
             'model_mapping_hit': mapping_hit,
             'extra_json_keys': sorted(extra_json_payload.keys()),
             'ignored_extra_json_keys': ignored_keys,
             'removed_extra_json_keys': removed_keys,
+            'compatibility_rules': sorted(set(compatibility_rules)),
             'extra_header_keys': extra_header_keys,
             'ignored_extra_header_keys': ignored_extra_header_keys,
         }
@@ -435,26 +671,31 @@ class APIClient:
     def _build_gemini_headers(self, cfg):
         key = str((cfg or {}).get('key', '') or '').strip()
         if not key:
-            raise ValueError('Gemini API Key未配置')
+            raise ValueError('Gemini API Key is not configured')
 
         raw_auth_field = str((cfg or {}).get('auth_field', '') or '').strip()
         auth_field = raw_auth_field or 'x-goog-api-key'
-        use_bearer = self._should_use_bearer_auth(auth_field)
-        headers = self._build_key_headers(
+        fallback_mode = AUTH_VALUE_MODE_BEARER if auth_field.lower() in {'authorization', 'proxy-authorization'} else AUTH_VALUE_MODE_RAW
+        auth_value_mode = self._normalize_auth_value_mode(
+            (cfg or {}).get('auth_value_mode', fallback_mode),
+            default=fallback_mode,
+        )
+        use_bearer = auth_value_mode == AUTH_VALUE_MODE_BEARER
+        headers = self._build_auth_headers(
             key,
             auth_field=auth_field,
+            auth_value_mode=auth_value_mode,
             include_content_type=True,
-            use_bearer=use_bearer,
         )
-        extra_headers_payload = self._load_extra_headers_payload(cfg)
-        headers, extra_header_keys, ignored_extra_header_keys = self._merge_extra_headers(
+        headers, _extra_headers_payload, extra_header_keys, ignored_extra_header_keys = self._merge_request_headers(
             headers,
-            extra_headers_payload,
-            protected_fields={'Content-Type', auth_field},
+            cfg,
+            protected_fields=self.PROTECTED_AUTH_FIELDS | {'Content-Type'},
         )
         return {
             'headers': headers,
             'auth_field': auth_field,
+            'auth_value_mode': auth_value_mode,
             'use_bearer': use_bearer,
             'extra_header_keys': extra_header_keys,
             'ignored_extra_header_keys': ignored_extra_header_keys,
@@ -463,7 +704,7 @@ class APIClient:
     def _prepare_gemini_request(self, prompt, system, cfg, temperature, max_tokens):
         key = str((cfg or {}).get('key', '') or '').strip()
         if not key:
-            raise ValueError('Gemini API Key未配置')
+            raise ValueError('Gemini API Key is not configured')
 
         configured_model = (
             str((cfg or {}).get('model', '') or '').strip()
@@ -476,7 +717,7 @@ class APIClient:
             request_model,
         )
         if not urls['generate_content_url']:
-            raise ValueError('Gemini 请求地址无效')
+            raise ValueError('Gemini request URL is invalid')
 
         generation_config = {
             'temperature': temperature,
@@ -577,8 +818,8 @@ class APIClient:
             'finish_reasons': sorted(set(finish_reasons)),
         }
 
-    @staticmethod
-    def _extract_openai_text_from_content_item(item):
+    @classmethod
+    def _extract_openai_text_from_content_item(cls, item):
         if isinstance(item, str):
             return item
         if not isinstance(item, dict):
@@ -600,9 +841,14 @@ class APIClient:
             if isinstance(nested_output_text, str):
                 return nested_output_text
 
-        content_value = item.get('content')
-        if isinstance(content_value, str):
-            return content_value
+        for field_name in ('content', 'refusal', 'reasoning_content', 'reasoning'):
+            field_value = item.get(field_name)
+            if isinstance(field_value, str):
+                return field_value
+            if isinstance(field_value, (list, dict)):
+                nested_text, _content_kind = cls._extract_openai_text_from_content(field_value)
+                if nested_text:
+                    return nested_text
         return ''
 
     @classmethod
@@ -642,6 +888,96 @@ class APIClient:
         return '\n'.join(fragment for fragment in fragments if fragment)
 
     @classmethod
+    def _extract_openai_message_fallback_text(cls, message):
+        if not isinstance(message, dict):
+            return '', 'empty'
+        for field_name in ('refusal', 'reasoning_content', 'reasoning'):
+            field_value = message.get(field_name)
+            text, content_kind = cls._extract_openai_text_from_content(field_value)
+            if text:
+                return text, f'message_{field_name}_{content_kind}'
+        return '', 'empty'
+
+    @classmethod
+    def _extract_openai_recursive_text(cls, value, *, depth=0):
+        if depth > 6:
+            return ''
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            fragments = []
+            for item in value:
+                fragment = cls._extract_openai_recursive_text(item, depth=depth + 1)
+                if fragment:
+                    fragments.append(fragment)
+            return '\n'.join(fragment for fragment in fragments if fragment)
+        if not isinstance(value, dict):
+            return ''
+
+        preferred_fields = (
+            'text',
+            'output_text',
+            'answer',
+            'response',
+            'result',
+            'content',
+            'parts',
+            'message',
+            'delta',
+            'refusal',
+            'reasoning_content',
+            'reasoning',
+            'thinking',
+            'value',
+        )
+        for field_name in preferred_fields:
+            if field_name not in value:
+                continue
+            fragment = cls._extract_openai_recursive_text(value.get(field_name), depth=depth + 1)
+            if fragment:
+                return fragment
+        return ''
+
+    @staticmethod
+    def _extract_openai_error_message(payload):
+        resp = dict(payload or {})
+        error = resp.get('error')
+        if isinstance(error, str):
+            return error.strip()
+        if not isinstance(error, dict):
+            return ''
+
+        message = str(error.get('message', '') or '').strip()
+        error_type = str(error.get('type', '') or '').strip()
+        error_code = str(error.get('code', '') or '').strip()
+        error_param = str(error.get('param', '') or '').strip()
+
+        details = []
+        if error_type:
+            details.append(f'type={error_type}')
+        if error_code:
+            details.append(f'code={error_code}')
+        if error_param:
+            details.append(f'param={error_param}')
+
+        if not message:
+            message = json.dumps(error, ensure_ascii=False)
+        if details:
+            return f'{message} ({", ".join(details)})'
+        return message
+
+    @staticmethod
+    def _is_connection_response_valid(response_payload):
+        payload = dict(response_payload or {})
+        if bool(payload.get('has_choices', False)) or bool(payload.get('has_output_text', False)):
+            return True
+        usage = payload.get('usage', {})
+        if isinstance(usage, dict) and any(value for value in usage.values()):
+            return True
+        response_model = str(payload.get('response_model', '') or '').strip()
+        return bool(response_model)
+
+    @classmethod
     def _extract_openai_response_text(cls, payload):
         resp = dict(payload or {})
         has_choices = isinstance(resp.get('choices'), list) and bool(resp.get('choices'))
@@ -659,6 +995,37 @@ class APIClient:
                     'text': text,
                     'text_source': 'choices.message.content',
                     'content_kind': content_kind,
+                    'has_choices': has_choices,
+                    'has_output_text': has_output_text,
+                }
+
+            fallback_text, fallback_kind = cls._extract_openai_message_fallback_text(message)
+            if fallback_text:
+                return {
+                    'text': fallback_text,
+                    'text_source': 'choices.message.fallback',
+                    'content_kind': fallback_kind,
+                    'has_choices': has_choices,
+                    'has_output_text': has_output_text,
+                }
+
+            delta = first_choice.get('delta') if isinstance(first_choice.get('delta'), dict) else {}
+            delta_text, delta_kind = cls._extract_openai_text_from_content(delta.get('content'))
+            if delta_text:
+                return {
+                    'text': delta_text,
+                    'text_source': 'choices.delta.content',
+                    'content_kind': delta_kind,
+                    'has_choices': has_choices,
+                    'has_output_text': has_output_text,
+                }
+
+            delta_fallback_text, delta_fallback_kind = cls._extract_openai_message_fallback_text(delta)
+            if delta_fallback_text:
+                return {
+                    'text': delta_fallback_text,
+                    'text_source': 'choices.delta.fallback',
+                    'content_kind': delta_fallback_kind,
                     'has_choices': has_choices,
                     'has_output_text': has_output_text,
                 }
@@ -693,6 +1060,16 @@ class APIClient:
                 'has_output_text': has_output_text or has_output_items,
             }
 
+        recursive_choice_text = cls._extract_openai_recursive_text(choices[0]) if choices else ''
+        if recursive_choice_text:
+            return {
+                'text': recursive_choice_text,
+                'text_source': 'choices.recursive',
+                'content_kind': 'recursive',
+                'has_choices': has_choices,
+                'has_output_text': has_output_text or has_output_items,
+            }
+
         return {
             'text': '',
             'text_source': 'empty',
@@ -704,17 +1081,16 @@ class APIClient:
     def _build_claude_headers(self, cfg):
         key = str((cfg or {}).get('key', '') or '').strip()
         if not key:
-            raise ValueError('Claude API Key未配置')
+            raise ValueError('Claude API Key is not configured')
         headers = {
             'Content-Type': 'application/json',
             'x-api-key': key,
             'anthropic-version': ANTHROPIC_VERSION,
         }
-        extra_headers_payload = self._load_extra_headers_payload(cfg)
-        headers, _added_keys, _ignored_keys = self._merge_extra_headers(
+        headers, _extra_headers_payload, _added_keys, _ignored_keys = self._merge_request_headers(
             headers,
-            extra_headers_payload,
-            protected_fields={'x-api-key', 'anthropic-version', 'Content-Type'},
+            cfg,
+            protected_fields=self.PROTECTED_AUTH_FIELDS | {'anthropic-version', 'Content-Type'},
         )
         return headers
 
@@ -768,21 +1144,25 @@ class APIClient:
         key = str(cfg.get('key', '') or '').strip()
         base_url = str(cfg.get('base_url', '') or '').strip()
         if not key or not base_url:
-            raise ValueError('请先填写 API Key 和请求地址')
+            raise ValueError('Please fill in both API Key and base URL first')
 
         if provider_name == HANDLER_OPENAI:
             auth_field = self._normalize_auth_field(cfg.get('auth_field', 'Authorization'))
-            url = self._resolve_openai_compat_urls(base_url)['models_url']
-            headers = self._build_bearer_headers(
+            auth_value_mode = self._normalize_auth_value_mode(
+                cfg.get('auth_value_mode', AUTH_VALUE_MODE_BEARER),
+                default=AUTH_VALUE_MODE_BEARER,
+            )
+            url = self._resolve_openai_compat_urls(base_url, provider_type=cfg.get('provider_type', ''))['models_url']
+            headers = self._build_auth_headers(
                 key,
                 auth_field=auth_field,
+                auth_value_mode=auth_value_mode,
                 include_content_type=True,
             )
-            extra_headers_payload = self._load_extra_headers_payload(cfg)
-            headers, extra_header_keys, ignored_extra_header_keys = self._merge_extra_headers(
+            headers, _extra_headers_payload, extra_header_keys, ignored_extra_header_keys = self._merge_request_headers(
                 headers,
-                extra_headers_payload,
-                protected_fields={'Authorization', auth_field, 'Content-Type'},
+                cfg,
+                protected_fields=self.PROTECTED_AUTH_FIELDS | {'Content-Type'},
             )
             extractor = self._extract_model_ids
         elif provider_name == HANDLER_CLAUDE:
@@ -800,8 +1180,10 @@ class APIClient:
             extra_header_keys = header_bundle['extra_header_keys']
             ignored_extra_header_keys = header_bundle['ignored_extra_header_keys']
             extractor = self._extract_gemini_model_ids
+        elif provider_name == HANDLER_BEDROCK_RESERVED:
+            raise NotImplementedError('AWS Bedrock model list fetch is not implemented yet')
         else:
-            raise ValueError(f'不支持的模型列表处理器: {provider_name}')
+            raise ValueError(f'濞戞挸绉甸弫顕€骞愭担鐑樼暠婵☆垪鈧磭鈧兘宕氬Δ鍕┾偓鍐╁緞閸曨厽鍊為柛? {provider_name}')
 
         self._log(
             '[fetch_models_remote] '
@@ -826,13 +1208,13 @@ class APIClient:
         cfg: dict = None,
         usage_context: dict = None,
     ):
-        """调用AI API（异步，通过回调返回结果）"""
+        """Call the AI API asynchronously and return the result by callback."""
         if api_name is None:
             api_name = self._get_active()
 
         def _run():
             try:
-                result = self._call_sync(
+                call_result = self._call_sync(
                     prompt,
                     system,
                     api_name,
@@ -842,7 +1224,7 @@ class APIClient:
                     usage_context=usage_context,
                 )
                 if on_complete:
-                    on_complete(result)
+                    on_complete(call_result)
             except Exception as e:
                 if on_error:
                     on_error(str(e))
@@ -863,7 +1245,7 @@ class APIClient:
         cfg: dict = None,
         usage_context: dict = None,
     ) -> str:
-        """同步调用AI API"""
+        """闁告艾鏈鐐垫嫬閸愵亝鏆廇I API"""
         if api_name is None:
             api_name = self._get_active()
         return self._call_sync(
@@ -891,11 +1273,11 @@ class APIClient:
         schema_name: str = '',
         usage_context: dict = None,
     ):
-        """同步调用 AI 并解析 JSON。"""
-        schema_hint = f'，schema={schema_name}' if schema_name else ''
+        """Call the AI API and force JSON parsing."""
+        schema_hint = f' (schema={schema_name})' if schema_name else ''
         enforced_prompt = (
             f'{prompt}\n\n'
-            f'输出要求：请严格只返回可解析的 JSON，不要输出 Markdown 代码块、额外解释或前后缀文本{schema_hint}。'
+            f'Return only valid JSON. Do not include Markdown fences, explanations, or extra text{schema_hint}.'
         )
         raw = self.call_sync(
             enforced_prompt,
@@ -912,7 +1294,7 @@ class APIClient:
         try:
             return json.loads(payload)
         except Exception as exc:
-            raise ValueError(f'AI 未返回有效 JSON: {exc}') from exc
+            raise ValueError(f'AI did not return valid JSON: {exc}') from exc
 
     def _call_sync(
         self,
@@ -925,16 +1307,18 @@ class APIClient:
         model_override=None,
         cfg=None,
         usage_context=None,
+        return_payload=False,
     ):
         handlers = {
             HANDLER_OPENAI: self._call_openai_compat,
             HANDLER_CLAUDE: self._call_claude,
             HANDLER_GEMINI: self._call_gemini,
+            HANDLER_BEDROCK_RESERVED: self._call_reserved_protocol,
         }
         cfg = self._get_config(api_name, cfg=cfg)
         handler = handlers.get(self._resolve_handler_name(api_name, cfg))
         if not handler:
-            raise ValueError(f'不支持的API: {api_name}')
+            raise ValueError(f'濞戞挸绉甸弫顕€骞愭担鐑樼暠API: {api_name}')
         if model_override:
             cfg['model'] = model_override
         provider_name = self._resolve_handler_name(api_name, cfg)
@@ -1009,84 +1393,188 @@ class APIClient:
             status='success',
             error_message='',
         )
+        if return_payload:
+            return result_text, dict(response_payload or {})
         return result_text
 
+    def _call_reserved_protocol(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
+        api_format = normalize_api_format((cfg or {}).get('api_format', ''))
+        if api_format == API_FORMAT_AWS_BEDROCK_RESERVED:
+            raise NotImplementedError('AWS Bedrock protocol is reserved but not implemented yet')
+        raise ValueError(f'Unsupported protocol: {api_format}')
+
     def _http_post(self, url, data: dict, headers: dict, timeout=60) -> dict:
-        """发送HTTP POST请求"""
+        """Send an HTTP POST request."""
         body = json.dumps(data, ensure_ascii=False).encode('utf-8')
-        req = urllib.request.Request(url, data=body, headers=headers, method='POST')
         safe_url = self._sanitize_url_for_log(url)
-        started_at = time.perf_counter()
         self._log(f'[http_post] url={safe_url} timeout={timeout} body_bytes={len(body)}')
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode('utf-8')
+        max_attempts = self._resolve_transport_retry_attempts()
+        for attempt in range(1, max_attempts + 1):
+            started_at = time.perf_counter()
+            req = urllib.request.Request(url, data=body, headers=headers, method='POST')
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    raw = resp.read().decode('utf-8')
+                    self._log(
+                        '[http_response] '
+                        f'url={safe_url} status={getattr(resp, "status", "unknown")} '
+                        f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
+                        f'body_chars={len(raw)}'
+                    )
+                    try:
+                        return json.loads(raw)
+                    except json.JSONDecodeError as exc:
+                        error_message = self._build_invalid_json_response_error(raw)
+                        self._log(
+                            '[http_error] '
+                            f'url={safe_url} '
+                            f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
+                            f'error={error_message}',
+                            level='ERROR',
+                        )
+                        raise RuntimeError(error_message) from exc
+            except urllib.error.HTTPError as exc:
+                err_body = exc.read().decode('utf-8', errors='replace')
+                elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+                error_message = self._format_http_error_message(exc.code, err_body)
+                if self._is_retryable_http_status(exc.code) and attempt < max_attempts:
+                    delay_seconds = self._resolve_transport_retry_delay(attempt)
+                    self._log(
+                        '[http_retry] '
+                        f'method=POST url={safe_url} '
+                        f'attempt={attempt}/{max_attempts} '
+                        f'status={exc.code} '
+                        f'elapsed_ms={elapsed_ms} '
+                        f'delay_ms={int(delay_seconds * 1000)} '
+                        f'error={error_message}',
+                        level='WARN',
+                    )
+                    if delay_seconds > 0:
+                        time.sleep(delay_seconds)
+                    continue
                 self._log(
-                    '[http_response] '
-                    f'url={safe_url} status={getattr(resp, "status", "unknown")} '
-                    f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
-                    f'body_chars={len(raw)}'
+                    '[http_error] '
+                    f'url={safe_url} status={exc.code} '
+                    f'elapsed_ms={elapsed_ms} '
+                    f'error={error_message}',
+                    level='ERROR',
                 )
-                return json.loads(raw)
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode('utf-8', errors='replace')
-            self._log(
-                '[http_error] '
-                f'url={safe_url} status={e.code} '
-                f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
-                f'error={err_body[:240]}',
-                level='ERROR',
-            )
-            raise RuntimeError(f'HTTP {e.code}: {err_body}')
-        except urllib.error.URLError as e:
-            self._log(
-                '[http_error] '
-                f'url={safe_url} '
-                f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
-                f'error={e.reason}',
-                level='ERROR',
-            )
-            raise RuntimeError(f'网络错误: {e.reason}')
+                raise RuntimeError(error_message)
+            except Exception as exc:
+                elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+                error_message = self._format_transport_error(exc)
+                if self._is_retryable_transport_error(exc) and attempt < max_attempts:
+                    delay_seconds = self._resolve_transport_retry_delay(attempt)
+                    self._log(
+                        '[http_retry] '
+                        f'method=POST url={safe_url} '
+                        f'attempt={attempt}/{max_attempts} '
+                        f'elapsed_ms={elapsed_ms} '
+                        f'delay_ms={int(delay_seconds * 1000)} '
+                        f'error={error_message}',
+                        level='WARN',
+                    )
+                    if delay_seconds > 0:
+                        time.sleep(delay_seconds)
+                    continue
+                self._log(
+                    '[http_error] '
+                    f'url={safe_url} '
+                    f'elapsed_ms={elapsed_ms} '
+                    f'error={error_message}',
+                    level='ERROR',
+                )
+                if isinstance(exc, urllib.error.URLError):
+                    raise RuntimeError(f'缂冩垹绮堕柨娆掝嚖: {error_message}')
+                raise RuntimeError(error_message)
 
     def _http_get_json(self, url, headers: dict, timeout=15) -> dict:
-        """发送 HTTP GET 请求并解析 JSON。"""
-        req = urllib.request.Request(url, headers=headers, method='GET')
+        """Send an HTTP GET request and parse JSON."""
         safe_url = self._sanitize_url_for_log(url)
-        started_at = time.perf_counter()
         self._log(f'[http_get] url={safe_url} timeout={timeout}')
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode('utf-8')
+        max_attempts = self._resolve_transport_retry_attempts()
+        for attempt in range(1, max_attempts + 1):
+            started_at = time.perf_counter()
+            req = urllib.request.Request(url, headers=headers, method='GET')
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    raw = resp.read().decode('utf-8')
+                    self._log(
+                        '[http_response] '
+                        f'url={safe_url} status={getattr(resp, "status", "unknown")} '
+                        f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
+                        f'body_chars={len(raw)}'
+                    )
+                    try:
+                        return json.loads(raw)
+                    except json.JSONDecodeError as exc:
+                        error_message = self._build_invalid_json_response_error(raw)
+                        self._log(
+                            '[http_error] '
+                            f'url={safe_url} '
+                            f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
+                            f'error={error_message}',
+                            level='ERROR',
+                        )
+                        raise RuntimeError(error_message) from exc
+            except urllib.error.HTTPError as exc:
+                err_body = exc.read().decode('utf-8', errors='replace')
+                elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+                error_message = self._format_http_error_message(exc.code, err_body)
+                if self._is_retryable_http_status(exc.code) and attempt < max_attempts:
+                    delay_seconds = self._resolve_transport_retry_delay(attempt)
+                    self._log(
+                        '[http_retry] '
+                        f'method=GET url={safe_url} '
+                        f'attempt={attempt}/{max_attempts} '
+                        f'status={exc.code} '
+                        f'elapsed_ms={elapsed_ms} '
+                        f'delay_ms={int(delay_seconds * 1000)} '
+                        f'error={error_message}',
+                        level='WARN',
+                    )
+                    if delay_seconds > 0:
+                        time.sleep(delay_seconds)
+                    continue
                 self._log(
-                    '[http_response] '
-                    f'url={safe_url} status={getattr(resp, "status", "unknown")} '
-                    f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
-                    f'body_chars={len(raw)}'
+                    '[http_error] '
+                    f'url={safe_url} status={exc.code} '
+                    f'elapsed_ms={elapsed_ms} '
+                    f'error={error_message}',
+                    level='ERROR',
                 )
-                return json.loads(raw)
-        except urllib.error.HTTPError as exc:
-            err_body = exc.read().decode('utf-8', errors='replace')
-            self._log(
-                '[http_error] '
-                f'url={safe_url} status={exc.code} '
-                f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
-                f'error={err_body[:240]}',
-                level='ERROR',
-            )
-            raise RuntimeError(f'HTTP {exc.code}: {err_body}')
-        except urllib.error.URLError as exc:
-            self._log(
-                '[http_error] '
-                f'url={safe_url} '
-                f'elapsed_ms={int((time.perf_counter() - started_at) * 1000)} '
-                f'error={exc.reason}',
-                level='ERROR',
-            )
-            raise RuntimeError(f'网络错误: {exc.reason}')
-
+                raise RuntimeError(error_message)
+            except Exception as exc:
+                elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+                error_message = self._format_transport_error(exc)
+                if self._is_retryable_transport_error(exc) and attempt < max_attempts:
+                    delay_seconds = self._resolve_transport_retry_delay(attempt)
+                    self._log(
+                        '[http_retry] '
+                        f'method=GET url={safe_url} '
+                        f'attempt={attempt}/{max_attempts} '
+                        f'elapsed_ms={elapsed_ms} '
+                        f'delay_ms={int(delay_seconds * 1000)} '
+                        f'error={error_message}',
+                        level='WARN',
+                    )
+                    if delay_seconds > 0:
+                        time.sleep(delay_seconds)
+                    continue
+                self._log(
+                    '[http_error] '
+                    f'url={safe_url} '
+                    f'elapsed_ms={elapsed_ms} '
+                    f'error={error_message}',
+                    level='ERROR',
+                )
+                if isinstance(exc, urllib.error.URLError):
+                    raise RuntimeError(f'缂冩垹绮堕柨娆掝嚖: {error_message}')
+                raise RuntimeError(error_message)
     def _call_openai_compat(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
-        """调用OpenAI兼容接口（包括自定义base_url）"""
+        """Call an OpenAI-compatible endpoint."""
         prepared = self._prepare_openai_compat_request(prompt, system, cfg, temperature, max_tokens)
+        compatibility_rules = sorted(set(prepared.get('compatibility_rules', [])))
         self._log(
             '[openai_compat] '
             f'endpoint={self._sanitize_url_for_log(prepared["url"])} '
@@ -1096,30 +1584,73 @@ class APIClient:
             f'extra_json_keys={",".join(prepared["extra_json_keys"]) or "-"} '
             f'ignored_extra_json_keys={",".join(prepared["ignored_extra_json_keys"]) or "-"} '
             f'removed_extra_json_keys={",".join(prepared["removed_extra_json_keys"]) or "-"} '
+            f'compatibility_rules={",".join(compatibility_rules) or "-"} '
             f'extra_header_keys={",".join(prepared["extra_header_keys"]) or "-"} '
             f'ignored_extra_header_keys={",".join(prepared["ignored_extra_header_keys"]) or "-"} '
             f'timeout={request_timeout}'
         )
-        resp = self._http_post(
-            prepared['url'],
-            prepared['payload'],
-            prepared['headers'],
-            timeout=request_timeout,
-        )
+        payload = dict(prepared['payload'])
+        compatibility_retry_attempts = 0
+        while True:
+            try:
+                resp = self._http_post(
+                    prepared['url'],
+                    payload,
+                    prepared['headers'],
+                    timeout=request_timeout,
+                )
+            except RuntimeError as exc:
+                adjusted_payload, retry_rules = self._apply_openai_error_compatibility_retry(payload, str(exc))
+                if retry_rules and adjusted_payload != payload and compatibility_retry_attempts < 2:
+                    compatibility_retry_attempts += 1
+                    self._log(
+                        '[openai_compat_retry] '
+                        f'endpoint={self._sanitize_url_for_log(prepared["url"])} '
+                        f'model={prepared["request_model"]} '
+                        f'attempt={compatibility_retry_attempts} '
+                        f'rules={",".join(retry_rules)} '
+                        f'error={exc}',
+                        level='WARN',
+                    )
+                    payload = adjusted_payload
+                    continue
+                raise
+            error_message = self._extract_openai_error_message(resp)
+            if error_message:
+                adjusted_payload, retry_rules = self._apply_openai_error_compatibility_retry(payload, error_message)
+                if retry_rules and adjusted_payload != payload and compatibility_retry_attempts < 2:
+                    compatibility_retry_attempts += 1
+                    self._log(
+                        '[openai_compat_retry] '
+                        f'endpoint={self._sanitize_url_for_log(prepared["url"])} '
+                        f'model={prepared["request_model"]} '
+                        f'attempt={compatibility_retry_attempts} '
+                        f'rules={",".join(retry_rules)} '
+                        f'error={error_message}',
+                        level='WARN',
+                    )
+                    payload = adjusted_payload
+                    continue
+                raise RuntimeError(f'闁规亽鍎辫ぐ娑欐交閺傛寧绀€闂佹寧鐟ㄩ? {error_message}')
+            break
         extracted = self._extract_openai_response_text(resp)
+        if not extracted['text']:
+            response_keys = ', '.join(sorted(str(key) for key in resp.keys()))
+            raise RuntimeError(f'OpenAI-compatible endpoint returned no displayable text. Response fields: {response_keys or "-"}')
         return {
             'text': extracted['text'],
             'text_source': extracted['text_source'],
             'content_kind': extracted['content_kind'],
             'has_choices': extracted['has_choices'],
             'has_output_text': extracted['has_output_text'],
+            'response_keys': sorted(str(key) for key in resp.keys()),
             'response_model': str(resp.get('model', '') or prepared['request_model']),
             'request_model': prepared['request_model'],
             'usage': extract_openai_usage(resp),
         }
 
     def _call_claude(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
-        """调用Anthropic Claude API"""
+        """閻犲鍟伴弫顥thropic Claude API"""
         urls = self._resolve_claude_urls(cfg.get('base_url', 'https://api.anthropic.com'))
         model = cfg.get('model', get_preset_definition('claude').get('model', 'claude-sonnet-4-6'))
         data = {
@@ -1138,7 +1669,7 @@ class APIClient:
         }
 
     def _call_gemini(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
-        """调用 Gemini 原生 API。"""
+        """Call the Gemini native API."""
         prepared = self._prepare_gemini_request(prompt, system, cfg, temperature, max_tokens)
         self._log(
             '[gemini] '
@@ -1165,7 +1696,7 @@ class APIClient:
             finish_reasons = ','.join(extracted['finish_reasons']) or '-'
             block_reason = extracted['block_reason'] or '-'
             raise RuntimeError(
-                f'Gemini 未返回可显示文本，block_reason={block_reason}，finish_reason={finish_reasons}'
+                f'Gemini 闁哄牜浜ｇ换鎴﹀炊閻愭彃璁查柡鍕⒔閵囨岸寮崶銊︽嫳闁挎稑鐣發ock_reason={block_reason}闁挎稑鐣篿nish_reason={finish_reasons}'
             )
         return {
             'text': extracted['text'],
@@ -1182,6 +1713,86 @@ class APIClient:
     def _sanitize_url_for_log(url):
         parts = urllib.parse.urlsplit(str(url or ''))
         return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, '', ''))
+
+    @staticmethod
+    def _is_retryable_transport_error(exc):
+        if isinstance(exc, urllib.error.HTTPError):
+            return False
+        if isinstance(
+            exc,
+            (
+                http.client.BadStatusLine,
+                http.client.IncompleteRead,
+                http.client.RemoteDisconnected,
+                ConnectionResetError,
+                ConnectionAbortedError,
+                BrokenPipeError,
+                TimeoutError,
+            ),
+        ):
+            return True
+        if isinstance(exc, ssl.SSLError):
+            return True
+        if isinstance(exc, urllib.error.URLError):
+            reason = exc.reason
+            if isinstance(
+                reason,
+                (
+                    ssl.SSLError,
+                    http.client.BadStatusLine,
+                    http.client.IncompleteRead,
+                    http.client.RemoteDisconnected,
+                    ConnectionResetError,
+                    ConnectionAbortedError,
+                    TimeoutError,
+                ),
+            ):
+                return True
+            text = str(reason or '').strip()
+            return any(
+                fragment in text
+                for fragment in (
+                    'EOF occurred in violation of protocol',
+                    'Remote end closed connection without response',
+                    'Connection reset by peer',
+                    'Connection aborted',
+                    'timed out',
+                )
+            )
+        text = str(exc or '').strip()
+        return any(
+            fragment in text
+            for fragment in (
+                'EOF occurred in violation of protocol',
+                'Remote end closed connection without response',
+                'Connection reset by peer',
+                'Connection aborted',
+                'timed out',
+            )
+        )
+
+    @staticmethod
+    def _format_transport_error(exc):
+        if isinstance(exc, urllib.error.URLError):
+            reason = exc.reason
+            return str(reason or exc)
+        return str(exc or exc.__class__.__name__)
+
+    @classmethod
+    def _resolve_transport_retry_attempts(cls):
+        try:
+            attempts = int(cls.DEFAULT_TRANSPORT_RETRY_ATTEMPTS)
+        except Exception:
+            attempts = 1
+        return max(1, attempts)
+
+    @classmethod
+    def _resolve_transport_retry_delay(cls, attempt):
+        try:
+            base_delay = float(cls.DEFAULT_TRANSPORT_RETRY_DELAY_SECONDS)
+        except Exception:
+            base_delay = 0.0
+        return max(0.0, base_delay) * max(1, int(attempt))
 
     def _record_usage_event(
         self,
@@ -1236,7 +1847,7 @@ class APIClient:
             self.log_callback(message, level=level)
 
     def fetch_models(self, api_name: str, cfg: dict = None) -> list:
-        """获取指定服务商的模型列表，返回模型id字符串列表"""
+        """Test API connectivity and return (success, message)."""
         cfg = self._get_config(api_name, cfg=cfg)
         provider_type = normalize_provider_type(cfg.get('provider_type') or api_name)
         strategy = self._resolve_model_list_strategy(api_name, cfg)
@@ -1272,7 +1883,10 @@ class APIClient:
         if strategy == MODEL_LIST_MANUAL:
             if current_model:
                 return [current_model]
-            raise ValueError(get_model_list_manual_message(provider_type))
+            raise ValueError(get_model_list_manual_message(provider_type, api_format=cfg.get('api_format', '')))
+
+        if strategy == MODEL_LIST_UNAVAILABLE:
+            raise NotImplementedError('Model list fetching is not implemented for the current protocol')
 
         result = self._fetch_remote_models(provider_name, cfg, timeout=15)
         return self._merge_model_candidates(result, current_model)
@@ -1280,14 +1894,14 @@ class APIClient:
     def test_connection(
         self,
         api_name: str,
-        prompt: str = '请只回复 ok',
+        prompt: str = '鐠囧嘲褰ч崶鐐差槻 ok',
         model_override: str = None,
         timeout: float = 45,
         degrade_threshold_ms: int = None,
         max_retries: int = 0,
         cfg: dict = None,
     ) -> tuple:
-        """测试API连接，返回(成功, 消息)"""
+        """濞村鐦?API 鏉╃偞甯撮敍宀冪箲閸?(閺勵垰鎯侀幋鎰, 閹绘劗銇氬☉鍫熶紖)"""
         last_error = None
         attempts = max(1, int(max_retries) + 1)
         request_timeout = max(float(timeout or 45), 1.0)
@@ -1295,43 +1909,57 @@ class APIClient:
         for attempt in range(1, attempts + 1):
             started = time.perf_counter()
             try:
-                result = self._call_sync(
+                call_result = self._call_sync(
                     prompt,
-                    '你是测速助手，只回复最短结果。',
+                    'Return the shortest possible result only.',
                     api_name,
                     0.0,
                     16,
                     request_timeout=request_timeout,
                     model_override=(model_override or '').strip() or None,
                     cfg=cfg,
+                    return_payload=True,
                 )
+                if isinstance(call_result, tuple) and len(call_result) == 2:
+                    result, response_payload = call_result
+                else:
+                    result, response_payload = call_result, {}
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
                 normalized_result = (result or '').strip()
                 if not normalized_result:
-                    last_error = '连接建立但未返回可显示文本，请检查模型类型或响应格式。'
+                    if self._is_connection_response_valid(response_payload):
+                        response_keys = ', '.join(response_payload.get('response_keys', []) or [])
+                        success_message = 'Connection succeeded, but the response did not include displayable text.'
+                        if response_keys:
+                            success_message = f'{success_message} Response fields: {response_keys}'
+                        if degrade_threshold_ms and elapsed_ms > int(degrade_threshold_ms):
+                            return True, (
+                                f'{success_message} But latency was {elapsed_ms}ms, above the degrade threshold {int(degrade_threshold_ms)}ms.'
+                            )
+                        retry_note = f', success on attempt {attempt}' if attempt > 1 else ''
+                        return True, f'{success_message} Latency {elapsed_ms}ms{retry_note}.'
+                    last_error = 'Connection succeeded but returned no displayable text. Check the model type or response format.'
                     continue
 
-                response_preview = normalized_result.replace('\n', ' ')
-                response_preview = response_preview[:80]
-
+                response_preview = normalized_result.replace('\n', ' ')[:80]
                 if degrade_threshold_ms and elapsed_ms > int(degrade_threshold_ms):
                     return True, (
-                        f'连接成功，但耗时 {elapsed_ms}ms，已超过降级阈值 {int(degrade_threshold_ms)}ms。'
-                        f' 响应预览：{response_preview}'
+                        f'Connection succeeded, but latency was {elapsed_ms}ms, above the degrade threshold {int(degrade_threshold_ms)}ms.'
+                        f' Preview: {response_preview}'
                     )
 
-                retry_note = f'，第 {attempt} 次尝试成功' if attempt > 1 else ''
-                return True, f'连接成功，耗时 {elapsed_ms}ms{retry_note}。响应预览：{response_preview}'
+                retry_note = f', success on attempt {attempt}' if attempt > 1 else ''
+                return True, f'Connection succeeded, latency {elapsed_ms}ms{retry_note}. Preview: {response_preview}'
             except Exception as exc:
                 last_error = str(exc)
 
-        return False, f'连接失败，已尝试 {attempts} 次。最后一次错误：{last_error}'
+        return False, f'Connection failed after {attempts} attempts. Last error: {last_error}'
 
     @staticmethod
     def _extract_json_payload(text: str) -> str:
         content = str(text or '').strip()
         if not content:
-            raise ValueError('AI 返回为空')
+            raise ValueError('AI response is empty')
 
         fence_match = re.match(r'^```(?:json)?\s*(.*?)\s*```$', content, flags=re.IGNORECASE | re.DOTALL)
         if fence_match:
