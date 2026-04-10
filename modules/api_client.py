@@ -611,7 +611,12 @@ class APIClient:
             (cfg or {}).get('base_url', 'https://api.openai.com/v1'),
             provider_type=(cfg or {}).get('provider_type', ''),
         )
-        configured_model = str((cfg or {}).get('model', '') or '').strip() or 'gpt-4o'
+        configured_model = str((cfg or {}).get('model', '') or '').strip()
+        if not configured_model:
+            provider_type = normalize_provider_type((cfg or {}).get('provider_type', ''))
+            if provider_type == 'sub2api':
+                raise ValueError('Sub2API 模型未配置。请在 API 配置中指定具体的模型名称（如 gpt-3.5-turbo、gpt-4 等）')
+            configured_model = 'gpt-4o'
         request_model, mapping_hit = self._apply_model_mapping(configured_model, cfg)
         auth_field = self._normalize_auth_field((cfg or {}).get('auth_field', 'Authorization'))
         auth_value_mode = self._normalize_auth_value_mode(
