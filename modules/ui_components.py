@@ -1883,32 +1883,55 @@ class ModernEntry(tk.Entry):
         kwargs.setdefault('highlightbackground', COLORS['input_border'])
         kwargs.setdefault('highlightcolor', COLORS['accent'])
         kwargs.setdefault('insertbackground', COLORS['text_main'])
-        if show:
-            kwargs['show'] = show
         super().__init__(parent, **kwargs)
 
         self.placeholder = placeholder
+        self._mask_char = show or ''
+        self._mask_visible = not bool(self._mask_char)
         self._placeholder_active = False
         if placeholder:
             self._show_placeholder()
             self.bind('<FocusIn>', self._on_focus_in)
             self.bind('<FocusOut>', self._on_focus_out)
+        else:
+            self._apply_show_state()
+
+    def _apply_show_state(self):
+        mask_char = ''
+        if self._mask_char and not self._mask_visible and not self._placeholder_active:
+            mask_char = self._mask_char
+        self.configure(show=mask_char)
 
     def _show_placeholder(self):
         if not self.get():
             self.configure(fg=COLORS['text_muted'])
             self.insert(0, self.placeholder)
             self._placeholder_active = True
+            self._apply_show_state()
 
     def _on_focus_in(self, _event):
         if self._placeholder_active:
             self.delete(0, tk.END)
             self.configure(fg=COLORS['text_main'])
             self._placeholder_active = False
+            self._apply_show_state()
 
     def _on_focus_out(self, _event):
         if not self.get():
             self._show_placeholder()
+
+    def refresh_mask_state(self):
+        self._apply_show_state()
+
+    def set_mask_visible(self, visible):
+        self._mask_visible = bool(visible) or not self._mask_char
+        self._apply_show_state()
+
+    def is_mask_visible(self):
+        return self._mask_visible or not self._mask_char
+
+    def toggle_mask(self):
+        self.set_mask_visible(not self.is_mask_visible())
 
     def get_value(self):
         if self._placeholder_active:

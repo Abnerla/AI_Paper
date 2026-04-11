@@ -15,6 +15,7 @@ from modules.app_metadata import (
     MODULE_PLAGIARISM,
     MODULE_POLISH,
 )
+from modules.config import resolve_model_display_name
 
 
 TASK_TEXT = (
@@ -54,7 +55,7 @@ def get_active_model_label(config_mgr):
     api_id = config_mgr.active_api
     cfg = config_mgr.get_api_config(api_id) or {}
     name = (cfg.get('name') or '').strip() or api_id
-    model = (cfg.get('model') or '').strip()
+    model = resolve_model_display_name(cfg)
     return f'{name} / {model}' if model else name
 
 

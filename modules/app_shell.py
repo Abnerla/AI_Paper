@@ -67,7 +67,7 @@ WINDOW_WORKAREA_MARGIN_Y = 80
 
 sys.path.insert(0, BASE_DIR)
 
-from modules.config import ConfigManager
+from modules.config import ConfigManager, resolve_model_display_name
 from modules.api_client import APIClient
 from modules.app_bridge import AppBridge
 from modules.history import HistoryManager
@@ -2922,7 +2922,7 @@ class SmartPaperTool:
         active_api = self.config_mgr.active_api
         cfg = self.config_mgr.get_api_config(active_api) or {}
         name = (cfg.get('name', '') or '').strip() or active_api or '未配置'
-        model = (cfg.get('model', '') or '').strip()
+        model = resolve_model_display_name(cfg)
         return f'{name} / {model}' if model else name
 
     def _prefetch_announcement(self):
@@ -4053,7 +4053,7 @@ class SmartPaperTool:
             entry.grid(row=row_index, column=1, sticky='ew', pady=(0, 14), ipady=7)
             return entry
 
-        add_test_row(0, '测试模型', global_test_model_var, width=68)
+        add_test_row(0, '测试模型 ID', global_test_model_var, width=68)
         add_test_row(1, '提示词', global_test_prompt_var, width=68)
         add_test_row(2, '超时（秒）', global_test_timeout_var, width=14)
         add_test_row(3, '降级阈值（毫秒）', global_test_degrade_var, width=14)
@@ -4159,6 +4159,11 @@ class SmartPaperTool:
                     timeout=timeout_value,
                     degrade_threshold_ms=degrade_value,
                     max_retries=retries_value,
+                    usage_context={
+                        'page_id': 'api_config',
+                        'scene_id': 'global_connection_test',
+                        'action': 'global_test_connection',
+                    },
                 ),
                 on_success=finish,
                 on_error=lambda exc: finish((False, str(exc))),

@@ -3,10 +3,12 @@
 纸研社首页
 """
 
+import json
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox, ttk
 
+from modules.config import resolve_model_display_name
 from pages.home_support import (
     active_model_ready,
     build_dashboard_view_model,
@@ -24,6 +26,7 @@ from modules.ui_components import (
     bind_adaptive_wrap,
     CardFrame,
     COLORS,
+    create_scrolled_text,
     create_home_shell_button,
     FONTS,
     ModernButton,
@@ -116,6 +119,7 @@ class HomePage:
         self.usage_log_start_var = None
         self.usage_log_end_var = None
         self.usage_log_tree = None
+        self.usage_log_row_map = {}
         self.usage_provider_tree = None
         self.usage_model_tree = None
         self.pricing_panel_body = None
@@ -862,6 +866,8 @@ class HomePage:
             ('status', '状态', 70),
         )
         self.usage_log_tree = self._create_usage_tree(table_card.inner, columns, height=10)
+        self.usage_log_tree.bind('<ButtonRelease-1>', self._open_request_log_detail_from_click, add='+')
+        self.usage_log_tree.bind('<Return>', self._open_selected_request_log_detail, add='+')
 
     def _build_usage_provider_tab(self, parent):
         card = CardFrame(parent, padding=12)
@@ -1484,9 +1490,10 @@ class HomePage:
             return
         rows = list(rows or [])
         tree = self.usage_log_tree
+        self.usage_log_row_map = {}
         tree.delete(*tree.get_children())
         for item in rows:
-            tree.insert(
+            item_id = tree.insert(
                 '',
                 'end',
                 values=(
@@ -1503,6 +1510,220 @@ class HomePage:
                     '成功' if item.get('status') == 'success' else '失败',
                 ),
             )
+            self.usage_log_row_map[item_id] = dict(item)
+
+    def _open_request_log_detail_from_click(self, event=None):
+        if not self.usage_log_tree or event is None:
+            return
+        item_id = self.usage_log_tree.identify_row(event.y)
+        if not item_id:
+            return
+        self.usage_log_tree.selection_set(item_id)
+        self.usage_log_tree.focus(item_id)
+        self._show_request_log_detail(item_id)
+
+    def _open_selected_request_log_detail(self, _event=None):
+        if not self.usage_log_tree:
+            return
+        selection = self.usage_log_tree.selection()
+        if not selection:
+            return
+        self._show_request_log_detail(selection[0])
+
+    @staticmethod
+    def _format_request_log_value(value):
+        if value in (None, '', [], {}):
+            return ''
+        if isinstance(value, (list, tuple)):
+            return ', '.join(str(item) for item in value if str(item).strip())
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+        return str(value)
+
+    def _build_request_log_section_text(self, section, ordered_fields):
+        payload = dict(section or {})
+        if not payload:
+            return '无'
+        lines = []
+        used_keys = set()
+        multiline_keys = {
+            'headers_text',
+            'body_text',
+            'prompt_text',
+            'system_text',
+            'text_preview',
+            'body_preview',
+            'message',
+            'transport_message',
+        }
+        for key, label in ordered_fields:
+            value = self._format_request_log_value(payload.get(key))
+            if not value:
+                continue
+            used_keys.add(key)
+            if key in multiline_keys or '\n' in value:
+                lines.append(f'{label}:\n{value}')
+            else:
+                lines.append(f'{label}: {value}')
+        for key in sorted(payload.keys()):
+            if key in used_keys:
+                continue
+            value = self._format_request_log_value(payload.get(key))
+            if not value:
+                continue
+            label = str(key).replace('_', ' ')
+            if '\n' in value:
+                lines.append(f'{label}:\n{value}')
+            else:
+                lines.append(f'{label}: {value}')
+        return '\n\n'.join(lines) if lines else '无'
+
+    def _build_request_log_overview_text(self, row):
+        item = dict(row or {})
+        detail = dict(item.get('request_detail') or {})
+        summary = dict(detail.get('summary') or {})
+        page_label = item.get('page_label', '') or summary.get('page_id', '') or '未分类'
+        status_text = '成功' if item.get('status') == 'success' else '失败'
+        lines = [
+            f'请求 ID: {summary.get("request_id", "") or item.get("request_id", "") or "-"}',
+            f'时间: {item.get("timestamp", "") or "-"}',
+            f'状态: {status_text}',
+            f'应用页面: {page_label}',
+            f'场景 ID: {summary.get("scene_id", "") or item.get("scene_id", "") or "-"}',
+            f'动作: {summary.get("action", "") or item.get("action", "") or "-"}',
+            f'API ID: {summary.get("api_id", "") or item.get("api_id", "") or "-"}',
+            f'供应商: {item.get("provider", "") or summary.get("provider", "") or "-"}',
+            f'请求模型: {item.get("request_model", "") or summary.get("request_model", "") or "-"}',
+            f'返回模型: {item.get("response_model", "") or summary.get("response_model", "") or "-"}',
+            f'计费模型: {item.get("billed_model", "") or "-"}',
+            f'耗时: {int(item.get("duration_ms", 0) or 0)} ms',
+            f'输入 Token: {format_token_count(item.get("input_tokens", 0))}',
+            f'输出 Token: {format_token_count(item.get("output_tokens", 0))}',
+            f'缓存命中: {format_token_count(item.get("cache_hit_tokens", 0))}',
+            f'缓存创建: {format_token_count(item.get("cache_create_tokens", 0))}',
+            f'成本倍率: {float(item.get("billing_multiplier", 1.0) or 1.0):.2f}',
+            f'总成本: {format_currency(item.get("total_cost", 0.0))}',
+        ]
+        error_message = str(item.get('error_message', '') or '').strip()
+        if error_message:
+            lines.append('')
+            lines.append(f'错误摘要:\n{error_message}')
+        return '\n'.join(lines)
+
+    def _append_request_log_text_tab(self, notebook, title, text):
+        tab = tk.Frame(notebook, bg=COLORS['card_bg'])
+        notebook.add(tab, text=title)
+        shell, content = create_scrolled_text(
+            tab,
+            height=24,
+            bg=COLORS['input_bg'],
+            fg=COLORS['text_main'],
+            wrap=tk.WORD,
+        )
+        shell.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        content.insert('1.0', text or '无')
+        content.configure(state='disabled')
+
+    def _show_request_log_detail(self, item_id):
+        row = dict(self.usage_log_row_map.get(item_id) or {})
+        if not row:
+            return
+        detail = dict(row.get('request_detail') or {})
+        request_text = self._build_request_log_section_text(
+            detail.get('request', {}),
+            (
+                ('method', '请求方法'),
+                ('url', '请求地址'),
+                ('timeout_sec', '超时秒数'),
+                ('auth_field', '鉴权字段'),
+                ('request_model', '请求模型'),
+                ('model_mapping_hit', '命中模型映射'),
+                ('use_bearer', '使用 Bearer'),
+                ('compatibility_rules', '兼容规则'),
+                ('extra_json_keys', '额外 JSON 字段'),
+                ('ignored_extra_json_keys', '忽略的额外 JSON 字段'),
+                ('removed_extra_json_keys', '移除的额外 JSON 字段'),
+                ('extra_header_keys', '额外请求头'),
+                ('ignored_extra_header_keys', '忽略的额外请求头'),
+                ('headers_text', '请求头'),
+                ('body_text', '请求体'),
+                ('prompt_text', '测试提示词'),
+                ('system_text', '系统提示词'),
+            ),
+        )
+        response_text = self._build_request_log_section_text(
+            detail.get('response', {}),
+            (
+                ('status_code', '状态码'),
+                ('response_model', '返回模型'),
+                ('text_source', '文本来源'),
+                ('content_kind', '内容类型'),
+                ('has_choices', '包含候选项'),
+                ('has_output_text', '包含输出文本'),
+                ('response_keys', '响应字段'),
+                ('block_reason', '阻断原因'),
+                ('finish_reasons', '结束原因'),
+                ('text_preview', '文本预览'),
+                ('body_preview', '响应体预览'),
+                ('body_text', '响应体'),
+            ),
+        )
+        error_section = dict(detail.get('error') or {})
+        if row.get('error_message') and not error_section.get('message'):
+            error_section['message'] = row.get('error_message')
+        error_text = self._build_request_log_section_text(
+            error_section,
+            (
+                ('message', '错误信息'),
+                ('transport_message', '传输层信息'),
+            ),
+        )
+
+        win = tk.Toplevel(self.frame)
+        win.title('请求详情')
+        win.configure(bg=COLORS['bg_main'])
+        win.transient(self.frame.winfo_toplevel())
+        win.grab_set()
+        apply_adaptive_window_geometry(win, '1280x960')
+
+        header = tk.Frame(win, bg=COLORS['bg_main'])
+        header.pack(fill=tk.X, padx=18, pady=(16, 8))
+        tk.Label(
+            header,
+            text='请求详情',
+            font=FONTS['subtitle'],
+            fg=COLORS['primary'],
+            bg=COLORS['bg_main'],
+        ).pack(side=tk.LEFT)
+        ModernButton(
+            header,
+            '关闭',
+            style='secondary',
+            command=win.destroy,
+            padx=12,
+            pady=6,
+        ).pack(side=tk.RIGHT)
+
+        overview_card = CardFrame(win, padding=14)
+        overview_card.pack(fill=tk.X, padx=18, pady=(0, 12))
+        overview_text = tk.Label(
+            overview_card.inner,
+            text=self._build_request_log_overview_text(row),
+            font=FONTS['small'],
+            fg=COLORS['text_main'],
+            bg=COLORS['card_bg'],
+            justify='left',
+            anchor='w',
+        )
+        overview_text.pack(fill=tk.X, anchor='w')
+        bind_adaptive_wrap(overview_text, overview_card.inner, padding=8, min_width=320)
+
+        notebook = ttk.Notebook(win, style='Card.TNotebook')
+        notebook.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 18))
+        self._append_request_log_text_tab(notebook, '概览', self._build_request_log_overview_text(row))
+        self._append_request_log_text_tab(notebook, '请求', request_text)
+        self._append_request_log_text_tab(notebook, '响应', response_text)
+        self._append_request_log_text_tab(notebook, '错误', error_text)
 
     def _refresh_provider_stats(self, rows=None):
         if not self.usage_provider_tree:
@@ -2107,6 +2328,9 @@ class HomePage:
             active_id = self.config.active_api
             for api_id, cfg in self.config.list_saved_apis():
                 name = cfg.get('name', '').strip() or api_id
+                model_id = str(cfg.get('model', '') or '').strip()
+                model_display = resolve_model_display_name(cfg)
+                switch_label = f'{name} / {model_display}' if model_display else name
                 any_shown = True
                 is_active = (api_id == active_id)
                 card_bg = COLORS.get('primary_light', COLORS['surface_alt']) if is_active else COLORS['card_bg']
@@ -2138,10 +2362,12 @@ class HomePage:
                 tk.Label(name_row, text=name, font=FONTS['body_bold'],
                          fg=COLORS['primary'] if is_active else COLORS['text_main'],
                          bg=card_bg).pack(side=tk.LEFT)
-                model_val = cfg.get('model', '').strip()
-                if model_val:
-                    tk.Label(name_row, text=f'  {model_val}', font=FONTS['small'],
+                if model_display:
+                    tk.Label(name_row, text=f'  {model_display}', font=FONTS['small'],
                              fg=COLORS['text_muted'], bg=card_bg).pack(side=tk.LEFT)
+                if model_id and model_id != model_display:
+                    tk.Label(body, text=f'模型 ID：{model_id}', font=FONTS['small'],
+                             fg=COLORS['text_muted'], bg=card_bg).pack(anchor='w', pady=(2, 0))
 
                 website = cfg.get('website', '').strip()
                 if website:
@@ -2170,7 +2396,7 @@ class HomePage:
                 select_shell, select_button = create_home_shell_button(
                     btn_col,
                     '当前使用' if is_active else '启用',
-                    command=(lambda: None) if is_active else (lambda aid=api_id, model_name=name: _activate_model(aid, model_name)),
+                    command=(lambda: None) if is_active else (lambda aid=api_id, model_name=switch_label: _activate_model(aid, model_name)),
                     style='primary' if is_active else 'secondary',
                     padx=8,
                     pady=4,

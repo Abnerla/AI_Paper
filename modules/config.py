@@ -8,9 +8,18 @@ import json
 import os
 import random
 import time
+import urllib.parse
 from datetime import datetime
 
-from modules.provider_registry import PRESET_REGISTRY, normalize_provider_type
+from modules.provider_registry import (
+    API_FORMAT_ANTHROPIC_MESSAGES,
+    AUTH_VALUE_MODE_BEARER,
+    AUTH_VALUE_MODE_RAW,
+    PRESET_REGISTRY,
+    get_protocol_default_auth,
+    normalize_api_format,
+    normalize_provider_type,
+)
 from modules.runtime_paths import (
     DATA_DIR_POINTER_FILE,
     persist_runtime_data_root,
@@ -24,6 +33,8 @@ LEGACY_PROVIDER_IDS = {
     'openai',
     'claude',
     'gemini',
+    'newapi',
+    'sub2api',
     'newapi_openai',
     'newapi_gemini',
     'sub2api_openai',
@@ -53,12 +64,37 @@ def _normalize_directory(path):
     return os.path.abspath(os.path.expanduser(str(path or '').strip()))
 
 
+def _rewrite_legacy_openai_proxy_base_url(provider_hint, base_url):
+    raw_provider_hint = str(provider_hint or '').strip().lower()
+    raw_base_url = str(base_url or '').strip()
+    if raw_provider_hint not in {'newapi_gemini', 'sub2api_gemini'} or not raw_base_url:
+        return raw_base_url
+
+    parts = urllib.parse.urlsplit(raw_base_url)
+    path = parts.path.rstrip('/')
+    if path.endswith('/v1beta'):
+        path = f'{path[:-len("/v1beta")]}/v1'
+    elif '/v1beta/' in path:
+        path = path.replace('/v1beta/', '/v1/', 1)
+    else:
+        return raw_base_url
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
 def resolve_config_dir(data_dir):
     return resolve_runtime_data_root(_normalize_directory(data_dir))
 
 
 def persist_config_dir(data_dir, config_dir):
     persist_runtime_data_root(_normalize_directory(data_dir), _normalize_directory(config_dir))
+
+
+def resolve_model_display_name(cfg):
+    record = dict(cfg or {})
+    display_name = str(record.get('model_display_name', '') or '').strip()
+    if display_name:
+        return display_name
+    return str(record.get('model', '') or '').strip()
 
 
 class ConfigManager:
@@ -144,7 +180,8 @@ class ConfigManager:
 
     def _normalize_api_record(self, api_id, config):
         cfg = dict(config or {})
-        provider_type = normalize_provider_type(cfg.get('provider_type') or api_id)
+        raw_provider_hint = str(cfg.get('provider_type') or api_id or '').strip().lower()
+        provider_type = normalize_provider_type(raw_provider_hint)
         if not provider_type:
             provider_type = api_id.lower() if api_id in LEGACY_PROVIDER_IDS else 'custom'
         cfg['provider_type'] = provider_type
@@ -152,23 +189,40 @@ class ConfigManager:
         name = cfg.get('name', '')
         cfg['name'] = name.strip() if isinstance(name, str) else str(name or '').strip()
         preset_definition = PRESET_REGISTRY.get(provider_type, PRESET_REGISTRY['custom'])
-        default_api_format = preset_definition.get('api_format', 'OpenAI')
-        api_format = str(cfg.get('api_format', default_api_format) or default_api_format).strip().lower()
-        if api_format == 'claude':
-            cfg['api_format'] = 'Claude'
-        elif api_format == 'gemini':
-            cfg['api_format'] = 'Gemini'
-        elif api_format == 'custom':
-            cfg['api_format'] = 'Custom'
+        default_api_format = normalize_api_format(preset_definition.get('api_format', ''))
+        if provider_type != 'custom':
+            cfg['api_format'] = default_api_format
         else:
-            cfg['api_format'] = 'OpenAI'
+            cfg['api_format'] = normalize_api_format(cfg.get('api_format', default_api_format))
         cfg.setdefault('remark', '')
         cfg.setdefault('website', '')
         cfg.setdefault('key', '')
-        cfg.setdefault('base_url', '')
-        cfg['auth_field'] = str(cfg.get('auth_field', '') or '').strip() or preset_definition.get('auth_field', 'Authorization')
+        cfg['base_url'] = _rewrite_legacy_openai_proxy_base_url(raw_provider_hint, cfg.get('base_url', ''))
+        default_auth = get_protocol_default_auth(cfg['api_format'])
+        default_auth_field = preset_definition.get('auth_field', default_auth['auth_field'])
+        default_auth_value_mode = preset_definition.get('auth_value_mode', default_auth['auth_value_mode'])
+        existing_auth_field = str(cfg.get('auth_field', '') or '').strip()
+        if provider_type != 'custom':
+            cfg['auth_field'] = str(default_auth_field or '').strip() or default_auth['auth_field']
+            cfg['auth_value_mode'] = str(default_auth_value_mode or '').strip().lower() or default_auth['auth_value_mode']
+        else:
+            cfg['auth_field'] = existing_auth_field or default_auth['auth_field']
+            raw_auth_value_mode = str(cfg.get('auth_value_mode', '') or '').strip().lower()
+            if raw_auth_value_mode not in {AUTH_VALUE_MODE_BEARER, AUTH_VALUE_MODE_RAW}:
+                normalized_existing_field = cfg['auth_field'].lower()
+                if normalized_existing_field in {'authorization', 'proxy-authorization'}:
+                    raw_auth_value_mode = AUTH_VALUE_MODE_BEARER
+                elif normalized_existing_field:
+                    raw_auth_value_mode = AUTH_VALUE_MODE_RAW
+                else:
+                    raw_auth_value_mode = default_auth['auth_value_mode']
+            cfg['auth_value_mode'] = raw_auth_value_mode
+            if cfg['api_format'] == API_FORMAT_ANTHROPIC_MESSAGES:
+                cfg['auth_field'] = default_auth['auth_field']
+                cfg['auth_value_mode'] = default_auth['auth_value_mode']
         cfg.setdefault('model_mapping', '')
         cfg.setdefault('model', '')
+        cfg.setdefault('model_display_name', '')
         cfg.setdefault('extra_json', '')
         cfg.setdefault('extra_headers', '')
         cfg.setdefault('temperature', '')
@@ -190,6 +244,7 @@ class ConfigManager:
         cfg.setdefault('teammates_mode', False)
         cfg.setdefault('enable_tool_search', False)
         cfg.setdefault('high_intensity_thinking', False)
+        cfg.setdefault('enable_user_agent_spoof', False)
         for legacy_key in ('api_key', 'secret_key', 'app_id', 'api_secret'):
             cfg.pop(legacy_key, None)
         return cfg

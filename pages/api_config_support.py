@@ -3,7 +3,13 @@
 模型配置页使用的预设与表单辅助函数。
 """
 
-from modules.provider_registry import PRESET_MAP, PRESET_OPTIONS, normalize_provider_type
+from modules.provider_registry import (
+    AUTH_VALUE_MODE_BEARER,
+    API_FORMAT_OPENAI_CHAT_COMPLETIONS,
+    PRESET_MAP,
+    PRESET_OPTIONS,
+    normalize_provider_type,
+)
 
 
 FORM_KEY = '__current__'
@@ -17,15 +23,18 @@ def build_base_form_template(provider_type='custom'):
         'website': '',
         'key': '',
         'base_url': '',
-        'api_format': 'OpenAI',
+        'api_format': API_FORMAT_OPENAI_CHAT_COMPLETIONS,
         'auth_field': 'Authorization',
+        'auth_value_mode': AUTH_VALUE_MODE_BEARER,
         'model_mapping': '',
         'model': '',
+        'model_display_name': '',
         'provider_type': provider_type,
         'hide_ai_signature': False,
         'teammates_mode': False,
         'enable_tool_search': False,
         'high_intensity_thinking': False,
+        'enable_user_agent_spoof': False,
         'extra_json': '',
         'extra_headers': '',
         'temperature': '',
@@ -53,7 +62,7 @@ def merge_with_preset_defaults(cfg, provider_type):
     merged['provider_type'] = provider_type
 
     preset_defaults = PRESET_MAP.get(provider_type, {}).get('defaults', {})
-    for field in ('website', 'base_url', 'api_format', 'auth_field'):
+    for field in ('website', 'base_url', 'api_format', 'auth_field', 'auth_value_mode'):
         if not str(merged.get(field, '') or '').strip() and preset_defaults.get(field):
             merged[field] = preset_defaults[field]
     return merged

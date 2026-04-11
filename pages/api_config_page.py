@@ -4,11 +4,11 @@
 """
 
 import json
-import subprocess
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from modules.task_runner import TaskRunner
+from modules.config import resolve_model_display_name
 from modules.ui_components import (
     bind_combobox_dropdown_mousewheel,
     COLORS,
@@ -19,11 +19,20 @@ from modules.ui_components import (
     ScrollablePage,
 )
 from modules.provider_registry import (
-    get_credential_hint,
-    get_docs_url,
-    get_extra_headers_hint,
+    AUTH_OPTION_CUSTOM,
+    AUTH_VALUE_MODE_BEARER,
+    AUTH_VALUE_MODE_RAW,
+    MODEL_LIST_MANUAL,
+    get_api_format_label,
     get_preset_definition,
+    get_protocol_auth_option_label,
+    get_protocol_auth_options,
+    list_visible_protocol_options,
+    normalize_api_format,
     normalize_provider_type,
+    resolve_auth_option_definition,
+    resolve_auth_option_id,
+    resolve_model_list_strategy,
 )
 from pages.api_config_support import (
     FORM_KEY,
@@ -38,6 +47,14 @@ BILLING_MODE_DISPLAY = {
     'response_model': '按返回模型匹配',
 }
 BILLING_MODE_REVERSE = {label: key for key, label in BILLING_MODE_DISPLAY.items()}
+
+API_FORMAT_DISPLAY = {protocol_id: label for protocol_id, label in list_visible_protocol_options()}
+API_FORMAT_REVERSE = {label: protocol_id for protocol_id, label in API_FORMAT_DISPLAY.items()}
+AUTH_VALUE_MODE_DISPLAY = {
+    AUTH_VALUE_MODE_BEARER: 'Bearer 前缀',
+    AUTH_VALUE_MODE_RAW: '原样',
+}
+AUTH_VALUE_MODE_REVERSE = {label: value for value, label in AUTH_VALUE_MODE_DISPLAY.items()}
 
 
 class APIConfigPage:
@@ -95,6 +112,7 @@ class APIConfigPage:
         self._load_preset_draft('openai', reload=False)
 
     def _load_preset_draft(self, provider_type, reload=True):
+        provider_type = normalize_provider_type(provider_type)
         provider_type = provider_type if provider_type in PRESET_MAP else 'custom'
         self._save_as_new = True
         self._current_api_id = None
@@ -157,6 +175,8 @@ class APIConfigPage:
         self._entries = {}
         if hasattr(self, 'tip_label'):
             del self.tip_label
+        if hasattr(self, 'connection_tip_label'):
+            del self.connection_tip_label
 
         self._build_api_panel(new_frame)
         for widget in self._content.winfo_children():
@@ -170,6 +190,32 @@ class APIConfigPage:
 
     def _get_form_config(self):
         return dict(self._current_config or build_base_form_template(self._current_provider_type))
+
+    def _get_current_api_format(self):
+        cfg = self._get_form_config()
+        preset_format = get_preset_definition(self._current_provider_type).get('api_format', '')
+        return normalize_api_format(cfg.get('api_format', preset_format))
+
+    @staticmethod
+    def _format_selected_model_label(model_id, display_name=''):
+        model_id = str(model_id or '').strip()
+        display_name = str(display_name or '').strip()
+        if display_name:
+            return f'已选择：{display_name}'
+        if model_id:
+            return f'已选择：{model_id}'
+        return '已选择：（未选择）'
+
+    def _refresh_protocol_dependent_form(self, form_key, api_format):
+        cfg = self._collect_api_config(form_key)
+        cfg['api_format'] = normalize_api_format(api_format)
+        if self._current_provider_type == 'custom':
+            auth_option = resolve_auth_option_definition(cfg['api_format'], resolve_auth_option_id(cfg['api_format']))
+            if auth_option:
+                cfg['auth_field'] = auth_option.get('auth_field', cfg.get('auth_field', ''))
+                cfg['auth_value_mode'] = auth_option.get('auth_value_mode', cfg.get('auth_value_mode', ''))
+        self._current_config = merge_with_preset_defaults(cfg, self._current_provider_type)
+        self._reload_panel()
 
     def _select_api(self, target_id):
         """按 api_id 加载记录（仅用于「查看详情」跳转，进入编辑模式）"""
@@ -346,7 +392,7 @@ class APIConfigPage:
 
         return card
 
-    def _entry_row(self, parent, label, key, form_key, placeholder='', show='', width=40, prefill=None):
+    def _entry_row(self, parent, label, key, form_key, placeholder='', show='', width=40, prefill=None, toggle_mask=False):
         row = tk.Frame(parent, bg=COLORS['card_bg'])
         row.pack(fill=tk.X, pady=4)
         tk.Label(
@@ -360,8 +406,19 @@ class APIConfigPage:
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         cfg = self._get_form_config()
-        entry = ModernEntry(row, placeholder=placeholder, show=show, width=width)
-        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
+        if toggle_mask:
+            entry_wrap = tk.Frame(row, bg=COLORS['card_bg'])
+            entry_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            entry = ModernEntry(entry_wrap, placeholder=placeholder, show=show, width=width)
+            entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
+
+            toggle_btn = ModernButton(entry_wrap, '显示', style='secondary', padx=12, pady=6)
+            toggle_btn.configure(command=lambda e=entry, b=toggle_btn: self._toggle_entry_mask(e, b))
+            toggle_btn.pack(side=tk.LEFT, padx=(8, 0))
+        else:
+            entry = ModernEntry(row, placeholder=placeholder, show=show, width=width)
+            entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
 
         saved = cfg.get(key, '')
         value = saved if saved else (prefill or '')
@@ -370,9 +427,14 @@ class APIConfigPage:
             entry.insert(0, value)
             entry.configure(fg=COLORS['text_main'])
             entry._placeholder_active = False
+            entry.refresh_mask_state()
 
         self._entries[form_key][key] = entry
         return entry
+
+    def _toggle_entry_mask(self, entry, toggle_btn):
+        entry.toggle_mask()
+        toggle_btn.configure(text='隐藏' if entry.is_mask_visible() else '显示')
 
     def _combo_row(self, parent, label, key, form_key, values, width=35):
         row = tk.Frame(parent, bg=COLORS['card_bg'])
@@ -447,6 +509,9 @@ class APIConfigPage:
         cfg = self._get_form_config()
         preset = PRESET_MAP.get(self._current_provider_type, PRESET_MAP['custom'])
         preset_defaults = preset.get('defaults', {})
+        current_api_format = self._get_current_api_format()
+        model_list_strategy = resolve_model_list_strategy(self._current_provider_type, current_api_format)
+        model_requires_manual_input = model_list_strategy == MODEL_LIST_MANUAL
 
         info_row = tk.Frame(inner, bg=COLORS['card_bg'])
         info_row.pack(fill=tk.X, pady=(0, 8))
@@ -466,47 +531,11 @@ class APIConfigPage:
             fg=COLORS['primary'],
             bg=COLORS['card_bg'],
         ).pack(side=tk.LEFT)
-        docs_url = get_docs_url(self._current_provider_type)
-        if docs_url:
-            docs_row = tk.Frame(inner, bg=COLORS['card_bg'])
-            docs_row.pack(anchor='w', padx=(116, 0), pady=(0, 6))
-            tk.Label(
-                docs_row,
-                text='文档链接：',
-                font=FONTS['small'],
-                fg=COLORS['text_muted'],
-                bg=COLORS['card_bg'],
-            ).pack(side=tk.LEFT)
-            docs_link = tk.Label(
-                docs_row,
-                text=docs_url,
-                font=FONTS['small'],
-                fg=COLORS['info'],
-                bg=COLORS['card_bg'],
-                cursor='hand2',
-            )
-            docs_link.pack(side=tk.LEFT)
-            docs_link.bind(
-                '<Button-1>',
-                lambda _event, url=docs_url: subprocess.Popen(['cmd', '/c', 'start', '', url], shell=False),
-            )
-        credential_hint = get_credential_hint(self._current_provider_type)
-        if credential_hint:
-            tk.Label(
-                inner,
-                text=f'凭证说明：{credential_hint}',
-                font=FONTS['small'],
-                fg=COLORS['text_muted'],
-                bg=COLORS['card_bg'],
-                anchor='w',
-                justify=tk.LEFT,
-                wraplength=720,
-            ).pack(anchor='w', padx=(116, 0), pady=(0, 8))
 
         self._entry_row(inner, '服务商名称', 'name', form_key, placeholder='请输入服务商名称', width=40)
         self._entry_row(inner, '备注', 'remark', form_key, placeholder='可选备注信息', width=40)
         self._entry_row(inner, '官网链接', 'website', form_key, placeholder=preset_defaults.get('website', 'https://...'), width=40)
-        self._entry_row(inner, 'API Key', 'key', form_key, placeholder='请输入 API Key', show='*', width=40)
+        self._entry_row(inner, 'API Key', 'key', form_key, placeholder='请输入 API Key', show='*', width=40, toggle_mask=True)
         self._entry_row(
             inner,
             '请求地址',
@@ -520,7 +549,7 @@ class APIConfigPage:
         mv_row.pack(fill=tk.X, pady=4)
         tk.Label(
             mv_row,
-            text='模型版本',
+            text='模型 ID',
             font=FONTS['body'],
             fg=COLORS['text_sub'],
             bg=COLORS['card_bg'],
@@ -529,40 +558,73 @@ class APIConfigPage:
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         model_init = cfg.get('model', '')
-        model_var = tk.StringVar(value=model_init)
-        self._entries[form_key]['model'] = model_var
-        model_combo = ttk.Combobox(
-            mv_row,
-            textvariable=model_var,
-            values=[model_init] if model_init else [],
-            style='Modern.TCombobox',
-            width=32,
-        )
-        model_combo.pack(side=tk.LEFT)
-        bind_combobox_dropdown_mousewheel(model_combo)
         model_sel_lbl = tk.Label(
             mv_row,
-            text=f'已选择：{model_init}' if model_init else '已选择：（未选择）',
+            text=(
+                self._format_selected_model_label(model_init, resolve_model_display_name(cfg))
+                if model_init
+                else '请手动填写模型 ID' if model_requires_manual_input else '已选择：（未选择）'
+            ),
             font=FONTS['small'],
             fg=COLORS['text_muted'],
             bg=COLORS['card_bg'],
             anchor='w',
         )
-        ModernButton(
-            mv_row,
-            '刷新',
-            style='secondary',
-            command=lambda: self._fetch_models(form_key, model_combo, model_sel_lbl),
-            padx=8,
-            pady=4,
-        ).pack(side=tk.LEFT, padx=(6, 0))
+        if model_requires_manual_input:
+            model_entry = ModernEntry(mv_row, placeholder='请手动填写模型 ID', width=32)
+            model_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
+            if model_init:
+                model_entry.delete(0, tk.END)
+                model_entry.insert(0, model_init)
+                model_entry.configure(fg=COLORS['text_main'])
+                model_entry._placeholder_active = False
+            self._entries[form_key]['model'] = model_entry
+
+            def refresh_manual_model_label(_event=None):
+                model_value = model_entry.get_value().strip()
+                model_sel_lbl.configure(
+                    text=(
+                        self._format_selected_model_label(model_value)
+                        if model_value
+                        else '请手动填写模型 ID'
+                    )
+                )
+
+            model_entry.bind('<KeyRelease>', refresh_manual_model_label)
+            model_entry.bind('<FocusIn>', refresh_manual_model_label, add='+')
+            model_entry.bind('<FocusOut>', refresh_manual_model_label, add='+')
+        else:
+            model_var = tk.StringVar(value=model_init)
+            self._entries[form_key]['model'] = model_var
+            model_combo = ttk.Combobox(
+                mv_row,
+                textvariable=model_var,
+                values=[model_init] if model_init else [],
+                style='Modern.TCombobox',
+                width=32,
+            )
+            model_combo.pack(side=tk.LEFT)
+            bind_combobox_dropdown_mousewheel(model_combo)
+            ModernButton(
+                mv_row,
+                '刷新',
+                style='secondary',
+                command=lambda: self._fetch_models(form_key, model_combo, model_sel_lbl),
+                padx=8,
+                pady=4,
+            ).pack(side=tk.LEFT, padx=(6, 0))
         model_sel_lbl.pack(side=tk.LEFT, padx=(10, 0))
-        model_var.trace_add(
-            'write',
-            lambda *_args: model_sel_lbl.configure(
-                text=f'已选择：{model_var.get()}' if model_var.get() else '已选择：（未选择）'
-            ),
-        )
+        if not model_requires_manual_input:
+            model_var.trace_add(
+                'write',
+                lambda *_args: model_sel_lbl.configure(
+                    text=(
+                        self._format_selected_model_label(model_var.get())
+                        if model_var.get()
+                        else '已选择：（未选择）'
+                    )
+                ),
+            )
 
         if not hasattr(self, 'tip_label'):
             self.tip_label = tk.Label(
@@ -576,9 +638,45 @@ class APIConfigPage:
             self.tip_label.pack(anchor='w', pady=(4, 0))
 
     def _build_advanced_options(self, parent, form_key):
-        preset_api_format = get_preset_definition(self._current_provider_type).get('api_format', 'OpenAI')
+        cfg = self._get_form_config()
+        current_api_format = self._get_current_api_format()
+        protocol_display_map = dict(API_FORMAT_DISPLAY)
+        if current_api_format not in protocol_display_map:
+            protocol_display_map[current_api_format] = get_api_format_label(current_api_format)
+
         if self._current_provider_type == 'custom':
-            self._combo_row(parent, 'API 格式', 'api_format', form_key, ['OpenAI', 'Claude', 'Gemini', 'Custom'])
+            row = tk.Frame(parent, bg=COLORS['card_bg'])
+            row.pack(fill=tk.X, pady=4)
+            tk.Label(
+                row,
+                text='API 格式',
+                font=FONTS['body'],
+                fg=COLORS['text_sub'],
+                bg=COLORS['card_bg'],
+                width=16,
+                anchor='e',
+            ).pack(side=tk.LEFT, padx=(0, 10))
+            api_format_var = tk.StringVar(value=protocol_display_map[current_api_format])
+            combo = ttk.Combobox(
+                row,
+                textvariable=api_format_var,
+                values=list(protocol_display_map.values()),
+                style='Modern.TCombobox',
+                width=35,
+                state='readonly',
+            )
+            combo.pack(side=tk.LEFT)
+            bind_combobox_dropdown_mousewheel(combo)
+            self._entries[form_key]['api_format'] = api_format_var
+            original_api_format = current_api_format
+
+            def on_protocol_change(*_args):
+                next_api_format = API_FORMAT_REVERSE.get(api_format_var.get(), original_api_format)
+                if normalize_api_format(next_api_format) == normalize_api_format(original_api_format):
+                    return
+                self._refresh_protocol_dependent_form(form_key, next_api_format)
+
+            api_format_var.trace_add('write', on_protocol_change)
         else:
             row = tk.Frame(parent, bg=COLORS['card_bg'])
             row.pack(fill=tk.X, pady=4)
@@ -593,14 +691,167 @@ class APIConfigPage:
             ).pack(side=tk.LEFT, padx=(0, 10))
             tk.Label(
                 row,
-                text=preset_api_format,
+                text=get_api_format_label(current_api_format),
                 font=FONTS['body_bold'],
                 fg=COLORS['primary'],
                 bg=COLORS['card_bg'],
             ).pack(side=tk.LEFT)
-            self._entries[form_key]['api_format'] = tk.StringVar(value=preset_api_format)
-        self._entry_row(parent, '认证字段', 'auth_field', form_key, placeholder='Authorization', width=36)
-        self._entry_row(parent, '模型映射', 'model_mapping', form_key, placeholder='源模型名:目标模型名', width=36)
+            self._entries[form_key]['api_format'] = tk.StringVar(value=current_api_format)
+
+        auth_options = get_protocol_auth_options(current_api_format)
+        auth_option_ids = [str(option.get('id', '') or '').strip() for option in auth_options]
+        auth_option_labels = {
+            option_id: get_protocol_auth_option_label(current_api_format, option_id)
+            for option_id in auth_option_ids
+            if option_id
+        }
+        current_auth_option_id = resolve_auth_option_id(
+            current_api_format,
+            cfg.get('auth_field', ''),
+            cfg.get('auth_value_mode', ''),
+        )
+        current_auth_label = auth_option_labels.get(current_auth_option_id, '')
+
+        if self._current_provider_type == 'custom' and len(auth_option_labels) > 1:
+            row = tk.Frame(parent, bg=COLORS['card_bg'])
+            row.pack(fill=tk.X, pady=4)
+            tk.Label(
+                row,
+                text='认证方式',
+                font=FONTS['body'],
+                fg=COLORS['text_sub'],
+                bg=COLORS['card_bg'],
+                width=16,
+                anchor='e',
+            ).pack(side=tk.LEFT, padx=(0, 10))
+            auth_scheme_var = tk.StringVar(value=current_auth_label)
+            combo = ttk.Combobox(
+                row,
+                textvariable=auth_scheme_var,
+                values=list(auth_option_labels.values()),
+                style='Modern.TCombobox',
+                width=35,
+                state='readonly',
+            )
+            combo.pack(side=tk.LEFT)
+            bind_combobox_dropdown_mousewheel(combo)
+            self._entries[form_key]['auth_scheme'] = auth_scheme_var
+
+            custom_auth_container = tk.Frame(parent, bg=COLORS['card_bg'])
+            custom_auth_container.pack(fill=tk.X, pady=(0, 4))
+
+            def refresh_custom_auth_fields(*_args):
+                current_custom_field = str(cfg.get('auth_field', '') or '').strip()
+                current_custom_mode = str(cfg.get('auth_value_mode', AUTH_VALUE_MODE_BEARER) or '').strip().lower()
+                existing_field_entry = self._entries[form_key].get('auth_custom_field')
+                if isinstance(existing_field_entry, ModernEntry):
+                    current_custom_field = existing_field_entry.get_value().strip() or current_custom_field
+                existing_value_mode = self._entries[form_key].get('auth_custom_value_mode')
+                if existing_value_mode is not None:
+                    current_custom_mode = AUTH_VALUE_MODE_REVERSE.get(
+                        str(existing_value_mode.get() or '').strip(),
+                        current_custom_mode,
+                    )
+                for child in custom_auth_container.winfo_children():
+                    child.destroy()
+                selected_option_id = next(
+                    (
+                        option_id
+                        for option_id, label in auth_option_labels.items()
+                        if label == auth_scheme_var.get()
+                    ),
+                    '',
+                )
+                if selected_option_id != AUTH_OPTION_CUSTOM:
+                    return
+                self._entry_row(
+                    custom_auth_container,
+                    '自定义字段名',
+                    'auth_custom_field',
+                    form_key,
+                    placeholder='Authorization',
+                    width=36,
+                    prefill=current_custom_field,
+                )
+                value_mode_row = tk.Frame(custom_auth_container, bg=COLORS['card_bg'])
+                value_mode_row.pack(fill=tk.X, pady=4)
+                tk.Label(
+                    value_mode_row,
+                    text='值格式',
+                    font=FONTS['body'],
+                    fg=COLORS['text_sub'],
+                    bg=COLORS['card_bg'],
+                    width=16,
+                    anchor='e',
+                ).pack(side=tk.LEFT, padx=(0, 10))
+                auth_value_mode_var = tk.StringVar(
+                    value=AUTH_VALUE_MODE_DISPLAY.get(
+                        current_custom_mode,
+                        AUTH_VALUE_MODE_DISPLAY[AUTH_VALUE_MODE_BEARER],
+                    )
+                )
+                combo = ttk.Combobox(
+                    value_mode_row,
+                    textvariable=auth_value_mode_var,
+                    values=list(AUTH_VALUE_MODE_DISPLAY.values()),
+                    style='Modern.TCombobox',
+                    width=18,
+                    state='readonly',
+                )
+                combo.pack(side=tk.LEFT)
+                bind_combobox_dropdown_mousewheel(combo)
+                self._entries[form_key]['auth_custom_value_mode'] = auth_value_mode_var
+
+            auth_scheme_var.trace_add('write', refresh_custom_auth_fields)
+            refresh_custom_auth_fields()
+        else:
+            row = tk.Frame(parent, bg=COLORS['card_bg'])
+            row.pack(fill=tk.X, pady=4)
+            tk.Label(
+                row,
+                text='认证方式',
+                font=FONTS['body'],
+                fg=COLORS['text_sub'],
+                bg=COLORS['card_bg'],
+                width=16,
+                anchor='e',
+            ).pack(side=tk.LEFT, padx=(0, 10))
+            tk.Label(
+                row,
+                text=current_auth_label,
+                font=FONTS['body_bold'],
+                fg=COLORS['primary'],
+                bg=COLORS['card_bg'],
+            ).pack(side=tk.LEFT)
+
+        self._entry_row(parent, '显示名称', 'model_display_name', form_key, placeholder='可选，仅用于界面展示', width=36)
+
+        user_agent_row = tk.Frame(parent, bg=COLORS['card_bg'])
+        user_agent_row.pack(fill=tk.X, pady=4)
+        tk.Label(
+            user_agent_row,
+            text='User-Agent 伪装',
+            font=FONTS['body'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['card_bg'],
+            width=16,
+            anchor='e',
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        enable_user_agent_spoof = tk.BooleanVar(value=bool(cfg.get('enable_user_agent_spoof', False)))
+        self._entries[form_key]['enable_user_agent_spoof'] = enable_user_agent_spoof
+        tk.Checkbutton(
+            user_agent_row,
+            text='开启浏览器风格请求头',
+            variable=enable_user_agent_spoof,
+            font=FONTS['body'],
+            fg=COLORS['text_main'],
+            bg=COLORS['card_bg'],
+            activebackground=COLORS['card_bg'],
+            selectcolor=COLORS['card_bg'],
+            bd=0,
+            highlightthickness=0,
+            cursor='hand2',
+        ).pack(side=tk.LEFT)
 
     def _build_json_section(self, parent, form_key):
         def make_json_format_button(title_row):
@@ -615,7 +866,6 @@ class APIConfigPage:
 
         _, inner = self._make_card(parent, '额外请求体 JSON', right_widget_factory=make_json_format_button)
         cfg = self._get_form_config()
-
         checks_frame = tk.Frame(inner, bg=COLORS['card_bg'])
         checks_frame.pack(fill=tk.X, pady=(0, 8))
 
@@ -675,19 +925,6 @@ class APIConfigPage:
             ).pack(side=tk.RIGHT)
 
         _, header_inner = self._make_card(parent, '额外请求头 JSON', right_widget_factory=make_header_format_button)
-        extra_headers_hint = get_extra_headers_hint(self._current_provider_type)
-        if extra_headers_hint:
-            tk.Label(
-                header_inner,
-                text=f'请求头说明：{extra_headers_hint}',
-                font=FONTS['small'],
-                fg=COLORS['text_muted'],
-                bg=COLORS['card_bg'],
-                anchor='w',
-                justify=tk.LEFT,
-                wraplength=720,
-            ).pack(anchor='w', pady=(0, 8))
-
         header_txt_frame = tk.Frame(header_inner, bg=COLORS['card_bg'])
         header_txt_frame.pack(fill=tk.X, pady=(6, 0))
         header_txt = tk.Text(
@@ -731,7 +968,7 @@ class APIConfigPage:
 
         _, inner = self._make_card(parent, '模型测试配置', right_widget_factory=make_toggle)
 
-        self._entry_row(inner, '测试模型', 'test_model', form_key, placeholder='留空沿用当前模型', width=40)
+        self._entry_row(inner, '测试模型 ID', 'test_model', form_key, placeholder='留空沿用当前模型 ID', width=40)
         self._entry_row(inner, '提示词', 'test_prompt', form_key, placeholder='Who are you?', width=40)
         self._entry_row(inner, '超时（秒）', 'test_timeout', form_key, placeholder='45', width=20)
         self._entry_row(inner, '降级阈值（毫秒）', 'test_degrade_ms', form_key, placeholder='6000', width=20)
@@ -751,6 +988,16 @@ class APIConfigPage:
         test_btn_row = tk.Frame(inner, bg=COLORS['card_bg'])
         test_btn_row.pack(fill=tk.X, pady=(10, 0))
         ModernButton(test_btn_row, '测试连接', style='accent', command=self._test_connection, padx=16, pady=8).pack(side=tk.RIGHT)
+        self.connection_tip_label = tk.Label(
+            test_btn_row,
+            text='',
+            font=FONTS['small'],
+            fg=COLORS['text_muted'],
+            bg=COLORS['card_bg'],
+            anchor='e',
+            justify=tk.RIGHT,
+        )
+        self.connection_tip_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
 
     def _build_params_section(self, parent, form_key):
         self._entry_row(parent, '温度', 'temperature', form_key, placeholder='0.7', width=20)
@@ -818,7 +1065,7 @@ class APIConfigPage:
 
         text_keys = [
             'name', 'remark', 'website', 'key', 'base_url',
-            'auth_field', 'model_mapping',
+            'model_display_name',
             'test_model', 'test_prompt', 'test_timeout', 'test_degrade_ms', 'test_max_retries',
             'temperature', 'max_tokens', 'timeout', 'top_p', 'presence_penalty', 'frequency_penalty',
             'billing_multiplier',
@@ -838,6 +1085,7 @@ class APIConfigPage:
             'teammates_mode',
             'enable_tool_search',
             'high_intensity_thinking',
+            'enable_user_agent_spoof',
             'use_separate_test',
             'use_separate_billing',
         ]
@@ -846,11 +1094,18 @@ class APIConfigPage:
             if var is not None:
                 cfg[key] = bool(var.get())
 
-        str_var_keys = ['api_format', 'billing_mode', 'model']
+        str_var_keys = ['api_format', 'billing_mode']
         for key in str_var_keys:
             var = entries.get(key)
             if var is not None:
                 cfg[key] = var.get()
+        model_widget = entries.get('model')
+        if model_widget is not None:
+            if isinstance(model_widget, ModernEntry):
+                cfg['model'] = model_widget.get_value()
+            else:
+                cfg['model'] = model_widget.get()
+        cfg['api_format'] = normalize_api_format(API_FORMAT_REVERSE.get(str(cfg.get('api_format', '') or '').strip(), cfg.get('api_format', '')))
         cfg['billing_mode'] = BILLING_MODE_REVERSE.get(str(cfg.get('billing_mode', '') or '').strip(), cfg.get('billing_mode', ''))
 
         txt_widget = entries.get('extra_json')
@@ -861,9 +1116,48 @@ class APIConfigPage:
             cfg['extra_headers'] = header_widget.get('1.0', tk.END).strip()
 
         cfg['name'] = (cfg.get('name', '') or '').strip()
+        cfg['model_display_name'] = str(cfg.get('model_display_name', '') or '').strip()
         cfg['provider_type'] = self._current_provider_type
         if self._current_provider_type != 'custom':
-            cfg['api_format'] = get_preset_definition(self._current_provider_type).get('api_format', 'OpenAI')
+            preset = get_preset_definition(self._current_provider_type)
+            cfg['api_format'] = preset.get('api_format', cfg.get('api_format', ''))
+            cfg['auth_field'] = preset.get('auth_field', cfg.get('auth_field', 'Authorization'))
+            cfg['auth_value_mode'] = preset.get('auth_value_mode', cfg.get('auth_value_mode', AUTH_VALUE_MODE_BEARER))
+        else:
+            auth_scheme_var = entries.get('auth_scheme')
+            auth_scheme_label = ''
+            if auth_scheme_var is not None:
+                auth_scheme_label = str(auth_scheme_var.get() or '').strip()
+            auth_scheme_id = next(
+                (
+                    option_id
+                    for option_id in (
+                        str(option.get('id', '') or '').strip()
+                        for option in get_protocol_auth_options(cfg['api_format'])
+                    )
+                    if option_id and get_protocol_auth_option_label(cfg['api_format'], option_id) == auth_scheme_label
+                ),
+                '',
+            )
+            auth_option = resolve_auth_option_definition(cfg['api_format'], auth_scheme_id)
+            if auth_scheme_id == AUTH_OPTION_CUSTOM:
+                custom_field_entry = entries.get('auth_custom_field')
+                if isinstance(custom_field_entry, ModernEntry):
+                    cfg['auth_field'] = custom_field_entry.get_value().strip()
+                elif custom_field_entry is not None:
+                    cfg['auth_field'] = str(custom_field_entry.get() or '').strip()
+                value_mode_var = entries.get('auth_custom_value_mode')
+                if value_mode_var is not None:
+                    cfg['auth_value_mode'] = AUTH_VALUE_MODE_REVERSE.get(
+                        str(value_mode_var.get() or '').strip(),
+                        cfg.get('auth_value_mode', AUTH_VALUE_MODE_BEARER),
+                    )
+            elif auth_option:
+                cfg['auth_field'] = auth_option.get('auth_field', cfg.get('auth_field', 'Authorization'))
+                cfg['auth_value_mode'] = auth_option.get(
+                    'auth_value_mode',
+                    cfg.get('auth_value_mode', AUTH_VALUE_MODE_BEARER),
+                )
         return cfg
 
     def _validate(self):
@@ -897,6 +1191,15 @@ class APIConfigPage:
                 self.frame.after(
                     duration_ms,
                     lambda: self.tip_label.configure(text='') if self.tip_label.winfo_exists() else None,
+                )
+
+    def _show_connection_tip(self, text, color, duration_ms=0):
+        if hasattr(self, 'connection_tip_label') and self.connection_tip_label.winfo_exists():
+            self.connection_tip_label.configure(text=text, fg=color)
+            if duration_ms:
+                self.frame.after(
+                    duration_ms,
+                    lambda: self.connection_tip_label.configure(text='') if self.connection_tip_label.winfo_exists() else None,
                 )
 
     def _save_all(self):
@@ -959,7 +1262,7 @@ class APIConfigPage:
             current = combo.get()
             if not current and models:
                 combo.set(models[0])
-            label.configure(text=f'已选择：{combo.get()}' if combo.get() else '已选择：（未选择）')
+            label.configure(text=self._format_selected_model_label(combo.get()))
 
         def _fail(exc):
             label.configure(text=f'获取失败：{exc}')
@@ -996,12 +1299,12 @@ class APIConfigPage:
             degrade_ms = int(self.config.get_setting('global_test_degrade_ms', 6000) or 6000)
             max_retries = int(self.config.get_setting('global_test_max_retries', 2) or 2)
 
-        self._show_tip('正在测试连接...', COLORS['text_sub'])
+        self._show_connection_tip('正在测试连接...', COLORS['text_sub'])
         api_hint = self._current_api_id or self._current_provider_type
 
         def _done(result):
             ok, msg = result
-            self._show_tip(msg, COLORS['success'] if ok else COLORS['error'])
+            self._show_connection_tip(msg, COLORS['success'] if ok else COLORS['error'])
 
         self.task_runner.run(
             work=lambda: self.api.test_connection(
@@ -1012,6 +1315,11 @@ class APIConfigPage:
                 degrade_threshold_ms=degrade_ms,
                 max_retries=max_retries,
                 cfg=cfg,
+                usage_context={
+                    'page_id': 'api_config',
+                    'scene_id': 'connection_test',
+                    'action': 'test_connection',
+                },
             ),
             on_success=_done,
             loading_text='正在测试模型连接...',

@@ -3045,14 +3045,14 @@ class PaperWritePage(WorkspaceStateMixin):
                     result_len=len(display_text),
                 )
             else:
-                self._clear_outline_structure_view()
+                self._show_unstructured_outline_result(display_text)
                 self._write_outline_generation_log(
                     'parse_fallback',
                     level='WARN',
                     topic=topic,
                     result_len=len(display_text),
                 )
-                self.set_status('已生成文本，但格式无法解析', COLORS['warning'])
+                self.set_status('已生成文本，但格式无法解析，已按原始结果显示', COLORS['warning'])
 
             self._schedule_workspace_state_save()
             self._add_history_version(
@@ -3116,6 +3116,27 @@ class PaperWritePage(WorkspaceStateMixin):
         self.edit_text.delete('1.0', tk.END)
         self.section_entry.delete(0, tk.END)
         self._editor_section_source = ''
+        self._touch_context_revision()
+
+    def _show_unstructured_outline_result(self, text, title='未解析大纲'):
+        fallback_title = str(title or '').strip() or '未解析大纲'
+        raw_text = str(text or '').strip()
+        self._sections = {fallback_title: raw_text}
+        self._section_formats = {fallback_title: []}
+        self._section_order = [fallback_title]
+        self._section_levels = {fallback_title: 1}
+        self._section_parent = {fallback_title: ''}
+        self._collapsed_sections = set()
+        self._rebuild_section_children()
+        self.outline_text.delete('1.0', tk.END)
+        if raw_text:
+            self.outline_text.insert('1.0', raw_text)
+        if hasattr(self, '_outline_selected') and self._outline_selected is not None:
+            self._outline_selected.set('')
+        self._refresh_outline_list()
+        self._editor_section_source = ''
+        self.section_entry.delete(0, tk.END)
+        self._select_section(fallback_title, touch_context=False)
         self._touch_context_revision()
 
     def _write_outline_generation_log(self, event, level='INFO', **fields):

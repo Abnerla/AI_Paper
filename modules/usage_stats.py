@@ -9,7 +9,7 @@ import copy
 import json
 import os
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from calendar import monthrange
 from datetime import datetime, timedelta
 
@@ -84,6 +84,7 @@ class UsageEvent:
     billing_mode: str = 'request_model'
     total_cost: float = 0.0
     error_message: str = ''
+    request_detail: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return normalize_usage_event(asdict(self))
@@ -103,6 +104,29 @@ def _coerce_non_negative_float(value) -> float:
     except Exception:
         result = 0.0
     return max(result, 0.0)
+
+
+def _normalize_detail_value(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        normalized = {}
+        for key, item in value.items():
+            key_text = str(key or '').strip()
+            if not key_text:
+                continue
+            normalized[key_text] = _normalize_detail_value(item)
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [_normalize_detail_value(item) for item in value]
+    return str(value)
+
+
+def normalize_request_detail(payload) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    normalized = _normalize_detail_value(payload)
+    return normalized if isinstance(normalized, dict) else {}
 
 
 def parse_time_string(value: str):
@@ -171,6 +195,7 @@ def normalize_usage_event(payload: dict | None) -> dict:
         'billing_mode': billing_mode,
         'total_cost': round(_coerce_non_negative_float(payload.get('total_cost', 0.0)), 8),
         'error_message': str(payload.get('error_message', '') or '').strip(),
+        'request_detail': normalize_request_detail(payload.get('request_detail')),
     }
 
 

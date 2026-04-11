@@ -45,8 +45,17 @@ from modules.usage_stats import (
     extract_gemini_usage,
     extract_openai_usage,
     find_pricing_rule,
+    normalize_request_detail,
     resolve_event_billing,
 )
+
+
+class APIRequestError(RuntimeError):
+    """携带请求详情的运行时错误。"""
+
+    def __init__(self, message, *, detail=None):
+        super().__init__(message)
+        self.detail = normalize_request_detail(detail)
 
 
 class APIClient:
@@ -116,6 +125,181 @@ class APIClient:
         if configured_timeout is not None:
             return configured_timeout
         return max(float(default or 60.0), 1.0)
+
+    @staticmethod
+    def _truncate_debug_text(value, limit=12000):
+        text = str(value or '').strip()
+        if not text:
+            return ''
+        if len(text) <= limit:
+            return text
+        return f'{text[:limit]}\n...(已截断，共 {len(text)} 个字符)'
+
+    @classmethod
+    def _is_sensitive_header_name(cls, header_name):
+        normalized = str(header_name or '').strip().lower()
+        if not normalized:
+            return False
+        if normalized in {item.lower() for item in cls.PROTECTED_AUTH_FIELDS}:
+            return True
+        return any(fragment in normalized for fragment in ('auth', 'token', 'secret', 'cookie', 'key'))
+
+    @classmethod
+    def _sanitize_headers_for_debug(cls, headers):
+        sanitized = {}
+        for key, value in dict(headers or {}).items():
+            header_name = str(key or '').strip()
+            if not header_name:
+                continue
+            if cls._is_sensitive_header_name(header_name):
+                sanitized[header_name] = '***'
+            else:
+                sanitized[header_name] = str(value)
+        return sanitized
+
+    @classmethod
+    def _format_debug_payload(cls, payload, *, limit=12000):
+        if payload in (None, '', {}, []):
+            return ''
+        if isinstance(payload, str):
+            return cls._truncate_debug_text(payload, limit=limit)
+        try:
+            text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        except Exception:
+            text = str(payload)
+        return cls._truncate_debug_text(text, limit=limit)
+
+    @classmethod
+    def _build_request_debug_section(
+        cls,
+        *,
+        method='POST',
+        url='',
+        headers=None,
+        body=None,
+        timeout=None,
+        prompt='',
+        system='',
+        extra=None,
+    ):
+        section = {
+            'method': str(method or '').strip().upper() or 'POST',
+            'url': cls._sanitize_url_for_log(url),
+            'timeout_sec': timeout,
+        }
+        headers_text = cls._format_debug_payload(cls._sanitize_headers_for_debug(headers), limit=8000)
+        body_text = cls._format_debug_payload(body, limit=16000)
+        prompt_text = cls._truncate_debug_text(prompt, limit=4000)
+        system_text = cls._truncate_debug_text(system, limit=4000)
+        if headers_text:
+            section['headers_text'] = headers_text
+        if body_text:
+            section['body_text'] = body_text
+        if prompt_text:
+            section['prompt_text'] = prompt_text
+        if system_text:
+            section['system_text'] = system_text
+        for key, value in dict(extra or {}).items():
+            if value in (None, '', [], {}):
+                continue
+            section[str(key)] = value
+        return normalize_request_detail(section)
+
+    @classmethod
+    def _build_response_debug_section(cls, *, body=None, extra=None):
+        section = {}
+        body_text = cls._format_debug_payload(body, limit=16000)
+        if body_text:
+            section['body_text'] = body_text
+        for key, value in dict(extra or {}).items():
+            if value in (None, '', [], {}):
+                continue
+            section[str(key)] = value
+        return normalize_request_detail(section)
+
+    @staticmethod
+    def _merge_request_details(*parts):
+        merged = {}
+        for part in parts:
+            current = normalize_request_detail(part)
+            for key, value in current.items():
+                if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+                    merged[key] = APIClient._merge_request_details(merged[key], value)
+                else:
+                    merged[key] = value
+        return merged
+
+    @classmethod
+    def _wrap_request_error(cls, exc, *, detail=None):
+        merged_detail = cls._merge_request_details(getattr(exc, 'detail', {}), detail or {})
+        return APIRequestError(str(exc), detail=merged_detail)
+
+    @staticmethod
+    def _should_store_verbose_request_detail(usage_context, status):
+        context = dict(usage_context or {})
+        scene_id = str(context.get('scene_id', '') or '').strip()
+        action = str(context.get('action', '') or '').strip()
+        if str(status or '').strip().lower() == 'error':
+            return True
+        if scene_id in {'connection_test', 'global_connection_test'}:
+            return True
+        return action in {'test_connection', 'global_test_connection'}
+
+    @classmethod
+    def _build_usage_request_detail(
+        cls,
+        *,
+        usage_context,
+        request_id,
+        api_name,
+        provider_name,
+        request_model,
+        response_model,
+        status,
+        duration_ms,
+        timeout_sec,
+        temperature,
+        max_tokens,
+        prompt,
+        system,
+        request_detail=None,
+        error_message='',
+    ):
+        context = dict(usage_context or {})
+        detail = cls._merge_request_details(request_detail or {})
+        detail['summary'] = {
+            'request_id': str(request_id or '').strip(),
+            'api_id': str(api_name or '').strip(),
+            'provider': str(provider_name or '').strip(),
+            'request_model': str(request_model or '').strip(),
+            'response_model': str(response_model or '').strip(),
+            'status': str(status or '').strip(),
+            'duration_ms': int(duration_ms or 0),
+            'timeout_sec': timeout_sec,
+            'temperature': temperature,
+            'max_tokens': max_tokens,
+            'prompt_length': len(prompt or ''),
+            'system_length': len(system or ''),
+            'page_id': str(context.get('page_id', '') or '').strip(),
+            'scene_id': str(context.get('scene_id', '') or '').strip(),
+            'action': str(context.get('action', '') or '').strip(),
+        }
+        if error_message:
+            detail['error'] = cls._merge_request_details(
+                detail.get('error', {}),
+                {'message': cls._truncate_debug_text(error_message, limit=16000)},
+            )
+        if not cls._should_store_verbose_request_detail(usage_context, status):
+            request_section = dict(detail.get('request', {}) or {})
+            response_section = dict(detail.get('response', {}) or {})
+            for key in ('headers_text', 'body_text', 'prompt_text', 'system_text'):
+                request_section.pop(key, None)
+            body_preview = response_section.pop('body_text', '')
+            if body_preview and not response_section.get('body_preview'):
+                response_section['body_preview'] = cls._truncate_debug_text(body_preview, limit=1000)
+            detail['request'] = request_section
+            detail['response'] = response_section
+        return normalize_request_detail(detail)
 
     @staticmethod
     def _normalize_auth_field(field_name):
@@ -344,7 +528,7 @@ class APIClient:
         if content.lstrip().startswith('<'):
             return (
                 'Response is HTML instead of JSON. '
-                'The Base URL may point to a website page instead of an API endpoint. '
+                'The Base URL may point to a website page, or the relay returned an HTML error page instead of JSON. '
                 f'Preview: {preview}'
             )
         return f'Response is not valid JSON. Preview: {preview}'
@@ -540,10 +724,24 @@ class APIClient:
         return normalized.startswith(('gpt-5', 'o1', 'o3', 'o4'))
 
     @classmethod
-    def _apply_openai_reasoning_parameter_rules(cls, payload, request_model):
+    def _should_eagerly_apply_openai_reasoning_rules(cls, cfg):
+        record = dict(cfg or {})
+        provider_type = normalize_provider_type(record.get('provider_type', ''))
+        if provider_type == 'openai':
+            return True
+        base_url = str(record.get('base_url', '') or '').strip()
+        if not base_url:
+            return False
+        host = urllib.parse.urlsplit(base_url).netloc.strip().lower()
+        return host == 'api.openai.com'
+
+    @classmethod
+    def _apply_openai_reasoning_parameter_rules(cls, payload, request_model, cfg=None):
         merged = dict(payload or {})
         applied_rules = []
         if not cls._uses_openai_reasoning_parameter_rules(request_model):
+            return merged, applied_rules
+        if not cls._should_eagerly_apply_openai_reasoning_rules(cfg):
             return merged, applied_rules
 
         if 'temperature' in merged:
@@ -637,7 +835,7 @@ class APIClient:
         }
         extra_json_payload = self._load_extra_json_payload(cfg)
         payload, ignored_keys, removed_keys = self._merge_openai_extra_json(payload, extra_json_payload)
-        payload, compatibility_rules = self._apply_openai_reasoning_parameter_rules(payload, request_model)
+        payload, compatibility_rules = self._apply_openai_reasoning_parameter_rules(payload, request_model, cfg=cfg)
         removed_keys.extend(
             'temperature' if rule == 'remove_temperature' else 'max_tokens'
             for rule in compatibility_rules
@@ -1313,6 +1511,7 @@ class APIClient:
         cfg=None,
         usage_context=None,
         return_payload=False,
+        allow_empty_response=False,
     ):
         handlers = {
             HANDLER_OPENAI: self._call_openai_compat,
@@ -1343,9 +1542,34 @@ class APIClient:
             f'timeout={timeout_value}'
         )
         try:
-            response_payload = handler(prompt, system, cfg, temperature, max_tokens, request_timeout=timeout_value)
+            response_payload = handler(
+                prompt,
+                system,
+                cfg,
+                temperature,
+                max_tokens,
+                request_timeout=timeout_value,
+                allow_empty_response=allow_empty_response,
+            )
         except Exception as exc:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            error_detail = self._build_usage_request_detail(
+                usage_context=usage_context,
+                request_id=request_id,
+                api_name=api_name,
+                provider_name=provider_name,
+                request_model=model_name,
+                response_model='',
+                status='error',
+                duration_ms=elapsed_ms,
+                timeout_sec=timeout_value,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                prompt=prompt,
+                system=system,
+                request_detail=getattr(exc, 'detail', {}),
+                error_message=str(exc),
+            )
             self._log(
                 '[api_error] '
                 f'api={api_name or "active"} '
@@ -1367,11 +1591,29 @@ class APIClient:
                 usage={},
                 status='error',
                 error_message=str(exc),
+                request_detail=error_detail,
             )
             raise
         result_text = str(response_payload.get('text', '') or '')
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         result_preview = result_text.strip().replace('\n', ' ')[:80]
+        success_detail = self._build_usage_request_detail(
+            usage_context=usage_context,
+            request_id=request_id,
+            api_name=api_name,
+            provider_name=provider_name,
+            request_model=model_name,
+            response_model=response_payload.get('response_model', ''),
+            status='success',
+            duration_ms=elapsed_ms,
+            timeout_sec=timeout_value,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            prompt=prompt,
+            system=system,
+            request_detail=response_payload.get('request_detail', {}),
+            error_message='',
+        )
         self._log(
             '[api_response] '
             f'api={api_name or "active"} '
@@ -1397,12 +1639,13 @@ class APIClient:
             usage=response_payload.get('usage', {}) or {},
             status='success',
             error_message='',
+            request_detail=success_detail,
         )
         if return_payload:
             return result_text, dict(response_payload or {})
         return result_text
 
-    def _call_reserved_protocol(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
+    def _call_reserved_protocol(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False):
         api_format = normalize_api_format((cfg or {}).get('api_format', ''))
         if api_format == API_FORMAT_AWS_BEDROCK_RESERVED:
             raise NotImplementedError('AWS Bedrock protocol is reserved but not implemented yet')
@@ -1437,7 +1680,15 @@ class APIClient:
                             f'error={error_message}',
                             level='ERROR',
                         )
-                        raise RuntimeError(error_message) from exc
+                        raise APIRequestError(
+                            error_message,
+                            detail={
+                                'response': self._build_response_debug_section(
+                                    body=raw,
+                                    extra={'status_code': getattr(resp, 'status', '')},
+                                )
+                            },
+                        ) from exc
             except urllib.error.HTTPError as exc:
                 err_body = exc.read().decode('utf-8', errors='replace')
                 elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1464,11 +1715,20 @@ class APIClient:
                     f'error={error_message}',
                     level='ERROR',
                 )
-                raise RuntimeError(error_message)
+                raise APIRequestError(
+                    error_message,
+                    detail={
+                        'response': self._build_response_debug_section(
+                            body=err_body,
+                            extra={'status_code': exc.code},
+                        )
+                    },
+                )
             except Exception as exc:
                 elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                 error_message = self._format_transport_error(exc)
-                if self._is_retryable_transport_error(exc) and attempt < max_attempts:
+                is_timeout_error = self._is_timeout_transport_error(exc)
+                if self._is_retryable_transport_error(exc) and not is_timeout_error and attempt < max_attempts:
                     delay_seconds = self._resolve_transport_retry_delay(attempt)
                     self._log(
                         '[http_retry] '
@@ -1490,8 +1750,15 @@ class APIClient:
                     level='ERROR',
                 )
                 if isinstance(exc, urllib.error.URLError):
+                    raise APIRequestError(
+                        f'网络传输异常: {error_message}',
+                        detail={'error': {'transport_message': error_message}},
+                    )
                     raise RuntimeError(f'缂冩垹绮堕柨娆掝嚖: {error_message}')
-                raise RuntimeError(error_message)
+                raise APIRequestError(
+                    error_message,
+                    detail={'error': {'transport_message': error_message}},
+                )
 
     def _http_get_json(self, url, headers: dict, timeout=15) -> dict:
         """Send an HTTP GET request and parse JSON."""
@@ -1576,10 +1843,21 @@ class APIClient:
                 if isinstance(exc, urllib.error.URLError):
                     raise RuntimeError(f'缂冩垹绮堕柨娆掝嚖: {error_message}')
                 raise RuntimeError(error_message)
-    def _call_openai_compat(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
+    def _call_openai_compat(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False):
         """Call an OpenAI-compatible endpoint."""
         prepared = self._prepare_openai_compat_request(prompt, system, cfg, temperature, max_tokens)
         compatibility_rules = sorted(set(prepared.get('compatibility_rules', [])))
+        request_extra = {
+            'auth_field': prepared['auth_field'],
+            'request_model': prepared['request_model'],
+            'model_mapping_hit': bool(prepared['model_mapping_hit']),
+            'compatibility_rules': compatibility_rules,
+            'extra_json_keys': list(prepared.get('extra_json_keys', []) or []),
+            'ignored_extra_json_keys': list(prepared.get('ignored_extra_json_keys', []) or []),
+            'removed_extra_json_keys': list(prepared.get('removed_extra_json_keys', []) or []),
+            'extra_header_keys': list(prepared.get('extra_header_keys', []) or []),
+            'ignored_extra_header_keys': list(prepared.get('ignored_extra_header_keys', []) or []),
+        }
         self._log(
             '[openai_compat] '
             f'endpoint={self._sanitize_url_for_log(prepared["url"])} '
@@ -1597,6 +1875,16 @@ class APIClient:
         payload = dict(prepared['payload'])
         compatibility_retry_attempts = 0
         while True:
+            request_detail = self._build_request_debug_section(
+                method='POST',
+                url=prepared['url'],
+                headers=prepared['headers'],
+                body=payload,
+                timeout=request_timeout,
+                prompt=prompt,
+                system=system,
+                extra=request_extra,
+            )
             try:
                 resp = self._http_post(
                     prepared['url'],
@@ -1604,7 +1892,7 @@ class APIClient:
                     prepared['headers'],
                     timeout=request_timeout,
                 )
-            except RuntimeError as exc:
+            except Exception as exc:
                 adjusted_payload, retry_rules = self._apply_openai_error_compatibility_retry(payload, str(exc))
                 if retry_rules and adjusted_payload != payload and compatibility_retry_attempts < 2:
                     compatibility_retry_attempts += 1
@@ -1619,7 +1907,19 @@ class APIClient:
                     )
                     payload = adjusted_payload
                     continue
-                raise
+                raise self._wrap_request_error(exc, detail={'request': request_detail}) from exc
+                response_detail = self._build_response_debug_section(
+                    body=resp,
+                    extra={
+                        'response_model': str(resp.get('model', '') or prepared['request_model']),
+                        'response_keys': sorted(str(key) for key in resp.keys()),
+                    },
+                )
+                raise APIRequestError(
+                    f'OpenAI 兼容接口返回错误: {error_message}',
+                    detail={'request': request_detail, 'response': response_detail, 'error': {'message': error_message}},
+                )
+                raise self._wrap_request_error(exc, detail={'request': request_detail}) from exc
             error_message = self._extract_openai_error_message(resp)
             if error_message:
                 adjusted_payload, retry_rules = self._apply_openai_error_compatibility_retry(payload, error_message)
@@ -1636,12 +1936,58 @@ class APIClient:
                     )
                     payload = adjusted_payload
                     continue
+                response_detail = self._build_response_debug_section(
+                    body=resp,
+                    extra={
+                        'response_model': str(resp.get('model', '') or prepared['request_model']),
+                        'response_keys': sorted(str(key) for key in resp.keys()),
+                    },
+                )
+                raise APIRequestError(
+                    f'OpenAI 兼容接口返回错误: {error_message}',
+                    detail={'request': request_detail, 'response': response_detail, 'error': {'message': error_message}},
+                )
                 raise RuntimeError(f'闁规亽鍎辫ぐ娑欐交閺傛寧绀€闂佹寧鐟ㄩ? {error_message}')
             break
         extracted = self._extract_openai_response_text(resp)
         if not extracted['text']:
             response_keys = ', '.join(sorted(str(key) for key in resp.keys()))
-            raise RuntimeError(f'OpenAI-compatible endpoint returned no displayable text. Response fields: {response_keys or "-"}')
+            response_detail = self._build_response_debug_section(
+                body=resp,
+                extra={
+                    'response_model': str(resp.get('model', '') or prepared['request_model']),
+                    'response_keys': sorted(str(key) for key in resp.keys()),
+                },
+            )
+            if not allow_empty_response:
+                raise APIRequestError(
+                    f'OpenAI-compatible endpoint returned no displayable text. Response fields: {response_keys or "-"}',
+                    detail={'request': request_detail, 'response': response_detail},
+                )
+            return {
+                'text': '',
+                'text_source': extracted['text_source'],
+                'content_kind': extracted['content_kind'],
+                'has_choices': extracted['has_choices'],
+                'has_output_text': extracted['has_output_text'],
+                'response_keys': sorted(str(key) for key in resp.keys()),
+                'response_model': str(resp.get('model', '') or prepared['request_model']),
+                'request_model': prepared['request_model'],
+                'usage': extract_openai_usage(resp),
+                'request_detail': {'request': request_detail, 'response': response_detail},
+            }
+        response_detail = self._build_response_debug_section(
+            body=resp,
+            extra={
+                'response_model': str(resp.get('model', '') or prepared['request_model']),
+                'text_source': extracted['text_source'],
+                'content_kind': extracted['content_kind'],
+                'has_choices': bool(extracted['has_choices']),
+                'has_output_text': bool(extracted['has_output_text']),
+                'response_keys': sorted(str(key) for key in resp.keys()),
+                'text_preview': self._truncate_debug_text(extracted['text'], limit=1000),
+            },
+        )
         return {
             'text': extracted['text'],
             'text_source': extracted['text_source'],
@@ -1652,9 +1998,10 @@ class APIClient:
             'response_model': str(resp.get('model', '') or prepared['request_model']),
             'request_model': prepared['request_model'],
             'usage': extract_openai_usage(resp),
+            'request_detail': {'request': request_detail, 'response': response_detail},
         }
 
-    def _call_claude(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
+    def _call_claude(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False):
         """閻犲鍟伴弫顥thropic Claude API"""
         urls = self._resolve_claude_urls(cfg.get('base_url', 'https://api.anthropic.com'))
         model = cfg.get('model', get_preset_definition('claude').get('model', 'claude-sonnet-4-6'))
@@ -1666,14 +2013,35 @@ class APIClient:
         if system:
             data['system'] = system
         headers = self._build_claude_headers(cfg)
-        resp = self._http_post(urls['messages_url'], data, headers, timeout=request_timeout or 60)
+        request_detail = self._build_request_debug_section(
+            method='POST',
+            url=urls['messages_url'],
+            headers=headers,
+            body=data,
+            timeout=request_timeout or 60,
+            prompt=prompt,
+            system=system,
+            extra={'request_model': model},
+        )
+        try:
+            resp = self._http_post(urls['messages_url'], data, headers, timeout=request_timeout or 60)
+        except Exception as exc:
+            raise self._wrap_request_error(exc, detail={'request': request_detail}) from exc
+        response_detail = self._build_response_debug_section(
+            body=resp,
+            extra={
+                'response_model': str(resp.get('model', '') or model),
+                'text_preview': self._truncate_debug_text(resp['content'][0]['text'], limit=1000),
+            },
+        )
         return {
             'text': resp['content'][0]['text'],
             'response_model': str(resp.get('model', '') or model),
             'usage': extract_claude_usage(resp),
+            'request_detail': {'request': request_detail, 'response': response_detail},
         }
 
-    def _call_gemini(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None):
+    def _call_gemini(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False):
         """Call the Gemini native API."""
         prepared = self._prepare_gemini_request(prompt, system, cfg, temperature, max_tokens)
         self._log(
@@ -1690,19 +2058,67 @@ class APIClient:
             f'ignored_extra_header_keys={",".join(prepared["ignored_extra_header_keys"]) or "-"} '
             f'timeout={request_timeout}'
         )
-        resp = self._http_post(
-            prepared['url'],
-            prepared['payload'],
-            prepared['headers'],
+        request_detail = self._build_request_debug_section(
+            method='POST',
+            url=prepared['url'],
+            headers=prepared['headers'],
+            body=prepared['payload'],
             timeout=request_timeout,
+            prompt=prompt,
+            system=system,
+            extra={
+                'auth_field': prepared['auth_field'],
+                'use_bearer': bool(prepared['use_bearer']),
+                'request_model': prepared['request_model'],
+                'model_mapping_hit': bool(prepared['model_mapping_hit']),
+                'extra_json_keys': list(prepared.get('extra_json_keys', []) or []),
+                'ignored_extra_json_keys': list(prepared.get('ignored_extra_json_keys', []) or []),
+                'removed_extra_json_keys': list(prepared.get('removed_extra_json_keys', []) or []),
+                'extra_header_keys': list(prepared.get('extra_header_keys', []) or []),
+                'ignored_extra_header_keys': list(prepared.get('ignored_extra_header_keys', []) or []),
+            },
         )
+        try:
+            resp = self._http_post(
+                prepared['url'],
+                prepared['payload'],
+                prepared['headers'],
+                timeout=request_timeout,
+            )
+        except Exception as exc:
+            raise self._wrap_request_error(exc, detail={'request': request_detail}) from exc
         extracted = self._extract_gemini_response_text(resp)
         if not extracted['text']:
             finish_reasons = ','.join(extracted['finish_reasons']) or '-'
             block_reason = extracted['block_reason'] or '-'
+            response_detail = self._build_response_debug_section(
+                body=resp,
+                extra={
+                    'response_model': str(resp.get('modelVersion', '') or resp.get('model', '') or prepared['request_model']),
+                    'block_reason': block_reason,
+                    'finish_reasons': finish_reasons,
+                },
+            )
+            raise APIRequestError(
+                f'Gemini 返回内容不可显示，block_reason={block_reason}，finish_reasons={finish_reasons}',
+                detail={'request': request_detail, 'response': response_detail},
+            )
             raise RuntimeError(
                 f'Gemini 闁哄牜浜ｇ换鎴﹀炊閻愭彃璁查柡鍕⒔閵囨岸寮崶銊︽嫳闁挎稑鐣發ock_reason={block_reason}闁挎稑鐣篿nish_reason={finish_reasons}'
             )
+        response_detail = self._build_response_debug_section(
+            body=resp,
+            extra={
+                'response_model': str(resp.get('modelVersion', '') or resp.get('model', '') or prepared['request_model']),
+                'text_source': extracted['text_source'],
+                'content_kind': extracted['content_kind'],
+                'has_choices': bool(extracted['has_choices']),
+                'has_output_text': bool(extracted['has_output_text']),
+                'block_reason': extracted['block_reason'],
+                'finish_reasons': list(extracted['finish_reasons']),
+                'text_preview': self._truncate_debug_text(extracted['text'], limit=1000),
+            },
+        )
         return {
             'text': extracted['text'],
             'text_source': extracted['text_source'],
@@ -1712,6 +2128,7 @@ class APIClient:
             'response_model': str(resp.get('modelVersion', '') or resp.get('model', '') or prepared['request_model']),
             'request_model': prepared['request_model'],
             'usage': extract_gemini_usage(resp),
+            'request_detail': {'request': request_detail, 'response': response_detail},
         }
 
     @staticmethod
@@ -1783,6 +2200,19 @@ class APIClient:
             return str(reason or exc)
         return str(exc or exc.__class__.__name__)
 
+    @staticmethod
+    def _is_timeout_transport_error(exc):
+        if isinstance(exc, TimeoutError):
+            return True
+        if isinstance(exc, urllib.error.URLError):
+            reason = exc.reason
+            if isinstance(reason, TimeoutError):
+                return True
+            text = str(reason or '').strip().lower()
+            return 'timed out' in text
+        text = str(exc or '').strip().lower()
+        return 'timed out' in text
+
     @classmethod
     def _resolve_transport_retry_attempts(cls):
         try:
@@ -1813,6 +2243,7 @@ class APIClient:
         usage,
         status,
         error_message,
+        request_detail=None,
     ):
         if not getattr(self, 'usage_store', None):
             return
@@ -1842,6 +2273,7 @@ class APIClient:
                 billing_mode=str(billing['billing_mode']),
                 total_cost=total_cost,
                 error_message=str(error_message or '').strip(),
+                request_detail=normalize_request_detail(request_detail),
             )
             self.usage_store.append_event(event)
         except Exception as exc:
@@ -1905,6 +2337,7 @@ class APIClient:
         degrade_threshold_ms: int = None,
         max_retries: int = 0,
         cfg: dict = None,
+        usage_context: dict = None,
     ) -> tuple:
         """濞村鐦?API 鏉╃偞甯撮敍宀冪箲閸?(閺勵垰鎯侀幋鎰, 閹绘劗銇氬☉鍫熶紖)"""
         last_error = None
@@ -1923,7 +2356,9 @@ class APIClient:
                     request_timeout=request_timeout,
                     model_override=(model_override or '').strip() or None,
                     cfg=cfg,
+                    usage_context=usage_context,
                     return_payload=True,
+                    allow_empty_response=True,
                 )
                 if isinstance(call_result, tuple) and len(call_result) == 2:
                     result, response_payload = call_result
