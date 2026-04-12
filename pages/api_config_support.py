@@ -43,6 +43,7 @@ def build_base_form_template(provider_type='custom'):
         'top_p': '',
         'presence_penalty': '',
         'frequency_penalty': '',
+        'use_separate_params': False,
         'use_separate_test': False,
         'test_model': '',
         'test_prompt': '',

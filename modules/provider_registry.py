@@ -187,7 +187,7 @@ _PRESET_DEFINITIONS = (
         'auth_field': 'Authorization',
         'auth_value_mode': AUTH_VALUE_MODE_BEARER,
         'handler_name': HANDLER_OPENAI,
-        'model_list_strategy': MODEL_LIST_MANUAL,
+        'model_list_strategy': MODEL_LIST_REMOTE,
         'static_models': (),
         'extra_headers_hint': DEFAULT_EXTRA_HEADERS_HINT,
         'credential_hint': '',
@@ -271,7 +271,7 @@ _PRESET_DEFINITIONS = (
         'auth_field': 'Authorization',
         'auth_value_mode': AUTH_VALUE_MODE_BEARER,
         'handler_name': HANDLER_OPENAI,
-        'model_list_strategy': MODEL_LIST_MANUAL,
+        'model_list_strategy': MODEL_LIST_REMOTE,
         'static_models': (),
         'extra_headers_hint': DEFAULT_EXTRA_HEADERS_HINT,
         'credential_hint': '请填写 New API 站点提供的访问令牌。',
@@ -287,7 +287,7 @@ _PRESET_DEFINITIONS = (
         'auth_field': 'Authorization',
         'auth_value_mode': AUTH_VALUE_MODE_BEARER,
         'handler_name': HANDLER_GEMINI,
-        'model_list_strategy': MODEL_LIST_MANUAL,
+        'model_list_strategy': MODEL_LIST_REMOTE,
         'static_models': (),
         'extra_headers_hint': DEFAULT_EXTRA_HEADERS_HINT,
         'credential_hint': '请填写 New API 站点提供的访问令牌。',
@@ -303,7 +303,7 @@ _PRESET_DEFINITIONS = (
         'auth_field': 'Authorization',
         'auth_value_mode': AUTH_VALUE_MODE_BEARER,
         'handler_name': HANDLER_OPENAI,
-        'model_list_strategy': MODEL_LIST_MANUAL,
+        'model_list_strategy': MODEL_LIST_REMOTE,
         'static_models': (),
         'extra_headers_hint': DEFAULT_EXTRA_HEADERS_HINT,
         'credential_hint': '请填写 Sub2API 站点提供的访问令牌。',
@@ -319,7 +319,7 @@ _PRESET_DEFINITIONS = (
         'auth_field': 'Authorization',
         'auth_value_mode': AUTH_VALUE_MODE_BEARER,
         'handler_name': HANDLER_GEMINI,
-        'model_list_strategy': MODEL_LIST_MANUAL,
+        'model_list_strategy': MODEL_LIST_REMOTE,
         'static_models': (),
         'extra_headers_hint': DEFAULT_EXTRA_HEADERS_HINT,
         'credential_hint': '请填写 Sub2API 站点提供的访问令牌。',
@@ -760,7 +760,7 @@ def resolve_model_list_strategy(provider_type, api_format=API_FORMAT_OPENAI_CHAT
     if normalized_provider == 'custom':
         if normalize_api_format(api_format) == API_FORMAT_AWS_BEDROCK_RESERVED:
             return MODEL_LIST_UNAVAILABLE
-        return MODEL_LIST_MANUAL
+        return MODEL_LIST_REMOTE
     return PRESET_REGISTRY[normalized_provider]['model_list_strategy']
 
 

@@ -2037,7 +2037,7 @@ class LoadingOverlay(tk.Frame):
         self.place_forget()
 
 
-def create_scrolled_text(parent, height=10, **kwargs):
+def create_scrolled_text(parent, height=10, show_scrollbar=False, **kwargs):
     """创建带滚动条的文本框。"""
     frame = tk.Frame(
         parent,
@@ -2062,9 +2062,10 @@ def create_scrolled_text(parent, height=10, **kwargs):
                 text.yview_scroll(delta, 'units')
         return 'break'
 
-    text.bind('<MouseWheel>', _on_text_mousewheel, add='+')
-    text.bind('<Button-4>', _on_text_mousewheel, add='+')
-    text.bind('<Button-5>', _on_text_mousewheel, add='+')
+    for widget in (frame, text):
+        widget.bind('<MouseWheel>', _on_text_mousewheel, add='+')
+        widget.bind('<Button-4>', _on_text_mousewheel, add='+')
+        widget.bind('<Button-5>', _on_text_mousewheel, add='+')
 
     vsb = ttk.Scrollbar(
         frame,
@@ -2073,6 +2074,8 @@ def create_scrolled_text(parent, height=10, **kwargs):
         style='Thin.Vertical.TScrollbar',
     )
     text.configure(yscrollcommand=vsb.set)
+    if show_scrollbar:
+        vsb.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 4), pady=4)
 
     # vsb 不显示，但保留绑定以支持键盘/触控板滚动
     text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)

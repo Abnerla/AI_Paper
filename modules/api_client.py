@@ -78,6 +78,14 @@ class APIClient:
         'api-key',
         'x-goog-api-key',
     }
+    PARAMETER_FIELDS = (
+        'temperature',
+        'max_tokens',
+        'timeout',
+        'top_p',
+        'presence_penalty',
+        'frequency_penalty',
+    )
 
     def __init__(self, config_mgr, log_callback=None):
         self.config = config_mgr
@@ -114,7 +122,74 @@ class APIClient:
             return default
         return number
 
-    def _resolve_request_timeout(self, cfg, request_timeout, *, default=60.0):
+    @staticmethod
+    def _coerce_positive_int(value, default=None):
+        try:
+            number = int(value)
+        except Exception:
+            return default
+        if number <= 0:
+            return default
+        return number
+
+    def _get_global_parameter_settings(self):
+        if not self.config or not hasattr(self.config, 'get_global_parameter_settings'):
+            return {field: '' for field in self.PARAMETER_FIELDS}
+
+        raw_settings = self.config.get_global_parameter_settings()
+        if not isinstance(raw_settings, dict):
+            return {field: '' for field in self.PARAMETER_FIELDS}
+
+        return {
+            field: str(raw_settings.get(field, '') or '').strip()
+            for field in self.PARAMETER_FIELDS
+        }
+
+    def _resolve_effective_request_config(self, cfg):
+        resolved = dict(cfg or {})
+        global_settings = self._get_global_parameter_settings()
+        use_separate = bool(resolved.get('use_separate_params', False))
+
+        for field in self.PARAMETER_FIELDS:
+            global_value = str(global_settings.get(field, '') or '').strip()
+            local_value = str(resolved.get(field, '') or '').strip()
+            if use_separate:
+                resolved[field] = local_value or global_value
+            else:
+                resolved[field] = global_value
+        return resolved
+
+    def _resolve_request_temperature(self, cfg, temperature):
+        explicit_temperature = self._coerce_float(temperature, default=None)
+        if explicit_temperature is not None:
+            return explicit_temperature
+
+        if isinstance(cfg, dict):
+            configured_temperature = self._coerce_float(cfg.get('temperature', ''), default=None)
+            if configured_temperature is not None:
+                return configured_temperature
+        return None
+
+    @classmethod
+    def _resolve_auto_request_timeout(cls, *, default=60.0, prompt='', system='', max_tokens=None):
+        timeout_value = max(float(default or 60.0), 1.0)
+        total_prompt_chars = len(str(prompt or '')) + len(str(system or ''))
+        token_budget = cls._coerce_positive_int(max_tokens, default=0) or 0
+
+        # 长文本任务默认给更宽的读取窗口，避免中转站在正文生成时尚未返回完整响应就被本地读超时截断。
+        if total_prompt_chars >= 6000:
+            timeout_value = max(timeout_value, 120.0)
+        if token_budget >= 1024:
+            timeout_value = max(timeout_value, 120.0)
+        if token_budget >= 2000:
+            timeout_value = max(timeout_value, 180.0)
+        if token_budget >= 3000:
+            timeout_value = max(timeout_value, 240.0)
+        if token_budget >= 4096:
+            timeout_value = max(timeout_value, 300.0)
+        return timeout_value
+
+    def _resolve_request_timeout(self, cfg, request_timeout, *, default=60.0, prompt='', system='', max_tokens=None):
         explicit_timeout = self._coerce_positive_float(request_timeout)
         if explicit_timeout is not None:
             return explicit_timeout
@@ -124,7 +199,27 @@ class APIClient:
             configured_timeout = self._coerce_positive_float(cfg.get('timeout', ''))
         if configured_timeout is not None:
             return configured_timeout
-        return max(float(default or 60.0), 1.0)
+        return self._resolve_auto_request_timeout(
+            default=default,
+            prompt=prompt,
+            system=system,
+            max_tokens=max_tokens,
+        )
+
+    def _resolve_request_max_tokens(self, cfg, max_tokens, *, default=None):
+        explicit_max_tokens = self._coerce_positive_int(max_tokens)
+        configured_max_tokens = None
+        if isinstance(cfg, dict):
+            configured_max_tokens = self._coerce_positive_int(cfg.get('max_tokens', ''))
+        if explicit_max_tokens is not None and configured_max_tokens is not None:
+            return min(explicit_max_tokens, configured_max_tokens)
+        if explicit_max_tokens is not None:
+            return explicit_max_tokens
+        if configured_max_tokens is not None:
+            return configured_max_tokens
+        if default is None:
+            return None
+        return max(int(default or 1), 1)
 
     @staticmethod
     def _truncate_debug_text(value, limit=12000):
@@ -346,16 +441,6 @@ class APIClient:
             return float(value)
         except Exception:
             return default
-
-    @staticmethod
-    def _coerce_positive_int(value, default=None):
-        try:
-            number = int(value)
-        except Exception:
-            return default
-        if number <= 0:
-            return default
-        return number
 
     @staticmethod
     def _load_extra_headers_payload(cfg):
@@ -830,9 +915,11 @@ class APIClient:
         payload = {
             'model': request_model,
             'messages': messages,
-            'temperature': temperature,
-            'max_tokens': max_tokens,
         }
+        if temperature is not None:
+            payload['temperature'] = temperature
+        if max_tokens is not None:
+            payload['max_tokens'] = max_tokens
         extra_json_payload = self._load_extra_json_payload(cfg)
         payload, ignored_keys, removed_keys = self._merge_openai_extra_json(payload, extra_json_payload)
         payload, compatibility_rules = self._apply_openai_reasoning_parameter_rules(payload, request_model, cfg=cfg)
@@ -922,10 +1009,11 @@ class APIClient:
         if not urls['generate_content_url']:
             raise ValueError('Gemini request URL is invalid')
 
-        generation_config = {
-            'temperature': temperature,
-            'maxOutputTokens': max_tokens,
-        }
+        generation_config = {}
+        if temperature is not None:
+            generation_config['temperature'] = temperature
+        if max_tokens is not None:
+            generation_config['maxOutputTokens'] = max_tokens
         top_p = self._coerce_float((cfg or {}).get('top_p', ''), default=None)
         if top_p is not None:
             generation_config['topP'] = top_p
@@ -943,8 +1031,9 @@ class APIClient:
                     'parts': [{'text': prompt}],
                 }
             ],
-            'generationConfig': generation_config,
         }
+        if generation_config:
+            payload['generationConfig'] = generation_config
         if system:
             payload['systemInstruction'] = {
                 'role': 'system',
@@ -1406,8 +1495,8 @@ class APIClient:
         api_name: str = None,
         on_complete: Callable[[str], None] = None,
         on_error: Callable[[str], None] = None,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
         cfg: dict = None,
         usage_context: dict = None,
     ):
@@ -1441,8 +1530,8 @@ class APIClient:
         prompt: str,
         system: str = '',
         api_name: str = None,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
         request_timeout: float = None,
         model_override: str = None,
         cfg: dict = None,
@@ -1468,8 +1557,8 @@ class APIClient:
         prompt: str,
         system: str = '',
         api_name: str = None,
-        temperature: float = 0.2,
-        max_tokens: int = 4096,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
         request_timeout: float = None,
         model_override: str = None,
         cfg: dict = None,
@@ -1525,9 +1614,18 @@ class APIClient:
             raise ValueError(f'濞戞挸绉甸弫顕€骞愭担鐑樼暠API: {api_name}')
         if model_override:
             cfg['model'] = model_override
+        cfg = self._resolve_effective_request_config(cfg)
         provider_name = self._resolve_handler_name(api_name, cfg)
         model_name = self._resolve_request_model_name(provider_name, cfg)
-        timeout_value = self._resolve_request_timeout(cfg, request_timeout)
+        temperature_value = self._resolve_request_temperature(cfg, temperature)
+        max_tokens_value = self._resolve_request_max_tokens(cfg, max_tokens)
+        timeout_value = self._resolve_request_timeout(
+            cfg,
+            request_timeout,
+            prompt=prompt,
+            system=system,
+            max_tokens=max_tokens_value,
+        )
         started_at = time.perf_counter()
         request_id = uuid.uuid4().hex
         self._log(
@@ -1537,8 +1635,8 @@ class APIClient:
             f'model={model_name} '
             f'prompt_len={len(prompt or "")} '
             f'system_len={len(system or "")} '
-            f'max_tokens={max_tokens} '
-            f'temperature={temperature} '
+            f'max_tokens={max_tokens_value if max_tokens_value is not None else "-"} '
+            f'temperature={temperature_value if temperature_value is not None else "-"} '
             f'timeout={timeout_value}'
         )
         try:
@@ -1546,8 +1644,8 @@ class APIClient:
                 prompt,
                 system,
                 cfg,
-                temperature,
-                max_tokens,
+                temperature_value,
+                max_tokens_value,
                 request_timeout=timeout_value,
                 allow_empty_response=allow_empty_response,
             )
@@ -1563,8 +1661,8 @@ class APIClient:
                 status='error',
                 duration_ms=elapsed_ms,
                 timeout_sec=timeout_value,
-                temperature=temperature,
-                max_tokens=max_tokens,
+                temperature=temperature_value,
+                max_tokens=max_tokens_value,
                 prompt=prompt,
                 system=system,
                 request_detail=getattr(exc, 'detail', {}),
@@ -1607,8 +1705,8 @@ class APIClient:
             status='success',
             duration_ms=elapsed_ms,
             timeout_sec=timeout_value,
-            temperature=temperature,
-            max_tokens=max_tokens,
+            temperature=temperature_value,
+            max_tokens=max_tokens_value,
             prompt=prompt,
             system=system,
             request_detail=response_payload.get('request_detail', {}),
@@ -2007,9 +2105,15 @@ class APIClient:
         model = cfg.get('model', get_preset_definition('claude').get('model', 'claude-sonnet-4-6'))
         data = {
             'model': model,
-            'max_tokens': max_tokens,
             'messages': [{'role': 'user', 'content': prompt}],
         }
+        if max_tokens is not None:
+            data['max_tokens'] = max_tokens
+        if temperature is not None:
+            data['temperature'] = temperature
+        top_p = self._coerce_float((cfg or {}).get('top_p', ''), default=None)
+        if top_p is not None:
+            data['top_p'] = top_p
         if system:
             data['system'] = system
         headers = self._build_claude_headers(cfg)

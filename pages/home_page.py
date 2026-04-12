@@ -798,57 +798,45 @@ class HomePage:
         model_entry_shell, _model_entry = self._create_usage_entry_field(fields_row, self.usage_log_model_var)
         model_entry_shell.grid(row=1, column=3, sticky='ew', pady=(6, 0))
 
-        time_row = tk.Frame(filter_card.inner, bg=COLORS['card_bg'])
-        time_row.pack(fill=tk.X, pady=(14, 0))
-        time_row.grid_columnconfigure(1, weight=1)
-        time_row.grid_columnconfigure(3, weight=1)
-        time_row.grid_columnconfigure(4, weight=0)
-        tk.Label(time_row, text='开始时间', font=FONTS['small'], fg=COLORS['text_sub'], bg=COLORS['card_bg']).grid(row=0, column=0, sticky='w')
-        self._create_usage_datetime_field(
-            time_row,
-            self.usage_log_start_var,
-            '选择开始时间',
-        ).grid(row=0, column=1, sticky='ew', padx=(8, 12))
-        tk.Label(time_row, text='结束时间', font=FONTS['small'], fg=COLORS['text_sub'], bg=COLORS['card_bg']).grid(row=0, column=2, sticky='w')
-        self._create_usage_datetime_field(
-            time_row,
-            self.usage_log_end_var,
-            '选择结束时间',
-        ).grid(row=0, column=3, sticky='ew', padx=(8, 12))
+        time_section = tk.Frame(filter_card.inner, bg=COLORS['card_bg'])
+        time_section.pack(fill=tk.X, pady=(14, 0))
 
-        action_row = tk.Frame(time_row, bg=COLORS['card_bg'])
-        action_row.grid(row=0, column=4, sticky='e', padx=(4, 0))
-        query_shell, _query_button = self._create_dashboard_shell_button(
-            action_row,
-            '查询',
-            style='primary_fixed',
-            command=self._refresh_request_logs,
-            padx=16,
+        self._build_usage_datetime_filter_row(
+            time_section,
+            label_text='开始时间',
+            variable=self.usage_log_start_var,
+            title='选择开始时间',
+        )
+        self._build_usage_datetime_filter_row(
+            time_section,
+            label_text='结束时间',
+            variable=self.usage_log_end_var,
+            title='选择结束时间',
+            pady=(10, 0),
+        )
+
+        action_row = tk.Frame(time_section, bg=COLORS['card_bg'])
+        action_row.pack(fill=tk.X, pady=(12, 0))
+        action_buttons = tk.Frame(action_row, bg=COLORS['card_bg'])
+        action_buttons.pack(side=tk.RIGHT)
+        ModernButton(
+            action_buttons,
+            '清空日志',
+            style='warning',
+            command=self._clear_usage_logs,
+            padx=18,
             pady=8,
             font=FONTS['body_bold'],
-            border_color=THEMES['light']['card_border'],
-        )
-        query_shell.pack(side=tk.RIGHT)
-        reset_shell, _reset_button = self._create_dashboard_shell_button(
-            action_row,
-            '重置',
-            style='secondary',
-            command=self._reset_usage_log_filters,
-            padx=16,
-            pady=8,
-            font=FONTS['body_bold'],
-        )
-        reset_shell.pack(side=tk.RIGHT, padx=(0, 8))
-        refresh_shell, _refresh_button = self._create_dashboard_shell_button(
-            action_row,
+        ).pack(side=tk.LEFT)
+        ModernButton(
+            action_buttons,
             '刷新',
             style='secondary',
             command=self._refresh_usage_panel,
-            padx=16,
+            padx=18,
             pady=8,
             font=FONTS['body_bold'],
-        )
-        refresh_shell.pack(side=tk.RIGHT, padx=(0, 8))
+        ).pack(side=tk.LEFT, padx=(10, 0))
 
         table_card = CardFrame(parent, padding=12)
         table_card.pack(fill=tk.BOTH, expand=True)
@@ -937,8 +925,12 @@ class HomePage:
         entry.pack(fill=tk.X, expand=True, padx=10, pady=6, ipady=2)
         return shell, entry
 
-    def _create_usage_datetime_field(self, parent, variable, title):
+    def _create_usage_datetime_field(self, parent, variable, title, *, shell_width=None):
         shell = tk.Frame(parent, bg=COLORS['input_border'], bd=0, highlightthickness=0)
+        if shell_width is not None:
+            shell.configure(width=shell_width, height=42)
+            shell.pack_propagate(False)
+            shell.grid_propagate(False)
         body = tk.Frame(shell, bg=COLORS['input_bg'], bd=0, highlightthickness=0)
         body.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
@@ -946,31 +938,48 @@ class HomePage:
             self._pick_usage_log_datetime(variable, title)
             return 'break'
 
-        entry = tk.Entry(
+        value_label = tk.Label(
             body,
             textvariable=variable,
             font=FONTS['body'],
-            state='readonly',
-            readonlybackground=COLORS['input_bg'],
             fg=COLORS['text_main'],
-            relief=tk.FLAT,
-            bd=0,
-            highlightthickness=0,
+            bg=COLORS['input_bg'],
+            anchor='w',
+            justify='left',
+            padx=10,
             cursor='hand2',
         )
-        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 8), pady=6, ipady=2)
-        entry.bind('<Button-1>', _open_picker)
+        value_label.pack(fill=tk.BOTH, expand=True, pady=1)
+        value_label.bind('<Button-1>', _open_picker)
+        return shell
 
+    def _build_usage_datetime_filter_row(self, parent, *, label_text, variable, title, pady=(0, 0)):
+        row = tk.Frame(parent, bg=COLORS['card_bg'])
+        row.pack(fill=tk.X, pady=pady)
+
+        tk.Label(
+            row,
+            text=label_text,
+            font=FONTS['small'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['card_bg'],
+        ).pack(side=tk.LEFT, padx=(0, 12))
+        self._create_usage_datetime_field(
+            row,
+            variable,
+            title,
+            shell_width=260,
+        ).pack(side=tk.LEFT)
         ModernButton(
-            body,
+            row,
             '选择',
             style='secondary',
-            command=_open_picker,
+            command=lambda: self._pick_usage_log_datetime(variable, title),
             padx=12,
             pady=6,
             font=FONTS['small'],
-        ).pack(side=tk.RIGHT, padx=(0, 4), pady=4)
-        return shell
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        return row
 
     def _create_usage_tree(self, parent, columns, height=8):
         shell = tk.Frame(parent, bg=COLORS['card_bg'])
@@ -1616,6 +1625,7 @@ class HomePage:
         shell, content = create_scrolled_text(
             tab,
             height=24,
+            show_scrollbar=True,
             bg=COLORS['input_bg'],
             fg=COLORS['text_main'],
             wrap=tk.WORD,
@@ -1706,17 +1716,17 @@ class HomePage:
 
         overview_card = CardFrame(win, padding=14)
         overview_card.pack(fill=tk.X, padx=18, pady=(0, 12))
-        overview_text = tk.Label(
+        overview_shell, overview_text = create_scrolled_text(
             overview_card.inner,
-            text=self._build_request_log_overview_text(row),
-            font=FONTS['small'],
-            fg=COLORS['text_main'],
+            height=10,
+            show_scrollbar=True,
             bg=COLORS['card_bg'],
-            justify='left',
-            anchor='w',
+            fg=COLORS['text_main'],
+            wrap=tk.WORD,
         )
-        overview_text.pack(fill=tk.X, anchor='w')
-        bind_adaptive_wrap(overview_text, overview_card.inner, padding=8, min_width=320)
+        overview_shell.pack(fill=tk.X, anchor='w')
+        overview_text.insert('1.0', self._build_request_log_overview_text(row))
+        overview_text.configure(state='disabled')
 
         notebook = ttk.Notebook(win, style='Card.TNotebook')
         notebook.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 18))
@@ -1883,6 +1893,21 @@ class HomePage:
         self.usage_log_start_var.set(start_text)
         self.usage_log_end_var.set(end_text)
         self._refresh_usage_panel()
+
+    def _clear_usage_logs(self):
+        store = self._get_usage_store()
+        if store is None:
+            return
+        if not messagebox.askyesno(
+            '清空请求日志',
+            '确定要清空全部请求日志吗？此操作不可撤销。',
+            parent=self.frame.winfo_toplevel(),
+        ):
+            return
+
+        removed_count = int(store.clear_events() or 0)
+        self._refresh_usage_panel()
+        self.set_status(f'已清空 {removed_count} 条请求日志', COLORS['success'])
 
     def _execute_system_status_action(self, item):
         action_kind = item.get('action_kind', '')

@@ -64,7 +64,6 @@ class AcademicPolisher:
             rendered['prompt'],
             rendered['system'],
             temperature=temperature,
-            max_tokens=4096,
             usage_context=self._usage_context('run_task'),
         )
 
@@ -88,7 +87,6 @@ class AcademicPolisher:
             prompt,
             system,
             temperature=0.3,
-            max_tokens=4096,
             usage_context=self._usage_context('polish_grammar'),
         )
 
@@ -111,7 +109,6 @@ class AcademicPolisher:
             prompt,
             system,
             temperature=0.4,
-            max_tokens=4096,
             usage_context=self._usage_context('polish_academic_vocab'),
         )
 
@@ -135,7 +132,6 @@ class AcademicPolisher:
             prompt,
             system,
             temperature=0.5,
-            max_tokens=4096,
             usage_context=self._usage_context('polish_logic'),
         )
 
@@ -160,7 +156,6 @@ class AcademicPolisher:
             prompt,
             system,
             temperature=0.5,
-            max_tokens=4096,
             usage_context=self._usage_context('polish_full'),
         )
 
@@ -181,7 +176,6 @@ class AcademicPolisher:
             prompt,
             system,
             temperature=0.4,
-            max_tokens=4096,
             usage_context=self._usage_context('translate_polish'),
         )
 

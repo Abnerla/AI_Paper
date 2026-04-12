@@ -3628,6 +3628,7 @@ class SmartPaperTool:
         billing_mode_reverse = {label: key for key, label in billing_mode_display.items()}
         startup_reverse = {label: key for key, label in startup_display.items()}
         billing_settings = self.config_mgr.get_global_billing_settings()
+        parameter_settings = self.config_mgr.get_global_parameter_settings()
 
         theme_var = tk.StringVar(value=theme_display.get(self.config_mgr.get_setting('theme_mode', 'light'), '浅色模式'))
         startup_var = tk.StringVar(value=startup_display.get(self.config_mgr.get_setting('startup_page', 'home'), '首页'))
@@ -3636,12 +3637,22 @@ class SmartPaperTool:
         minimize_to_tray_var = tk.BooleanVar(value=self.config_mgr.get_setting('minimize_to_tray_on_close', False))
         home_stats_var = tk.BooleanVar(value=self.config_mgr.get_setting('show_home_stats', True))
         loading_var = tk.BooleanVar(value=self.config_mgr.get_setting('enable_loading_animation', True))
-        global_test_model_var = tk.StringVar(value=self.config_mgr.get_setting('global_test_model', ''))
         global_test_prompt_var = tk.StringVar(value=self.config_mgr.get_setting('global_test_prompt', 'Who are you?'))
         global_test_timeout_var = tk.StringVar(value=str(self.config_mgr.get_setting('global_test_timeout_sec', 45)))
         global_test_degrade_var = tk.StringVar(value=str(self.config_mgr.get_setting('global_test_degrade_ms', 6000)))
         global_test_retries_var = tk.StringVar(value=str(self.config_mgr.get_setting('global_test_max_retries', 2)))
         global_billing_mode_var = tk.StringVar(value=billing_mode_display.get(billing_settings['mode'], '按请求模型匹配'))
+        global_parameter_vars = {
+            field: tk.StringVar(value=parameter_settings.get(field, ''))
+            for field in (
+                'temperature',
+                'max_tokens',
+                'timeout',
+                'top_p',
+                'presence_penalty',
+                'frequency_penalty',
+            )
+        }
 
         header = tk.Frame(body, bg=COLORS['card_bg'])
         header.pack(fill=tk.X, padx=28, pady=(28, 18))
@@ -4028,7 +4039,7 @@ class SmartPaperTool:
         ).pack(anchor='w', padx=16, pady=(14, 0))
         tk.Label(
             model_test_card,
-            text='这里的测试会复用 AI 接入页当前的服务商、鉴权与高级 JSON，只覆盖这里填写的模型、提示词与超时策略。',
+            text='这里配置模型配置中心测试连接时默认复用的提示词、超时与重试策略，模型本身仍以模型配置中心当前填写或选择的模型为准。',
             font=FONTS['small'],
             fg=COLORS['text_sub'],
             bg=COLORS['card_bg'],
@@ -4053,25 +4064,13 @@ class SmartPaperTool:
             entry.grid(row=row_index, column=1, sticky='ew', pady=(0, 14), ipady=7)
             return entry
 
-        add_test_row(0, '测试模型 ID', global_test_model_var, width=68)
-        add_test_row(1, '提示词', global_test_prompt_var, width=68)
-        add_test_row(2, '超时（秒）', global_test_timeout_var, width=14)
-        add_test_row(3, '降级阈值（毫秒）', global_test_degrade_var, width=14)
-        add_test_row(4, '最大重试次数', global_test_retries_var, width=14)
+        add_test_row(0, '提示词', global_test_prompt_var, width=68)
+        add_test_row(1, '超时（秒）', global_test_timeout_var, width=14)
+        add_test_row(2, '降级阈值（毫秒）', global_test_degrade_var, width=14)
+        add_test_row(3, '最大重试次数', global_test_retries_var, width=14)
 
         model_action_row = tk.Frame(model_test_card, bg=COLORS['card_bg'])
         model_action_row.pack(fill=tk.X, padx=16, pady=(0, 8))
-
-        test_status_label = tk.Label(
-            model_test_card,
-            text='',
-            font=FONTS['small'],
-            fg=COLORS['text_sub'],
-            bg=COLORS['card_bg'],
-            justify='left',
-            wraplength=1220,
-        )
-        test_status_label.pack(anchor='w', padx=16, pady=(0, 14))
 
         config_shell, _config_button = create_home_shell_button(
             model_action_row,
@@ -4083,17 +4082,6 @@ class SmartPaperTool:
             pady=10,
         )
         config_shell.pack(side=tk.RIGHT)
-
-        test_now_shell, test_now_button = create_home_shell_button(
-            model_action_row,
-            '立即测试',
-            command=lambda: None,
-            style='primary',
-            font=FONTS['body_bold'],
-            padx=22,
-            pady=10,
-        )
-        test_now_shell.pack(side=tk.RIGHT, padx=(0, 12))
 
         def parse_positive_number(text, fallback, cast_type=float, minimum=0):
             try:
@@ -4119,57 +4107,78 @@ class SmartPaperTool:
 
             return f'{value:g}', value, False
 
-        def run_global_model_test():
-            active_api = self.config_mgr.active_api
-            model_text = (global_test_model_var.get() or '').strip()
-            prompt_text = (global_test_prompt_var.get() or '').strip() or 'Who are you?'
-            timeout_value = parse_positive_number(global_test_timeout_var.get(), 45.0, float, minimum=1.0)
-            degrade_value = parse_positive_number(global_test_degrade_var.get(), 6000, int, minimum=0)
-            retries_value = parse_positive_number(global_test_retries_var.get(), 2, int, minimum=0)
+        parameter_shell = tk.Frame(advanced_page, bg=COLORS['shadow'], bd=0, highlightthickness=0)
+        parameter_shell.pack(fill=tk.X, pady=(0, 14))
 
-            test_now_button.configure(state=tk.DISABLED)
-            test_status_label.configure(
-                text=(
-                    f'正在测试 {active_api}，'
-                    f'模型：{model_text or "沿用当前模型"}，'
-                    f'超时：{int(timeout_value)} 秒，重试：{retries_value} 次。'
-                ),
-                fg=COLORS['warning'],
+        parameter_card = tk.Frame(
+            parameter_shell,
+            bg=COLORS['card_bg'],
+            highlightbackground=COLORS['card_border'],
+            highlightthickness=1,
+            bd=0,
+        )
+        parameter_card.pack(fill=tk.X, padx=(0, 4), pady=(0, 4))
+
+        tk.Label(
+            parameter_card,
+            text='参数需求（全局）',
+            font=FONTS['body_bold'],
+            fg=COLORS['text_main'],
+            bg=COLORS['card_bg'],
+        ).pack(anchor='w', padx=16, pady=(14, 0))
+        tk.Label(
+            parameter_card,
+            text='未启用模型单独参数时，请求会直接复用这里的默认参数；最大生成长度留空时不额外限制。',
+            font=FONTS['small'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['card_bg'],
+            justify='left',
+            wraplength=1220,
+        ).pack(anchor='w', padx=16, pady=(6, 0))
+
+        parameter_grid = tk.Frame(parameter_card, bg=COLORS['card_bg'])
+        parameter_grid.pack(fill=tk.X, padx=16, pady=(16, 12))
+        parameter_grid.grid_columnconfigure(0, weight=1, uniform='global_params')
+        parameter_grid.grid_columnconfigure(1, weight=1, uniform='global_params')
+
+        def add_parameter_field(row_index, column_index, field_key, label_text, placeholder, note_text):
+            column = tk.Frame(parameter_grid, bg=COLORS['card_bg'])
+            padx = (0, 16) if column_index == 0 else (0, 0)
+            column.grid(row=row_index, column=column_index, sticky='nsew', padx=padx, pady=(0, 14))
+
+            tk.Label(
+                column,
+                text=label_text,
+                font=FONTS['body_bold'],
+                fg=COLORS['text_main'],
+                bg=COLORS['card_bg'],
+            ).pack(anchor='w')
+            entry = ModernEntry(
+                column,
+                textvariable=global_parameter_vars[field_key],
+                placeholder=placeholder,
+                width=34,
             )
-            self._set_status('正在执行全局模型测试...', COLORS['warning'])
-            self._write_app_log(
-                '开始执行全局模型测试: '
-                f'api={active_api}, model={model_text or "[current]"}, timeout={timeout_value}, '
-                f'degrade_ms={degrade_value}, retries={retries_value}, prompt={prompt_text[:60]}'
+            entry.pack(fill=tk.X, pady=(10, 0), ipady=9)
+            note = tk.Label(
+                column,
+                text=note_text,
+                font=FONTS['small'],
+                fg=COLORS['text_sub'],
+                bg=COLORS['card_bg'],
+                justify='left',
+                wraplength=540,
+                anchor='w',
             )
+            note.pack(fill=tk.X, pady=(8, 0))
+            bind_adaptive_wrap(note, column, padding=4, min_width=300)
 
-            def finish(result):
-                ok, msg = result
-                color = COLORS['success'] if ok else COLORS['error']
-                test_status_label.configure(text=msg, fg=color)
-                test_now_button.configure(state=tk.NORMAL)
-                self._set_status('全局模型测试成功' if ok else '全局模型测试失败', color)
-                self._write_app_log(f'全局模型测试{"成功" if ok else "失败"}: {msg}', 'INFO' if ok else 'ERROR')
-
-            self.task_runner.run(
-                work=lambda: self.api_client.test_connection(
-                    active_api,
-                    prompt=prompt_text,
-                    model_override=model_text,
-                    timeout=timeout_value,
-                    degrade_threshold_ms=degrade_value,
-                    max_retries=retries_value,
-                    usage_context={
-                        'page_id': 'api_config',
-                        'scene_id': 'global_connection_test',
-                        'action': 'global_test_connection',
-                    },
-                ),
-                on_success=finish,
-                on_error=lambda exc: finish((False, str(exc))),
-            )
-
-        test_now_button.configure(command=run_global_model_test)
+        add_parameter_field(0, 0, 'temperature', '温度', '留空使用服务商默认值', '适合按模型统一控制输出发散程度。')
+        add_parameter_field(0, 1, 'max_tokens', '最大生成长度', '留空表示不限制', '长文本任务建议保持留空，只在确实需要上限时填写。')
+        add_parameter_field(1, 0, 'timeout', '请求超时（秒）', '留空启用自动策略', '未填写时会根据提示词长度和生成规模自动放宽超时。')
+        add_parameter_field(1, 1, 'top_p', '核采样', '留空使用服务商默认值', '仅对支持该参数的供应商生效。')
+        add_parameter_field(2, 0, 'presence_penalty', '存在惩罚', '留空使用服务商默认值', '仅对支持该参数的供应商生效。')
+        add_parameter_field(2, 1, 'frequency_penalty', '频率惩罚', '留空使用服务商默认值', '仅对支持该参数的供应商生效。')
 
         billing_shell = tk.Frame(advanced_page, bg=COLORS['shadow'], bd=0, highlightthickness=0)
         billing_shell.pack(fill=tk.X, pady=(0, 14))
@@ -4396,11 +4405,12 @@ class SmartPaperTool:
             self.config_mgr.set_setting('launch_on_startup', launch_on_startup_var.get())
             self.config_mgr.set_setting('silent_startup', silent_startup_var.get())
             self.config_mgr.set_setting('minimize_to_tray_on_close', minimize_to_tray_var.get())
-            self.config_mgr.set_setting('global_test_model', (global_test_model_var.get() or '').strip())
             self.config_mgr.set_setting('global_test_prompt', (global_test_prompt_var.get() or '').strip() or 'Who are you?')
             self.config_mgr.set_setting('global_test_timeout_sec', parse_positive_number(global_test_timeout_var.get(), 45.0, float, minimum=1.0))
             self.config_mgr.set_setting('global_test_degrade_ms', parse_positive_number(global_test_degrade_var.get(), 6000, int, minimum=0))
             self.config_mgr.set_setting('global_test_max_retries', parse_positive_number(global_test_retries_var.get(), 2, int, minimum=0))
+            for field, variable in global_parameter_vars.items():
+                self.config_mgr.set_setting(f'global_{field}', (variable.get() or '').strip())
             billing_multiplier_text, billing_multiplier_value, billing_multiplier_invalid = parse_optional_positive_float(
                 billing_multiplier_entry.get_value(),
                 fallback=1.0,
@@ -4425,7 +4435,8 @@ class SmartPaperTool:
                 '设置已保存: '
                 f'theme={theme_mode}, startup_page={startup_page}, launch_on_startup={launch_on_startup_var.get()}, '
                 f'silent_startup={silent_startup_var.get()}, minimize_to_tray_on_close={minimize_to_tray_var.get()}, '
-                f'global_test_model={(global_test_model_var.get() or "").strip() or "[current]"}, '
+                f'global_max_tokens={(global_parameter_vars["max_tokens"].get() or "").strip() or "-"}, '
+                f'global_timeout={(global_parameter_vars["timeout"].get() or "").strip() or "-"}, '
                 f'global_billing_multiplier={billing_multiplier_text or "1"}, '
                 f'global_billing_mode={billing_mode_reverse.get(global_billing_mode_var.get(), "request_model")}'
             )

@@ -168,7 +168,6 @@ class AIReducer:
             prompt,
             system,
             temperature=0.75,
-            max_tokens=4096,
             usage_context=self._usage_context('rewrite_light'),
         )
 
@@ -179,7 +178,6 @@ class AIReducer:
             prompt,
             system,
             temperature=0.85,
-            max_tokens=4096,
             usage_context=self._usage_context('rewrite_deep'),
         )
 
@@ -190,7 +188,6 @@ class AIReducer:
             prompt,
             system,
             temperature=0.8,
-            max_tokens=4096,
             usage_context=self._usage_context('rewrite_academic'),
         )
 

@@ -457,6 +457,14 @@ class UsageStatsStore:
                     continue
         return items
 
+    def clear_events(self) -> int:
+        items = self.iter_events()
+        removed_count = len(items)
+        if os.path.exists(self.file_path):
+            with open(self.file_path, 'w', encoding='utf-8') as handle:
+                handle.write('')
+        return removed_count
+
     def query_events(
         self,
         range_key='24h',

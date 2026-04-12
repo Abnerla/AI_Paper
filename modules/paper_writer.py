@@ -39,7 +39,6 @@ class PaperWriter:
         return self.api.call_sync(
             prompt,
             system,
-            max_tokens=2000,
             usage_context=self._usage_context('paper_write.outline', 'generate_outline'),
         )
 
@@ -58,7 +57,6 @@ class PaperWriter:
         return self.api.call_sync(
             prompt,
             system,
-            max_tokens=self.SECTION_MAX_TOKENS,
             usage_context=self._usage_context('paper_write.section', 'write_section'),
         )
 
@@ -74,7 +72,6 @@ class PaperWriter:
         return self.api.call_sync(
             prompt,
             system,
-            max_tokens=1200,
             usage_context=self._usage_context('paper_write.abstract', 'write_abstract'),
         )
 
@@ -94,7 +91,6 @@ class PaperWriter:
         return self.api.call_sync(
             prompt,
             system,
-            max_tokens=2000,
             usage_context=self._usage_context('', 'format_references'),
         )
 
@@ -114,6 +110,5 @@ class PaperWriter:
         return self.api.call_sync(
             prompt,
             system,
-            max_tokens=1500,
             usage_context=self._usage_context('', 'improve_paragraph'),
         )

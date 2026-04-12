@@ -147,6 +147,12 @@ class ConfigManager:
                 'global_test_timeout_sec': 45,
                 'global_test_degrade_ms': 6000,
                 'global_test_max_retries': 2,
+                'global_temperature': '',
+                'global_max_tokens': '',
+                'global_timeout': '',
+                'global_top_p': '',
+                'global_presence_penalty': '',
+                'global_frequency_penalty': '',
                 'global_billing_multiplier': '',
                 'global_billing_mode': 'request_model',
                 'home_last_import_failure': None,
@@ -231,6 +237,19 @@ class ConfigManager:
         cfg.setdefault('top_p', '')
         cfg.setdefault('presence_penalty', '')
         cfg.setdefault('frequency_penalty', '')
+        legacy_param_fields = (
+            'temperature',
+            'max_tokens',
+            'timeout',
+            'top_p',
+            'presence_penalty',
+            'frequency_penalty',
+        )
+        has_legacy_param_override = (
+            'use_separate_params' not in config
+            and any(str(cfg.get(field, '') or '').strip() for field in legacy_param_fields)
+        )
+        cfg.setdefault('use_separate_params', has_legacy_param_override)
         cfg.setdefault('use_separate_test', False)
         cfg.setdefault('test_model', '')
         cfg.setdefault('test_prompt', '')
@@ -559,6 +578,21 @@ class ConfigManager:
             'raw_multiplier': raw_multiplier,
             'multiplier': multiplier,
             'mode': mode,
+        }
+
+    def get_global_parameter_settings(self):
+        """获取全局默认参数配置。"""
+        fields = (
+            'temperature',
+            'max_tokens',
+            'timeout',
+            'top_p',
+            'presence_penalty',
+            'frequency_penalty',
+        )
+        return {
+            field: str(self.get_setting(f'global_{field}', '') or '').strip()
+            for field in fields
         }
 
     def get_home_last_import_failure(self):

@@ -175,7 +175,6 @@ class PlagiarismReducer:
             prompt,
             system,
             temperature=0.72,
-            max_tokens=4096,
             usage_context=self._usage_context('reduce_light'),
         )
 
@@ -186,7 +185,6 @@ class PlagiarismReducer:
             prompt,
             system,
             temperature=0.78,
-            max_tokens=4096,
             usage_context=self._usage_context('reduce_medium'),
         )
 
@@ -197,7 +195,6 @@ class PlagiarismReducer:
             prompt,
             system,
             temperature=0.84,
-            max_tokens=4096,
             usage_context=self._usage_context('reduce_deep'),
         )
 
