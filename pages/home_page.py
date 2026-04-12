@@ -802,52 +802,64 @@ class HomePage:
         time_row_host.pack(fill=tk.X, pady=(20, 10))
 
         time_row = tk.Frame(time_row_host, bg=COLORS['card_bg'])
-        time_row.pack(anchor='w', pady=(2, 2))
+        time_row.pack(fill=tk.X, pady=(2, 2))
+
+        action_row = tk.Frame(time_row, bg=COLORS['card_bg'])
+        action_row.pack(side=tk.RIGHT, anchor='e')
+
+        time_fields_row = tk.Frame(time_row, bg=COLORS['card_bg'])
+        time_fields_row.pack(side=tk.LEFT, anchor='w')
 
         start_label = ttk.Label(
-            time_row,
+            time_fields_row,
             text='开始时间',
             anchor='w',
         )
         start_field = self._create_usage_datetime_entry(
-            time_row,
+            time_fields_row,
             self.usage_log_start_var,
             '选择开始时间',
         )
         start_pick_button = ttk.Button(
-            time_row,
+            time_fields_row,
             text='选择',
             command=lambda: self._pick_usage_log_datetime(self.usage_log_start_var, '选择开始时间'),
             width=6,
         )
 
         end_label = ttk.Label(
-            time_row,
+            time_fields_row,
             text='结束时间',
             anchor='w',
         )
         end_field = self._create_usage_datetime_entry(
-            time_row,
+            time_fields_row,
             self.usage_log_end_var,
             '选择结束时间',
         )
         end_pick_button = ttk.Button(
-            time_row,
+            time_fields_row,
             text='选择',
             command=lambda: self._pick_usage_log_datetime(self.usage_log_end_var, '选择结束时间'),
             width=6,
         )
 
         clear_button = ttk.Button(
-            time_row,
+            action_row,
             text='清空日志',
             command=self._clear_usage_logs,
             width=10,
         )
         refresh_button = ttk.Button(
-            time_row,
+            action_row,
             text='刷新',
             command=self._refresh_usage_panel,
+            width=6,
+        )
+        query_button = ttk.Button(
+            action_row,
+            text='查询',
+            command=self._query_usage_logs,
             width=6,
         )
         time_controls = (
@@ -857,11 +869,12 @@ class HomePage:
             (end_label, 3, (0, 12), 'w'),
             (end_field, 4, (0, 8), 'w'),
             (end_pick_button, 5, (0, 18), 'w'),
-            (clear_button, 6, (0, 8), 'w'),
-            (refresh_button, 7, (0, 0), 'w'),
         )
         for widget, column_index, padx, sticky in time_controls:
             widget.grid(row=0, column=column_index, padx=padx, pady=(0, 2), sticky=sticky)
+        clear_button.pack(side=tk.LEFT)
+        refresh_button.pack(side=tk.LEFT, padx=(8, 0))
+        query_button.pack(side=tk.LEFT, padx=(8, 0))
         time_row.after_idle(
             lambda row=time_row,
             fields=fields_row,
@@ -1604,6 +1617,10 @@ class HomePage:
             'start_text': self.usage_log_start_var.get(),
             'end_text': self.usage_log_end_var.get(),
         }
+
+    def _query_usage_logs(self, _event=None):
+        self._refresh_usage_panel()
+        return 'break'
 
     @staticmethod
     def _collect_usage_panel_data(store, snapshot):
