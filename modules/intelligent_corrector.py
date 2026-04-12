@@ -1244,7 +1244,6 @@ class IntelligentCorrector:
                 rendered['prompt'],
                 system=rendered['system'],
                 temperature=0.2,
-                max_tokens=1600,
                 schema_name='correction_issues',
                 usage_context={
                     'page_id': 'correction',

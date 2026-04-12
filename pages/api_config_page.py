@@ -1001,8 +1001,8 @@ class APIConfigPage:
 
     def _build_params_section(self, parent, form_key):
         self._entry_row(parent, '温度', 'temperature', form_key, placeholder='0.7', width=20)
-        self._entry_row(parent, '最大生成长度', 'max_tokens', form_key, placeholder='4096', width=20)
-        self._entry_row(parent, '请求超时（秒）', 'timeout', form_key, placeholder='60', width=20)
+        self._entry_row(parent, '最大生成长度', 'max_tokens', form_key, placeholder='留空表示不限制', width=20)
+        self._entry_row(parent, '请求超时（秒）', 'timeout', form_key, placeholder='留空启用自动策略', width=20)
         self._entry_row(parent, '核采样', 'top_p', form_key, placeholder='1.0', width=20)
         self._entry_row(parent, '存在惩罚', 'presence_penalty', form_key, placeholder='0.0', width=20)
         self._entry_row(parent, '频率惩罚', 'frequency_penalty', form_key, placeholder='0.0', width=20)

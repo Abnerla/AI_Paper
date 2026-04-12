@@ -108,6 +108,16 @@ class APIClient:
         provider_type = normalize_provider_type(cfg.get('provider_type') or api_name)
         return resolve_provider_handler_name(provider_type, cfg.get('api_format', ''))
 
+    def _resolve_service_provider_name(self, api_name, cfg):
+        record = dict(cfg or {})
+        provider_type = normalize_provider_type(record.get('provider_type') or api_name)
+        if provider_type and provider_type != 'custom':
+            return provider_type
+        custom_name = str(record.get('name', '') or '').strip()
+        if custom_name:
+            return custom_name
+        return self._resolve_handler_name(api_name, record)
+
     def _resolve_model_list_strategy(self, api_name, cfg):
         provider_type = normalize_provider_type(cfg.get('provider_type') or api_name)
         return resolve_model_list_strategy(provider_type, cfg.get('api_format', ''))
@@ -176,9 +186,15 @@ class APIClient:
         total_prompt_chars = len(str(prompt or '')) + len(str(system or ''))
         token_budget = cls._coerce_positive_int(max_tokens, default=0) or 0
 
-        # 长文本任务默认给更宽的读取窗口，避免中转站在正文生成时尚未返回完整响应就被本地读超时截断。
-        if total_prompt_chars >= 6000:
+        # 未显式设置最大生成长度时，长提示词通常仍会产生较长响应，需要更宽的读取超时。
+        if total_prompt_chars >= 1500:
             timeout_value = max(timeout_value, 120.0)
+        if total_prompt_chars >= 3000:
+            timeout_value = max(timeout_value, 180.0)
+        if total_prompt_chars >= 4500:
+            timeout_value = max(timeout_value, 240.0)
+        if total_prompt_chars >= 6000:
+            timeout_value = max(timeout_value, 300.0)
         if token_budget >= 1024:
             timeout_value = max(timeout_value, 120.0)
         if token_budget >= 2000:
@@ -348,6 +364,7 @@ class APIClient:
         request_id,
         api_name,
         provider_name,
+        handler_name,
         request_model,
         response_model,
         status,
@@ -366,6 +383,7 @@ class APIClient:
             'request_id': str(request_id or '').strip(),
             'api_id': str(api_name or '').strip(),
             'provider': str(provider_name or '').strip(),
+            'handler': str(handler_name or '').strip(),
             'request_model': str(request_model or '').strip(),
             'response_model': str(response_model or '').strip(),
             'status': str(status or '').strip(),
@@ -1477,9 +1495,11 @@ class APIClient:
         else:
             raise ValueError(f'濞戞挸绉甸弫顕€骞愭担鐑樼暠婵☆垪鈧磭鈧兘宕氬Δ鍕┾偓鍐╁緞閸曨厽鍊為柛? {provider_name}')
 
+        service_provider_name = self._resolve_service_provider_name((cfg or {}).get('provider_type') or provider_name, cfg)
         self._log(
             '[fetch_models_remote] '
-            f'provider={provider_name} '
+            f'provider={service_provider_name} '
+            f'handler={provider_name} '
             f'endpoint={self._sanitize_url_for_log(url)} '
             f'auth_field={auth_field} '
             f'extra_header_keys={",".join(extra_header_keys) or "-"} '
@@ -1609,14 +1629,16 @@ class APIClient:
             HANDLER_BEDROCK_RESERVED: self._call_reserved_protocol,
         }
         cfg = self._get_config(api_name, cfg=cfg)
-        handler = handlers.get(self._resolve_handler_name(api_name, cfg))
+        handler_name = self._resolve_handler_name(api_name, cfg)
+        handler = handlers.get(handler_name)
         if not handler:
             raise ValueError(f'濞戞挸绉甸弫顕€骞愭担鐑樼暠API: {api_name}')
         if model_override:
             cfg['model'] = model_override
         cfg = self._resolve_effective_request_config(cfg)
-        provider_name = self._resolve_handler_name(api_name, cfg)
-        model_name = self._resolve_request_model_name(provider_name, cfg)
+        provider_name = self._resolve_service_provider_name(api_name, cfg)
+        handler_name = self._resolve_handler_name(api_name, cfg)
+        model_name = self._resolve_request_model_name(handler_name, cfg)
         temperature_value = self._resolve_request_temperature(cfg, temperature)
         max_tokens_value = self._resolve_request_max_tokens(cfg, max_tokens)
         timeout_value = self._resolve_request_timeout(
@@ -1632,6 +1654,7 @@ class APIClient:
             '[api_request] '
             f'api={api_name or "active"} '
             f'provider={provider_name} '
+            f'handler={handler_name} '
             f'model={model_name} '
             f'prompt_len={len(prompt or "")} '
             f'system_len={len(system or "")} '
@@ -1656,6 +1679,7 @@ class APIClient:
                 request_id=request_id,
                 api_name=api_name,
                 provider_name=provider_name,
+                handler_name=handler_name,
                 request_model=model_name,
                 response_model='',
                 status='error',
@@ -1672,6 +1696,7 @@ class APIClient:
                 '[api_error] '
                 f'api={api_name or "active"} '
                 f'provider={provider_name} '
+                f'handler={handler_name} '
                 f'model={model_name} '
                 f'elapsed_ms={elapsed_ms} '
                 f'error={exc}',
@@ -1682,6 +1707,7 @@ class APIClient:
                 usage_context=usage_context,
                 api_name=api_name,
                 provider_name=provider_name,
+                handler_name=handler_name,
                 request_model=model_name,
                 response_model='',
                 cfg=cfg,
@@ -1700,6 +1726,7 @@ class APIClient:
             request_id=request_id,
             api_name=api_name,
             provider_name=provider_name,
+            handler_name=handler_name,
             request_model=model_name,
             response_model=response_payload.get('response_model', ''),
             status='success',
@@ -1716,6 +1743,7 @@ class APIClient:
             '[api_response] '
             f'api={api_name or "active"} '
             f'provider={provider_name} '
+            f'handler={handler_name} '
             f'model={model_name} '
             f'elapsed_ms={elapsed_ms} '
             f'result_len={len(result_text)} '
@@ -1730,6 +1758,7 @@ class APIClient:
             usage_context=usage_context,
             api_name=api_name,
             provider_name=provider_name,
+            handler_name=handler_name,
             request_model=model_name,
             response_model=response_payload.get('response_model', ''),
             cfg=cfg,
@@ -2340,6 +2369,7 @@ class APIClient:
         usage_context,
         api_name,
         provider_name,
+        handler_name,
         request_model,
         response_model,
         cfg,
@@ -2354,6 +2384,8 @@ class APIClient:
         try:
             billing = resolve_event_billing(self.config, api_name, cfg, response_model=str(response_model or ''))
             pricing_rule = find_pricing_rule(self.config, provider_name, billing['billed_model'])
+            if not pricing_rule and str(handler_name or '').strip() and str(handler_name or '').strip() != str(provider_name or '').strip():
+                pricing_rule = find_pricing_rule(self.config, handler_name, billing['billed_model'])
             total_cost = calculate_total_cost(usage, pricing_rule, billing['billing_multiplier'])
             context = dict(usage_context or {})
             event = UsageEvent(
