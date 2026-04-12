@@ -1,22 +1,22 @@
 {
-  "version": 6,
-  "latest_version": "v1.2.6",
+  "version": 7,
+  "latest_version": "v1.2.8",
   "min_supported_version": "v1.2.1",
-  "release_date": "2026-04-09",
+  "release_date": "2026-04-12",
   "download_url": "https://github.com/Abnerla/AI_paper/releases",
   "changelog": [
     {
-      "version": "v1.2.6",
-      "date": "2026-04-9",
+      "version": "v1.2.8",
+      "date": "2026-04-12",
       "changes": [
-      "修复 统一自定义 API 测速与正式调用的请求结构",
-      "修复 窗口拉伸时的明显迟滞",
+      "增加 模型支持和新增New API和Sub2API中转站",
+      "增加 模型支持和新增谷歌gemini模型",
+      "增加 请求日志详情弹窗",
+      "增加 设置页面新增参数需求（全局），同时支持每个模型单独配置",
 
-      "优化 导入入口已经收紧到docx",
-      "优化 报告导入改为保留原报告颜色并按颜色渲染",
-      "优化 已修复窗口拉伸时的明显迟滞",
+      "修复 最大生成长度受限导致部分模型无法生成的问题",
 
-      "其他一些性能优化~~~"
+      "其他一些性能优化"
       ]
     }
   ],

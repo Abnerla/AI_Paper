@@ -7,7 +7,7 @@
 #endif
 #define MyAppPublisher "PaperLab"
 #define MyAppURL "https://github.com/Abnerla/AI_paper"
-#define MyAppExeName "纸研社.exe"
+#define MyAppExeName "AI_Paper.exe"
 
 [Setup]
 AppId={{B8F3C2A1-5E7D-4A9B-8C6F-1D2E3F4A5B6C}
@@ -20,7 +20,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=纸研社_Setup_v{#MyAppVersion}
+OutputBaseFilename=AI_Paper-v{#MyAppVersion}-windows-setup
 SetupIconFile=..\logo.ico
 Compression=lzma2/max
 SolidCompression=yes

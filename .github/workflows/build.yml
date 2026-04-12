@@ -95,7 +95,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AI_Paper-Windows-EXE
-          path: dist/AI_Paper.exe
+          path: dist/AI_Paper-v*-windows.exe
           if-no-files-found: error
 
       - name: 上传 Windows 安装程序
@@ -103,7 +103,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AI_Paper-Windows-Installer
-          path: dist/AI_Paper_Setup_v*.exe
+          path: dist/AI_Paper-v*-windows-setup.exe
           if-no-files-found: error
 
       - name: 上传 macOS 安装程序
@@ -111,7 +111,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AI_Paper-macOS-DMG
-          path: dist/AI_Paper_v*.dmg
+          path: dist/AI_Paper-v*-macos.dmg
           if-no-files-found: error
 
       - name: 上传 Linux AppImage
@@ -119,7 +119,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AI_Paper-Linux-AppImage
-          path: dist/AI_Paper-v*.AppImage
+          path: dist/AI_Paper-v*-linux.AppImage
           if-no-files-found: error
 
       - name: 上传 Linux DEB
@@ -127,7 +127,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AI_Paper-Linux-DEB
-          path: dist/AI_Paper-v*-*.deb
+          path: dist/AI_Paper-v*-linux-*.deb
           if-no-files-found: error
 
       - name: 上传 Linux RPM
@@ -135,7 +135,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AI_Paper-Linux-RPM
-          path: dist/AI_Paper-v*-*.rpm
+          path: dist/AI_Paper-v*-linux-*.rpm
           if-no-files-found: error
 
   release:

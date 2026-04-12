@@ -175,6 +175,28 @@ def detect_platform():
         return 'linux'
 
 
+def build_release_basename(platform_name=None):
+    normalized_platform = str(platform_name or detect_platform()).strip().lower()
+    return f'{APP_NAME}-{APP_VERSION_TAG}-{normalized_platform}'
+
+
+def build_release_path(extension, *, platform_name=None, suffix=''):
+    basename = build_release_basename(platform_name=platform_name)
+    if suffix:
+        basename = f'{basename}-{suffix}'
+    return os.path.join(DIST_DIR, f'{basename}{extension}')
+
+
+def copy_release_file(source_path, extension, *, platform_name=None, suffix=''):
+    source_path = require_path(source_path, 'release source file')
+    output_path = build_release_path(extension, platform_name=platform_name, suffix=suffix)
+    if os.path.exists(output_path):
+        os.remove(output_path)
+    shutil.copy2(source_path, output_path)
+    print(f'[build] Release asset prepared: {output_path}')
+    return output_path
+
+
 def run_pyinstaller():
     """使用跨平台 spec 调用 PyInstaller。"""
     env = os.environ.copy()
@@ -196,7 +218,7 @@ def run_pyinstaller():
 def create_dmg():
     """生成 macOS 的 .dmg 安装程序。"""
     app_path = os.path.join(DIST_DIR, f'{APP_NAME}.app')
-    dmg_path = os.path.join(DIST_DIR, f'{APP_NAME}_{APP_VERSION_TAG}.dmg')
+    dmg_path = build_release_path('.dmg', platform_name='macos')
 
     if not os.path.isdir(app_path):
         raise FileNotFoundError(f'[build] Missing app bundle: {app_path}')
@@ -240,7 +262,7 @@ exec "$HERE/usr/bin/""" + APP_NAME + """ "$@"
         f.write(apprun_content)
     os.chmod(apprun_path, 0o755)
 
-    output_path = os.path.join(DIST_DIR, f'{APP_NAME}-{APP_VERSION_TAG}.AppImage')
+    output_path = build_release_path('.AppImage', platform_name='linux')
     cmd = [appimage_tool, appdir, output_path]
     print(f'[build] Creating AppImage: {output_path}')
     subprocess.check_call(cmd)
@@ -270,7 +292,7 @@ Description: {APP_DESCRIPTION}
 """
     write_text_file(os.path.join(package_root, 'DEBIAN', 'control'), control_content)
 
-    output_path = os.path.join(DIST_DIR, f'{APP_NAME}-{APP_VERSION_TAG}-{deb_arch}.deb')
+    output_path = build_release_path('.deb', platform_name='linux', suffix=deb_arch)
     cmd = [dpkg_deb]
     if '--root-owner-group' in read_command_output([dpkg_deb, '--help']):
         cmd.append('--root-owner-group')
@@ -346,7 +368,7 @@ cp -a "{payload_root}/." "%{{buildroot}}/"
     if not built_rpm_path:
         raise FileNotFoundError(f'[build] RPM output not found in {built_rpm_root}')
 
-    output_path = os.path.join(DIST_DIR, f'{APP_NAME}-{APP_VERSION_TAG}-{rpm_arch}.rpm')
+    output_path = build_release_path('.rpm', platform_name='linux', suffix=rpm_arch)
     shutil.copy2(built_rpm_path, output_path)
     print(f'[build] RPM created: {output_path}')
 
@@ -383,6 +405,12 @@ def create_inno_setup_installer():
     print('[build] Windows installer created')
 
 
+def create_windows_release_executable():
+    """生成带版本号和平台标识的 Windows 可执行文件副本。"""
+    executable_path = os.path.join(DIST_DIR, f'{APP_NAME}.exe')
+    return copy_release_file(executable_path, '.exe', platform_name='windows')
+
+
 def main():
     parser = argparse.ArgumentParser(description=f'{APP_NAME} cross-platform build script')
     parser.add_argument('--installer', action='store_true', help='Also create platform installer')
@@ -400,6 +428,8 @@ def main():
                 shutil.rmtree(d)
 
     run_pyinstaller()
+    if platform == 'windows':
+        create_windows_release_executable()
 
     if args.installer:
         if platform == 'windows':

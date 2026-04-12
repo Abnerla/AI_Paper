@@ -100,7 +100,7 @@
 
 名单：
 
--  小黑盒：Sakirooooo、棉扇
+-  小黑盒：Sakirooooo、棉扇、FTEM
 
 ## 捐赠支持
 
