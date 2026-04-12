@@ -37,6 +37,10 @@ RPM_ARCH_MAP = {
     'aarch64': 'aarch64',
     'arm64': 'aarch64',
 }
+LINUX_DESKTOP_FILE_CANDIDATES = (
+    f'{APP_NAME}.desktop',
+    '纸研社.desktop',
+)
 
 
 def read_command_output(command):
@@ -116,12 +120,54 @@ def write_text_file(path, content, executable=False):
         os.chmod(path, 0o755)
 
 
+def resolve_linux_desktop_source():
+    linux_installer_dir = os.path.join(PROJECT_DIR, 'installers', 'linux')
+    for filename in LINUX_DESKTOP_FILE_CANDIDATES:
+        candidate = os.path.join(linux_installer_dir, filename)
+        if os.path.isfile(candidate):
+            return candidate
+    expected = ', '.join(LINUX_DESKTOP_FILE_CANDIDATES)
+    raise FileNotFoundError(f'[build] Missing Linux desktop file. Expected one of: {expected}')
+
+
+def build_linux_desktop_content(source_path):
+    with open(source_path, 'r', encoding='utf-8') as file:
+        lines = file.read().splitlines()
+
+    replacements = {
+        'Exec': APP_NAME,
+        'Icon': APP_NAME,
+        'StartupWMClass': APP_NAME,
+    }
+    seen_keys = set()
+    normalized_lines = []
+
+    for line in lines:
+        replaced = False
+        for key, value in replacements.items():
+            if line.startswith(f'{key}='):
+                normalized_lines.append(f'{key}={value}')
+                seen_keys.add(key)
+                replaced = True
+                break
+        if not replaced:
+            normalized_lines.append(line)
+
+    for key, value in replacements.items():
+        if key not in seen_keys:
+            normalized_lines.append(f'{key}={value}')
+
+    return '\n'.join(normalized_lines) + '\n'
+
+
+def write_linux_desktop_file(source_path, target_path):
+    content = build_linux_desktop_content(source_path)
+    write_text_file(target_path, content)
+
+
 def get_linux_paths():
     executable_path = require_path(os.path.join(DIST_DIR, APP_NAME), 'Linux executable')
-    desktop_source = require_path(
-        os.path.join(PROJECT_DIR, 'installers', 'linux', f'{APP_NAME}.desktop'),
-        'Linux desktop file',
-    )
+    desktop_source = resolve_linux_desktop_source()
     icon_source = require_path(os.path.join(PROJECT_DIR, 'logo.png'), 'Linux icon')
     return executable_path, desktop_source, icon_source
 
@@ -157,8 +203,7 @@ exec "/opt/{APP_PACKAGE_ID}/{APP_NAME}" "$@"
 """
     write_text_file(wrapper_path, wrapper_content, executable=True)
 
-    os.makedirs(os.path.dirname(desktop_target), exist_ok=True)
-    shutil.copy2(desktop_source, desktop_target)
+    write_linux_desktop_file(desktop_source, desktop_target)
 
     os.makedirs(os.path.dirname(icon_target), exist_ok=True)
     shutil.copy2(icon_source, icon_target)
@@ -251,7 +296,7 @@ def create_appimage():
 
     shutil.copy2(executable_path, os.path.join(appdir, 'usr', 'bin', APP_NAME))
     shutil.copy2(icon_source, os.path.join(appdir, f'{APP_NAME}.png'))
-    shutil.copy2(desktop_source, os.path.join(appdir, f'{APP_NAME}.desktop'))
+    write_linux_desktop_file(desktop_source, os.path.join(appdir, f'{APP_NAME}.desktop'))
 
     apprun_content = """#!/bin/bash
 HERE="$(dirname "$(readlink -f "$0")")"
