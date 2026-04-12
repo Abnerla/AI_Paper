@@ -307,6 +307,7 @@ class SmartPaperTool:
         self._startup_page_id = 'home'
         self._page_warmup_queue = []
         self._page_class_cache = {}
+        self._page_module_mtimes = {}
         self._page_specs = self._build_page_specs()
         self.root.withdraw()
         self.root.bind('<Map>', self._handle_root_map, add='+')
@@ -707,17 +708,18 @@ class SmartPaperTool:
         if page_id not in self._page_specs:
             raise KeyError(page_id)
 
+        module = self._refresh_page_module_if_needed(page_id)
         if page_id not in self._page_class_cache:
             spec = self._page_specs[page_id]
-            module = importlib.import_module(spec['module'])
+            module = module or importlib.import_module(spec['module'])
+            self._page_module_mtimes[spec['module']] = self._get_page_module_mtime(module)
             self._page_class_cache[page_id] = getattr(module, spec['class'])
         return self._page_class_cache[page_id]
 
     def _create_page(self, page_id):
+        page_class = self._load_page_class(page_id)
         if page_id in self.pages:
             return self.pages[page_id]
-
-        page_class = self._load_page_class(page_id)
         started_at = time.perf_counter()
         page = page_class(
             self.content_frame,
@@ -737,6 +739,51 @@ class SmartPaperTool:
         if page_id not in self._page_specs:
             return None
         return self.pages.get(page_id) or self._create_page(page_id)
+
+    def _get_page_module_mtime(self, module):
+        module_path = getattr(module, '__file__', '')
+        if not module_path or not os.path.exists(module_path):
+            return None
+        try:
+            return os.path.getmtime(module_path)
+        except OSError:
+            return None
+
+    def _refresh_page_module_if_needed(self, page_id):
+        if getattr(sys, 'frozen', False):
+            return None
+        spec = self._page_specs.get(page_id)
+        if not spec:
+            return None
+
+        module_name = spec['module']
+        importlib.invalidate_caches()
+        module = sys.modules.get(module_name)
+        if module is None:
+            return None
+
+        current_mtime = self._get_page_module_mtime(module)
+        cached_mtime = self._page_module_mtimes.get(module_name)
+        if cached_mtime is None:
+            self._page_module_mtimes[module_name] = current_mtime
+            return module
+        if current_mtime is None or current_mtime <= cached_mtime:
+            return module
+
+        module = importlib.reload(module)
+        self._page_module_mtimes[module_name] = self._get_page_module_mtime(module)
+        self._page_class_cache.pop(page_id, None)
+
+        old_page = self.pages.pop(page_id, None)
+        if old_page is not None:
+            try:
+                old_page.frame.destroy()
+            except Exception:
+                pass
+            if self.current_page_id == page_id:
+                self.current_page_id = None
+        self._write_app_log(f'[page_reload] {page_id} source_updated')
+        return module
 
     def _get_page_title(self, page_id):
         return self.page_titles.get(page_id) or self._page_specs.get(page_id, {}).get('title', page_id)
@@ -2826,6 +2873,8 @@ class SmartPaperTool:
         # 若页面已创建则立即切换，否则先切换占位再异步完成创建
         if page_id == self.current_page_id and page_id in self.pages:
             return
+        if page_id in self._page_specs and not getattr(sys, 'frozen', False):
+            self._load_page_class(page_id)
         if page_id in self.pages:
             self._switch_to_page(page_id, invoke_on_show=invoke_on_show)
         else:

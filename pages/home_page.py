@@ -783,7 +783,7 @@ class HomePage:
         self.usage_log_end_var = tk.StringVar(value=end_text)
 
         fields_row = tk.Frame(filter_card.inner, bg=COLORS['card_bg'])
-        fields_row.pack(fill=tk.X)
+        fields_row.pack(fill=tk.X, pady=(0, 8))
         for index in range(4):
             fields_row.grid_columnconfigure(index, weight=1)
 
@@ -798,45 +798,76 @@ class HomePage:
         model_entry_shell, _model_entry = self._create_usage_entry_field(fields_row, self.usage_log_model_var)
         model_entry_shell.grid(row=1, column=3, sticky='ew', pady=(6, 0))
 
-        time_section = tk.Frame(filter_card.inner, bg=COLORS['card_bg'])
-        time_section.pack(fill=tk.X, pady=(14, 0))
+        time_row_host = tk.Frame(filter_card.inner, bg=COLORS['card_bg'])
+        time_row_host.pack(fill=tk.X, pady=(20, 10))
 
-        self._build_usage_datetime_filter_row(
-            time_section,
-            label_text='开始时间',
-            variable=self.usage_log_start_var,
-            title='选择开始时间',
+        time_row = tk.Frame(time_row_host, bg=COLORS['card_bg'])
+        time_row.pack(anchor='w', pady=(2, 2))
+
+        start_label = ttk.Label(
+            time_row,
+            text='开始时间',
+            anchor='w',
         )
-        self._build_usage_datetime_filter_row(
-            time_section,
-            label_text='结束时间',
-            variable=self.usage_log_end_var,
-            title='选择结束时间',
-            pady=(10, 0),
+        start_field = self._create_usage_datetime_entry(
+            time_row,
+            self.usage_log_start_var,
+            '选择开始时间',
+        )
+        start_pick_button = ttk.Button(
+            time_row,
+            text='选择',
+            command=lambda: self._pick_usage_log_datetime(self.usage_log_start_var, '选择开始时间'),
+            width=6,
         )
 
-        action_row = tk.Frame(time_section, bg=COLORS['card_bg'])
-        action_row.pack(fill=tk.X, pady=(12, 0))
-        action_buttons = tk.Frame(action_row, bg=COLORS['card_bg'])
-        action_buttons.pack(side=tk.RIGHT)
-        ModernButton(
-            action_buttons,
-            '清空日志',
-            style='warning',
+        end_label = ttk.Label(
+            time_row,
+            text='结束时间',
+            anchor='w',
+        )
+        end_field = self._create_usage_datetime_entry(
+            time_row,
+            self.usage_log_end_var,
+            '选择结束时间',
+        )
+        end_pick_button = ttk.Button(
+            time_row,
+            text='选择',
+            command=lambda: self._pick_usage_log_datetime(self.usage_log_end_var, '选择结束时间'),
+            width=6,
+        )
+
+        clear_button = ttk.Button(
+            time_row,
+            text='清空日志',
             command=self._clear_usage_logs,
-            padx=18,
-            pady=8,
-            font=FONTS['body_bold'],
-        ).pack(side=tk.LEFT)
-        ModernButton(
-            action_buttons,
-            '刷新',
-            style='secondary',
+            width=10,
+        )
+        refresh_button = ttk.Button(
+            time_row,
+            text='刷新',
             command=self._refresh_usage_panel,
-            padx=18,
-            pady=8,
-            font=FONTS['body_bold'],
-        ).pack(side=tk.LEFT, padx=(10, 0))
+            width=6,
+        )
+        time_controls = (
+            (start_label, 0, (0, 12), 'w'),
+            (start_field, 1, (0, 8), 'w'),
+            (start_pick_button, 2, (0, 18), 'w'),
+            (end_label, 3, (0, 12), 'w'),
+            (end_field, 4, (0, 8), 'w'),
+            (end_pick_button, 5, (0, 18), 'w'),
+            (clear_button, 6, (0, 8), 'w'),
+            (refresh_button, 7, (0, 0), 'w'),
+        )
+        for widget, column_index, padx, sticky in time_controls:
+            widget.grid(row=0, column=column_index, padx=padx, pady=(0, 2), sticky=sticky)
+        time_row.after_idle(
+            lambda row=time_row,
+            fields=fields_row,
+            card=filter_card.inner,
+            parent_tab=parent: self._debug_usage_log_time_row_layout(row, fields, card, parent_tab)
+        )
 
         table_card = CardFrame(parent, padding=12)
         table_card.pack(fill=tk.BOTH, expand=True)
@@ -926,11 +957,14 @@ class HomePage:
         return shell, entry
 
     def _create_usage_datetime_field(self, parent, variable, title, *, shell_width=None):
+        shell_width = shell_width or self._get_usage_datetime_field_width()
+        shell_height = 42
         shell = tk.Frame(parent, bg=COLORS['input_border'], bd=0, highlightthickness=0)
-        if shell_width is not None:
-            shell.configure(width=shell_width, height=42)
-            shell.pack_propagate(False)
-            shell.grid_propagate(False)
+        shell.configure(width=shell_width, height=shell_height)
+        shell._usage_fixed_width = shell_width
+        shell._usage_fixed_height = shell_height
+        shell.pack_propagate(False)
+        shell.grid_propagate(False)
         body = tk.Frame(shell, bg=COLORS['input_bg'], bd=0, highlightthickness=0)
         body.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
@@ -938,48 +972,183 @@ class HomePage:
             self._pick_usage_log_datetime(variable, title)
             return 'break'
 
-        value_label = tk.Label(
+        value_entry = tk.Entry(
             body,
             textvariable=variable,
             font=FONTS['body'],
             fg=COLORS['text_main'],
             bg=COLORS['input_bg'],
-            anchor='w',
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=0,
             justify='left',
-            padx=10,
+            readonlybackground=COLORS['input_bg'],
+            state='readonly',
             cursor='hand2',
         )
-        value_label.pack(fill=tk.BOTH, expand=True, pady=1)
-        value_label.bind('<Button-1>', _open_picker)
+        value_entry.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+        value_entry.bind('<Button-1>', _open_picker)
+        body.bind('<Button-1>', _open_picker)
         return shell
 
-    def _build_usage_datetime_filter_row(self, parent, *, label_text, variable, title, pady=(0, 0)):
-        row = tk.Frame(parent, bg=COLORS['card_bg'])
-        row.pack(fill=tk.X, pady=pady)
+    def _create_usage_datetime_entry(self, parent, variable, title):
+        entry = ttk.Entry(
+            parent,
+            textvariable=variable,
+            state='readonly',
+            width=18,
+            font=FONTS['body'],
+        )
+        entry.bind(
+            '<Button-1>',
+            lambda _event, current_var=variable, current_title=title: (
+                self._pick_usage_log_datetime(current_var, current_title),
+                'break'
+            )[-1],
+            add='+',
+        )
+        return entry
 
-        tk.Label(
-            row,
-            text=label_text,
-            font=FONTS['small'],
-            fg=COLORS['text_sub'],
-            bg=COLORS['card_bg'],
-        ).pack(side=tk.LEFT, padx=(0, 12))
-        self._create_usage_datetime_field(
-            row,
-            variable,
-            title,
-            shell_width=260,
-        ).pack(side=tk.LEFT)
-        ModernButton(
-            row,
-            '选择',
-            style='secondary',
-            command=lambda: self._pick_usage_log_datetime(variable, title),
-            padx=12,
-            pady=6,
-            font=FONTS['small'],
-        ).pack(side=tk.LEFT, padx=(8, 0))
-        return row
+    def _create_usage_inline_button(self, parent, text, command, *, tone='secondary', font=None):
+        font_spec = font or FONTS['small']
+        font_obj = tkfont.Font(font=font_spec)
+        shell_height = 42
+        shell_width = max(font_obj.measure(text) + 28, 72)
+        palette = {
+            'secondary': {
+                'border': COLORS['card_border'],
+                'bg': COLORS['surface_alt'],
+                'hover': COLORS['accent_light'],
+                'fg': COLORS['text_main'],
+            },
+            'warning': {
+                'border': COLORS['warning'],
+                'bg': COLORS['warning'],
+                'hover': COLORS['warning'],
+                'fg': COLORS['text_main'],
+            },
+        }.get(tone, {
+            'border': COLORS['card_border'],
+            'bg': COLORS['surface_alt'],
+            'hover': COLORS['accent_light'],
+            'fg': COLORS['text_main'],
+        })
+
+        shell = tk.Frame(
+            parent,
+            bg=palette['border'],
+            bd=0,
+            highlightthickness=0,
+            width=shell_width,
+            height=shell_height,
+        )
+        shell._usage_fixed_width = shell_width
+        shell._usage_fixed_height = shell_height
+        shell.pack_propagate(False)
+        label = tk.Label(
+            shell,
+            text=text,
+            font=font_spec,
+            fg=palette['fg'],
+            bg=palette['bg'],
+            bd=0,
+            highlightthickness=0,
+            cursor='hand2',
+            anchor='center',
+            justify='center',
+        )
+
+        def _set_bg(bg):
+            try:
+                label.configure(bg=bg)
+            except tk.TclError:
+                return
+
+        def _invoke(_event=None):
+            command()
+            return 'break'
+
+        for widget in (shell, label):
+            widget.bind('<Enter>', lambda _event, bg=palette['hover']: _set_bg(bg), add='+')
+            widget.bind('<Leave>', lambda _event, bg=palette['bg']: _set_bg(bg), add='+')
+            widget.bind('<Button-1>', _invoke, add='+')
+
+        self._layout_usage_inline_button(shell, label)
+        shell.bind(
+            '<Configure>',
+            lambda _event, current_shell=shell, current_label=label: self._layout_usage_inline_button(
+                current_shell,
+                current_label,
+            ),
+            add='+',
+        )
+        return shell
+
+    def _get_usage_datetime_field_width(self):
+        display_font = tkfont.Font(font=FONTS['body'])
+        text_width = display_font.measure('2026-12-31 23:59')
+        return max(260, text_width + 32)
+
+    def _get_usage_time_label_width(self, text):
+        label_font = tkfont.Font(font=FONTS['small'])
+        return max(label_font.measure(text) + 12, 72)
+
+    def _debug_usage_log_time_row_layout(self, time_row, fields_row, card_inner, parent_tab, attempt=0):
+        try:
+            if (
+                not time_row.winfo_ismapped()
+                and attempt < 12
+            ):
+                time_row.after(
+                    120,
+                    lambda row=time_row,
+                    fields=fields_row,
+                    card=card_inner,
+                    tab=parent_tab,
+                    next_attempt=attempt + 1: self._debug_usage_log_time_row_layout(
+                        row, fields, card, tab, next_attempt
+                    ),
+                )
+                return
+            targets = (
+                ('parent_tab', parent_tab),
+                ('card_inner', card_inner),
+                ('fields_row', fields_row),
+                ('time_row', time_row),
+            )
+            print(f'=== usage log time row debug begin attempt={attempt} ===')
+            for name, widget in targets:
+                print(
+                    f'{name}: mapped={widget.winfo_ismapped()} '
+                    f'manager={widget.winfo_manager()} '
+                    f'x={widget.winfo_x()} y={widget.winfo_y()} '
+                    f'w={widget.winfo_width()} h={widget.winfo_height()} '
+                    f'req_w={widget.winfo_reqwidth()} req_h={widget.winfo_reqheight()}'
+                )
+            for index, child in enumerate(time_row.winfo_children()):
+                print(
+                    f'time_row.child[{index}]: class={child.winfo_class()} '
+                    f'manager={child.winfo_manager()} '
+                    f'x={child.winfo_x()} y={child.winfo_y()} '
+                    f'w={child.winfo_width()} h={child.winfo_height()} '
+                    f'req_w={child.winfo_reqwidth()} req_h={child.winfo_reqheight()}'
+                )
+                for inner_index, inner in enumerate(child.winfo_children()):
+                    text = ''
+                    try:
+                        text = inner.cget('text')
+                    except tk.TclError:
+                        text = ''
+                    print(
+                        f'  child[{index}].inner[{inner_index}]: class={inner.winfo_class()} '
+                        f'text={text!r} manager={inner.winfo_manager()} '
+                        f'x={inner.winfo_x()} y={inner.winfo_y()} '
+                        f'w={inner.winfo_width()} h={inner.winfo_height()} '
+                        f'req_w={inner.winfo_reqwidth()} req_h={inner.winfo_reqheight()}'
+                    )
+            print('=== usage log time row debug end ===')
+        except tk.TclError:
+            return
 
     def _create_usage_tree(self, parent, columns, height=8):
         shell = tk.Frame(parent, bg=COLORS['card_bg'])
