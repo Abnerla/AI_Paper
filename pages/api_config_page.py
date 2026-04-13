@@ -175,8 +175,6 @@ class APIConfigPage:
         self._entries = {}
         if hasattr(self, 'tip_label'):
             del self.tip_label
-        if hasattr(self, 'connection_tip_label'):
-            del self.connection_tip_label
 
         self._build_api_panel(new_frame)
         for widget in self._content.winfo_children():
@@ -385,8 +383,13 @@ class APIConfigPage:
                 text='使用单独配置' if active else '使用单独配置',
             )
 
+        def toggle_switch(_event):
+            variable.set(not bool(variable.get()))
+            switch.focus_set()
+            return 'break'
+
         switch.configure(command=refresh_switch)
-        switch.bind('<Button-1>', lambda e: 'break')
+        switch.bind('<Button-1>', toggle_switch)
         variable.trace_add('write', lambda *_: refresh_switch())
         refresh_switch()
         switch.pack(side=tk.RIGHT)
@@ -1060,20 +1063,6 @@ class APIConfigPage:
             prefill=str(self.config.get_setting('global_test_max_retries', 2) or 2),
         )
 
-        test_btn_row = tk.Frame(parent, bg=COLORS['card_bg'])
-        test_btn_row.pack(fill=tk.X, pady=(10, 0))
-        ModernButton(test_btn_row, '测试连接', style='accent', command=self._test_connection, padx=16, pady=8).pack(side=tk.RIGHT)
-        self.connection_tip_label = tk.Label(
-            test_btn_row,
-            text='',
-            font=FONTS['small'],
-            fg=COLORS['text_muted'],
-            bg=COLORS['card_bg'],
-            anchor='e',
-            justify=tk.RIGHT,
-        )
-        self.connection_tip_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
-
         def refresh_state(*_args):
             state = 'normal' if use_separate.get() else 'disabled'
             for child in parent.winfo_children():
@@ -1282,15 +1271,6 @@ class APIConfigPage:
                     lambda: self.tip_label.configure(text='') if self.tip_label.winfo_exists() else None,
                 )
 
-    def _show_connection_tip(self, text, color, duration_ms=0):
-        if hasattr(self, 'connection_tip_label') and self.connection_tip_label.winfo_exists():
-            self.connection_tip_label.configure(text=text, fg=color)
-            if duration_ms:
-                self.frame.after(
-                    duration_ms,
-                    lambda: self.connection_tip_label.configure(text='') if self.connection_tip_label.winfo_exists() else None,
-                )
-
     def _save_all(self):
         ok, missing = self._validate()
         if not ok:
@@ -1360,58 +1340,6 @@ class APIConfigPage:
             work=lambda: self.api.fetch_models(api_hint, cfg=cfg),
             on_success=_done,
             on_error=_fail,
-        )
-
-    def _test_connection(self):
-        cfg = self._collect_api_config(FORM_KEY)
-        use_separate_var = self._entries.get(FORM_KEY, {}).get('use_separate_test')
-        use_separate = bool(use_separate_var.get()) if use_separate_var is not None else False
-        if use_separate:
-            model_override = cfg.get('test_model', '').strip() or None
-            prompt = cfg.get('test_prompt', '').strip() or 'Who are you?'
-            try:
-                timeout = float(cfg.get('test_timeout', '') or 45)
-            except Exception:
-                timeout = 45
-            try:
-                degrade_ms = int(cfg.get('test_degrade_ms', '') or 6000)
-            except Exception:
-                degrade_ms = 6000
-            try:
-                max_retries = int(cfg.get('test_max_retries', '') or 2)
-            except Exception:
-                max_retries = 2
-        else:
-            model_override = None
-            prompt = self.config.get_setting('global_test_prompt', 'Who are you?') or 'Who are you?'
-            timeout = float(self.config.get_setting('global_test_timeout_sec', 45) or 45)
-            degrade_ms = int(self.config.get_setting('global_test_degrade_ms', 6000) or 6000)
-            max_retries = int(self.config.get_setting('global_test_max_retries', 2) or 2)
-
-        self._show_connection_tip('正在测试连接...', COLORS['text_sub'])
-        api_hint = self._current_api_id or self._current_provider_type
-
-        def _done(result):
-            ok, msg = result
-            self._show_connection_tip(msg, COLORS['success'] if ok else COLORS['error'])
-
-        self.task_runner.run(
-            work=lambda: self.api.test_connection(
-                api_hint,
-                prompt=prompt,
-                model_override=model_override,
-                timeout=timeout,
-                degrade_threshold_ms=degrade_ms,
-                max_retries=max_retries,
-                cfg=cfg,
-                usage_context={
-                    'page_id': 'api_config',
-                    'scene_id': 'connection_test',
-                    'action': 'test_connection',
-                },
-            ),
-            on_success=_done,
-            loading_text='正在测试模型连接...',
         )
 
     def _delete_current(self):

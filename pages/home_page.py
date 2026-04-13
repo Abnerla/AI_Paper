@@ -37,6 +37,10 @@ from modules.ui_components import (
     load_image,
 )
 from modules.task_runner import TaskRunner
+from pages.api_config_support import (
+    merge_with_preset_defaults,
+    resolve_connection_test_settings,
+)
 
 DASHBOARD_TITLE_FONT_SIZE = 20
 DASHBOARD_SECTION_TITLE_FONT_SIZE = 16
@@ -140,6 +144,7 @@ class HomePage:
         self._usage_chart_redraw_job = None
         self._usage_summary_cards_ready = False
         self.usage_task_runner = TaskRunner(self.frame, set_status=self.set_status)
+        self.model_test_task_runner = TaskRunner(self.frame, set_status=self.set_status)
         self._usage_refresh_token = 0
         self._usage_trend_cache = None
         self._hero_last_width = None
@@ -2386,6 +2391,7 @@ class HomePage:
         action_button_size = 48
         select_button_height = 48
         select_button_width = 116
+        toast_state = {'window': None}
 
         def _get_action_icon(filename, max_size=(26, 26)):
             image = action_icon_images.get(filename)
@@ -2397,6 +2403,64 @@ class HomePage:
                 image = None
             action_icon_images[filename] = image
             return image
+
+        def _close_test_toast():
+            toast = toast_state.get('window')
+            if toast and toast.winfo_exists():
+                toast.destroy()
+            toast_state['window'] = None
+
+        def _show_test_toast(message, ok):
+            if not win.winfo_exists():
+                return
+
+            _close_test_toast()
+            toast = tk.Toplevel(win)
+            toast.overrideredirect(True)
+            toast.configure(bg=COLORS['shadow'])
+            try:
+                toast.attributes('-topmost', True)
+            except tk.TclError:
+                pass
+
+            border_color = COLORS['success'] if ok else COLORS['error']
+            title_text = '模型测试成功' if ok else '模型测试失败'
+            shell = tk.Frame(toast, bg=COLORS['shadow'])
+            shell.pack()
+            card = tk.Frame(
+                shell,
+                bg=COLORS['card_bg'],
+                highlightbackground=border_color,
+                highlightthickness=2,
+            )
+            card.pack(padx=(0, 4), pady=(0, 4))
+            tk.Label(
+                card,
+                text=title_text,
+                font=FONTS['body_bold'],
+                fg=border_color,
+                bg=COLORS['card_bg'],
+            ).pack(anchor='w', padx=16, pady=(12, 6))
+            tk.Label(
+                card,
+                text=str(message or '').strip() or '模型测试未返回结果。',
+                font=FONTS['small'],
+                fg=COLORS['text_main'],
+                bg=COLORS['card_bg'],
+                justify='left',
+                wraplength=560,
+            ).pack(anchor='w', padx=16, pady=(0, 12))
+
+            toast.update_idletasks()
+            win.update_idletasks()
+            x = win.winfo_rootx() + max((win.winfo_width() - toast.winfo_reqwidth()) // 2, 0)
+            y = win.winfo_rooty() + 72
+            toast.geometry(f'+{x}+{y}')
+            toast.after(5000, _close_test_toast)
+            toast.bind('<Button-1>', lambda _event: _close_test_toast())
+            for child in card.winfo_children():
+                child.bind('<Button-1>', lambda _event: _close_test_toast())
+            toast_state['window'] = toast
 
         ModernButton(hdr, '⚙ 前往配置', style='secondary',
                      command=_goto_add_new,
@@ -2516,7 +2580,45 @@ class HomePage:
                     button.configure(image=image, text='')
                     button.image = image
             button.pack(fill=tk.BOTH, expand=True, padx=(2, 4), pady=(2, 4))
-            return shell
+            return shell, button
+
+        def _test_model(api_id, raw_cfg, button):
+            effective_cfg = merge_with_preset_defaults(raw_cfg, raw_cfg.get('provider_type') or api_id)
+            settings = resolve_connection_test_settings(self.config, effective_cfg)
+
+            try:
+                if button.winfo_exists():
+                    button.configure(state=tk.DISABLED, cursor='arrow')
+            except tk.TclError:
+                pass
+
+            def _finish(ok, message):
+                try:
+                    if button.winfo_exists():
+                        button.configure(state=tk.NORMAL, cursor='hand2')
+                except tk.TclError:
+                    pass
+                _show_test_toast(message, ok)
+
+            self.model_test_task_runner.run(
+                work=lambda: self.api.test_connection(
+                    api_id,
+                    prompt=settings['prompt'],
+                    model_override=settings['model_override'],
+                    timeout=settings['timeout'],
+                    degrade_threshold_ms=settings['degrade_ms'],
+                    max_retries=settings['max_retries'],
+                    cfg=effective_cfg,
+                    usage_context={
+                        'page_id': 'home',
+                        'scene_id': 'model_list',
+                        'action': 'test_connection',
+                    },
+                ),
+                on_success=lambda result: _finish(result[0], result[1]),
+                on_error=lambda exc: _finish(False, str(exc)),
+                status_text='正在测试模型连接...',
+            )
 
         def _activate_model(api_id, display_name):
             if not self.config.get_api_config(api_id):
@@ -2594,12 +2696,13 @@ class HomePage:
                              wraplength=460, justify='left').pack(anchor='w', pady=(2, 0))
 
                 # 右侧按钮区（垂直居中）
-                btn_col = tk.Frame(row, bg=card_bg, width=252, height=select_button_height)
+                btn_col = tk.Frame(row, bg=card_bg, width=320, height=select_button_height)
                 btn_col.pack(side=tk.RIGHT, padx=(12, 0), anchor='center')
                 btn_col.pack_propagate(False)
                 btn_col.grid_columnconfigure(0, minsize=120)
                 btn_col.grid_columnconfigure(1, minsize=60)
                 btn_col.grid_columnconfigure(2, minsize=60)
+                btn_col.grid_columnconfigure(3, minsize=60)
                 btn_col.grid_rowconfigure(0, minsize=select_button_height)
 
                 select_shell, select_button = create_home_shell_button(
@@ -2622,7 +2725,19 @@ class HomePage:
                     )
                 select_shell.grid(row=0, column=0, padx=(0, 6), sticky='e')
 
-                detail_btn = _create_action_icon(
+                test_shell, test_button = _create_action_icon(
+                    btn_col,
+                    icon='测',
+                    tooltip='模型测试',
+                    fg=COLORS['primary'],
+                    command=lambda: None,
+                    active_bg=COLORS['accent_light'],
+                    image_name='Model_test.png',
+                )
+                test_button.configure(command=lambda aid=api_id, saved_cfg=dict(cfg), btn=test_button: _test_model(aid, saved_cfg, btn))
+                test_shell.grid(row=0, column=1, padx=(0, 6), sticky='e')
+
+                detail_shell, _detail_button = _create_action_icon(
                     btn_col,
                     icon='✎',
                     tooltip='查看详情',
@@ -2631,7 +2746,7 @@ class HomePage:
                     active_bg=COLORS['primary_light'],
                     image_name='Edit.png',
                 )
-                detail_btn.grid(row=0, column=1, padx=(0, 6), sticky='e')
+                detail_shell.grid(row=0, column=2, padx=(0, 6), sticky='e')
 
                 _name = name
 
@@ -2659,7 +2774,7 @@ class HomePage:
                     self.refresh_dashboard()
                     _populate()
 
-                del_btn = _create_action_icon(
+                del_shell, _del_button = _create_action_icon(
                     btn_col,
                     icon='⌦',
                     tooltip='删除',
@@ -2669,7 +2784,7 @@ class HomePage:
                     active_fg='#FFFFFF',
                     image_name='Delete.png',
                 )
-                del_btn.grid(row=0, column=2, sticky='e')
+                del_shell.grid(row=0, column=3, sticky='e')
 
             if not any_shown:
                 tk.Label(inner, text='暂无已配置的模型，请前往「模型配置」页面添加。',
@@ -2685,6 +2800,7 @@ class HomePage:
         _populate()
         self._model_list_refresh = _populate
         win.after_idle(win.focus_force)
+        win.bind('<Destroy>', lambda _event: _close_test_toast(), add='+')
         win.protocol('WM_DELETE_WINDOW', lambda: [setattr(self, '_model_list_refresh', None), win.destroy()])
 
     def _start_using(self):
