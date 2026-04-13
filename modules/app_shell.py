@@ -7,12 +7,19 @@ import os
 import sys
 import ctypes
 import importlib
+import io
+import json
 import math
 import shutil
 import subprocess
 import threading
 import time
 import webbrowser
+import zipfile
+import base64
+import urllib.parse
+import urllib.request
+import urllib.error
 try:
     import pystray
 except Exception:
@@ -387,6 +394,9 @@ class SmartPaperTool:
         self._is_tray_minimized = False
         self._is_shutting_down = False
         self._tray_hint_shown = False
+        self._webdav_auto_sync_job = None
+        self._webdav_auto_sync_busy = False
+        self._webdav_auto_sync_last_error = ''
         self.settings_window = None
         self._api_config_window = None
         self._dialog_api_page = None
@@ -541,6 +551,7 @@ class SmartPaperTool:
             f'resource_dir={BASE_DIR}'
         )
         self._write_app_log(f'[session_args] argv={" ".join(sys.argv)}')
+        self._schedule_webdav_auto_sync()
 
     def _initialize_window_theme(self):
         theme_mode = self.config_mgr.get_setting('theme_mode', 'light')
@@ -3753,6 +3764,247 @@ class SmartPaperTool:
         setattr(self, panel_attr, panel)
         return panel
 
+    def _collect_runtime_backup_zip_bytes(self):
+        app_dir = os.path.abspath(self.config_mgr.app_dir)
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, mode='w', compression=zipfile.ZIP_DEFLATED) as archive:
+            for root, _dirs, files in os.walk(app_dir):
+                for file_name in files:
+                    abs_path = os.path.join(root, file_name)
+                    rel_path = os.path.relpath(abs_path, app_dir).replace('\\', '/')
+                    archive.write(abs_path, rel_path)
+        return buffer.getvalue()
+
+    def _get_local_data_timestamp(self):
+        app_dir = os.path.abspath(self.config_mgr.app_dir)
+        latest = 0
+        for root, _dirs, files in os.walk(app_dir):
+            for file_name in files:
+                file_path = os.path.join(root, file_name)
+                try:
+                    mtime = int(os.path.getmtime(file_path))
+                except Exception:
+                    continue
+                if mtime > latest:
+                    latest = mtime
+        return latest or int(time.time())
+
+    def _parse_backup_timestamp(self, payload):
+        if not isinstance(payload, dict):
+            return 0
+        raw_epoch = payload.get('data_timestamp')
+        try:
+            epoch = int(raw_epoch or 0)
+        except Exception:
+            epoch = 0
+        if epoch > 0:
+            return epoch
+
+        for key in ('exported_at',):
+            text = str(payload.get(key, '') or '').strip()
+            if not text:
+                continue
+            try:
+                dt = datetime.strptime(text, '%Y-%m-%d %H:%M:%S')
+                return int(dt.timestamp())
+            except Exception:
+                continue
+        return 0
+
+    def _build_local_backup_payload(self):
+        zip_bytes = self._collect_runtime_backup_zip_bytes()
+        data_timestamp = self._get_local_data_timestamp()
+        return {
+            'format': 'paperlab-backup-v1',
+            'app_name': APP_NAME,
+            'app_version': APP_VERSION,
+            'exported_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'data_timestamp': data_timestamp,
+            'data_datetime': datetime.fromtimestamp(data_timestamp).strftime('%Y-%m-%d %H:%M:%S'),
+            'data_dir': os.path.abspath(self.config_mgr.app_dir),
+            'payload_base64': base64.b64encode(zip_bytes).decode('ascii'),
+        }
+
+    def _restore_runtime_from_payload(self, payload):
+        if not isinstance(payload, dict) or payload.get('format') != 'paperlab-backup-v1':
+            raise ValueError('备份文件格式无效，无法识别。')
+        encoded = str(payload.get('payload_base64', '') or '').strip()
+        if not encoded:
+            raise ValueError('备份文件缺少数据内容。')
+        try:
+            zip_bytes = base64.b64decode(encoded)
+        except Exception as exc:
+            raise ValueError(f'备份数据损坏：{exc}') from exc
+
+        app_dir = os.path.abspath(self.config_mgr.app_dir)
+        os.makedirs(app_dir, exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), mode='r') as archive:
+            for member in archive.namelist():
+                normalized = os.path.normpath(member).replace('\\', '/')
+                if normalized.startswith('../') or normalized.startswith('/'):
+                    raise ValueError(f'备份包含非法路径：{member}')
+            archive.extractall(app_dir)
+
+        self.history_mgr.reload_data_directory()
+        self._sync_runtime_paths()
+        self._set_status('备份数据已导入，请重启应用以完全生效', COLORS['success'])
+
+    def _get_webdav_settings(self):
+        raw_interval = self.config_mgr.get_setting('backup_webdav_auto_interval_sec', 3600)
+        try:
+            interval_sec = int(raw_interval or 3600)
+        except Exception:
+            interval_sec = 3600
+        return {
+            'url': str(self.config_mgr.get_setting('backup_webdav_url', '') or '').strip(),
+            'username': str(self.config_mgr.get_setting('backup_webdav_username', '') or '').strip(),
+            'password': str(self.config_mgr.get_setting('backup_webdav_password', '') or '').strip(),
+            'auto_enabled': bool(self.config_mgr.get_setting('backup_webdav_auto_enabled', False)),
+            'auto_interval_sec': interval_sec,
+            'auto_strategy': str(self.config_mgr.get_setting('backup_webdav_auto_strategy', 'smart_merge') or 'smart_merge'),
+        }
+
+    def _build_webdav_remote_file_url(self, base_url):
+        raw = str(base_url or '').strip()
+        if not raw:
+            raise ValueError('请先填写 WebDAV 地址。')
+        parsed = urllib.parse.urlparse(raw)
+        if parsed.scheme not in {'http', 'https'}:
+            raise ValueError('WebDAV 地址必须以 http:// 或 https:// 开头。')
+        if raw.endswith('.json'):
+            return raw
+        return raw.rstrip('/') + '/paperlab_backup.json'
+
+    def _webdav_request(self, method, target_url, username='', password='', payload=None, timeout=20):
+        request = urllib.request.Request(target_url, data=payload, method=method)
+        request.add_header('User-Agent', f'{APP_NAME}/{APP_VERSION}')
+        if payload is not None:
+            request.add_header('Content-Type', 'application/json; charset=utf-8')
+        if username:
+            raw_token = f'{username}:{password}'.encode('utf-8')
+            request.add_header('Authorization', 'Basic ' + base64.b64encode(raw_token).decode('ascii'))
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read(), int(getattr(response, 'status', 200) or 200)
+
+    def _webdav_test_connection(self, settings):
+        target_url = self._build_webdav_remote_file_url(settings['url'])
+        try:
+            self._webdav_request('OPTIONS', target_url, settings['username'], settings['password'], timeout=15)
+        except urllib.error.HTTPError as exc:
+            if exc.code in {404, 405, 501}:
+                self._webdav_request('HEAD', target_url, settings['username'], settings['password'], timeout=15)
+                return target_url
+            raise
+        return target_url
+
+    def _upload_backup_to_webdav(self, settings):
+        target_url = self._build_webdav_remote_file_url(settings['url'])
+        payload = json.dumps(self._build_local_backup_payload(), ensure_ascii=False, indent=2).encode('utf-8')
+        self._webdav_request('PUT', target_url, settings['username'], settings['password'], payload=payload, timeout=45)
+        return target_url
+
+    def _download_backup_from_webdav(self, settings):
+        target_url = self._build_webdav_remote_file_url(settings['url'])
+        body, _status = self._webdav_request('GET', target_url, settings['username'], settings['password'], timeout=45)
+        try:
+            payload = json.loads(body.decode('utf-8'))
+        except Exception as exc:
+            raise ValueError(f'WebDAV 返回数据不是有效 JSON：{exc}') from exc
+        self._restore_runtime_from_payload(payload)
+        return target_url
+
+    def _fetch_backup_payload_from_webdav(self, settings):
+        target_url = self._build_webdav_remote_file_url(settings['url'])
+        try:
+            body, _status = self._webdav_request('GET', target_url, settings['username'], settings['password'], timeout=45)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None, target_url
+            raise
+        try:
+            payload = json.loads(body.decode('utf-8'))
+        except Exception as exc:
+            raise ValueError(f'WebDAV 返回数据不是有效 JSON：{exc}') from exc
+        return payload, target_url
+
+    def _smart_merge_webdav(self, settings):
+        remote_payload, target_url = self._fetch_backup_payload_from_webdav(settings)
+        local_payload = self._build_local_backup_payload()
+        local_ts = self._parse_backup_timestamp(local_payload)
+
+        if not remote_payload:
+            self._upload_backup_to_webdav(settings)
+            return {'action': 'upload', 'target_url': target_url, 'local_ts': local_ts, 'remote_ts': 0}
+
+        remote_ts = self._parse_backup_timestamp(remote_payload)
+        if remote_ts > local_ts:
+            self._restore_runtime_from_payload(remote_payload)
+            return {'action': 'download', 'target_url': target_url, 'local_ts': local_ts, 'remote_ts': remote_ts}
+
+        if local_ts > remote_ts:
+            self._upload_backup_to_webdav(settings)
+            return {'action': 'upload', 'target_url': target_url, 'local_ts': local_ts, 'remote_ts': remote_ts}
+
+        return {'action': 'skip', 'target_url': target_url, 'local_ts': local_ts, 'remote_ts': remote_ts}
+
+    def _schedule_webdav_auto_sync(self):
+        if self._webdav_auto_sync_job:
+            try:
+                self.root.after_cancel(self._webdav_auto_sync_job)
+            except Exception:
+                pass
+            self._webdav_auto_sync_job = None
+
+        settings = self._get_webdav_settings() if self.config_mgr else {}
+        if not settings.get('auto_enabled'):
+            return
+
+        interval_sec = max(60, int(settings.get('auto_interval_sec', 3600) or 3600))
+        self._webdav_auto_sync_job = self.root.after(interval_sec * 1000, self._run_webdav_auto_sync)
+
+    def _run_webdav_auto_sync(self):
+        self._webdav_auto_sync_job = None
+        settings = self._get_webdav_settings()
+        if not settings.get('auto_enabled'):
+            return
+        if self._webdav_auto_sync_busy:
+            self._schedule_webdav_auto_sync()
+            return
+
+        self._webdav_auto_sync_busy = True
+
+        def worker():
+            error_message = ''
+            try:
+                strategy = settings.get('auto_strategy', 'smart_merge')
+                if strategy == 'smart_merge':
+                    result = self._smart_merge_webdav(settings)
+                    self._write_app_log(
+                        f'WebDAV 智能合并完成: action={result["action"]} '
+                        f'local_ts={result["local_ts"]} remote_ts={result["remote_ts"]}'
+                    )
+                elif strategy == 'upload_only':
+                    self._upload_backup_to_webdav(settings)
+                elif strategy == 'download_only':
+                    self._download_backup_from_webdav(settings)
+                else:
+                    result = self._smart_merge_webdav(settings)
+                    self._write_app_log(
+                        f'WebDAV 智能合并完成: action={result["action"]} '
+                        f'local_ts={result["local_ts"]} remote_ts={result["remote_ts"]}'
+                    )
+            except Exception as exc:
+                error_message = str(exc)
+                self._write_app_log(f'WebDAV 自动同步失败: {exc}', level='WARN')
+            finally:
+                def finish():
+                    self._webdav_auto_sync_busy = False
+                    self._webdav_auto_sync_last_error = error_message
+                    self._schedule_webdav_auto_sync()
+                self.root.after(0, finish)
+
+        threading.Thread(target=worker, name='WebDAVAutoSync', daemon=True).start()
+
     def _show_settings(self):
         if self.settings_window and self.settings_window.winfo_exists():
             self.settings_window.lift()
@@ -3813,6 +4065,23 @@ class SmartPaperTool:
                 'frequency_penalty',
             )
         }
+        webdav_url_var = tk.StringVar(value=self.config_mgr.get_setting('backup_webdav_url', ''))
+        webdav_username_var = tk.StringVar(value=self.config_mgr.get_setting('backup_webdav_username', ''))
+        webdav_password_var = tk.StringVar(value=self.config_mgr.get_setting('backup_webdav_password', ''))
+        webdav_auto_enabled_var = tk.BooleanVar(value=self.config_mgr.get_setting('backup_webdav_auto_enabled', False))
+        webdav_auto_interval_var = tk.StringVar(value=str(self.config_mgr.get_setting('backup_webdav_auto_interval_sec', 3600)))
+        webdav_auto_strategy_display = {
+            'smart_merge': '智能合并（优先上传本地）',
+            'upload_only': '仅上传本地数据',
+            'download_only': '仅下载远端数据',
+        }
+        webdav_auto_strategy_reverse = {label: key for key, label in webdav_auto_strategy_display.items()}
+        webdav_auto_strategy_var = tk.StringVar(
+            value=webdav_auto_strategy_display.get(
+                self.config_mgr.get_setting('backup_webdav_auto_strategy', 'smart_merge'),
+                '智能合并（优先上传本地）',
+            )
+        )
 
         header = tk.Frame(body, bg=COLORS['card_bg'])
         header.pack(fill=tk.X, padx=28, pady=(28, 18))
@@ -3839,7 +4108,7 @@ class SmartPaperTool:
         content_view.pack(fill=tk.BOTH, expand=True)
         content_host = content_view.inner
 
-        for key in ('general', 'advanced', 'about'):
+        for key in ('general', 'advanced', 'backup', 'about'):
             page = tk.Frame(content_host, bg=COLORS['card_bg'])
             section_pages[key] = page
 
@@ -3865,6 +4134,7 @@ class SmartPaperTool:
         for key, label in (
             ('general', '通用'),
             ('advanced', '高级'),
+            ('backup', '备份'),
             ('about', '关于'),
         ):
             button_shell, button = create_home_shell_button(
@@ -4152,6 +4422,7 @@ class SmartPaperTool:
 
         general_page = section_pages['general']
         advanced_page = section_pages['advanced']
+        backup_page = section_pages['backup']
         about_page = section_pages['about']
 
         add_select(
@@ -4525,6 +4796,249 @@ class SmartPaperTool:
             inline_buttons=True,
         )
 
+        backup_intro = tk.Label(
+            backup_page,
+            text='备份支持本地导入导出和 WebDAV 同步，可快速迁移当前设备的模型配置、历史记录与工作区状态。',
+            justify='left',
+            font=FONTS['body'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['card_bg'],
+        )
+        backup_intro.pack(anchor='w', pady=(0, 16))
+
+        def run_in_background(job, success_message, *, done_callback=None):
+            self._set_status('处理中，请稍候...', COLORS['warning'])
+
+            def worker():
+                error = None
+                try:
+                    result = job()
+                except Exception as exc:
+                    result = None
+                    error = exc
+
+                def finalize():
+                    if error is not None:
+                        self._set_status('操作失败', COLORS['error'])
+                        messagebox.showerror('备份', str(error), parent=window)
+                        return
+                    self._set_status(success_message, COLORS['success'])
+                    if done_callback:
+                        done_callback(result)
+
+                self.root.after(0, finalize)
+
+            threading.Thread(target=worker, name='SettingsBackupAction', daemon=True).start()
+
+        def export_local_backup():
+            now = datetime.now().strftime('%Y%m%d_%H%M%S')
+            save_path = filedialog.asksaveasfilename(
+                parent=window,
+                title='导出备份数据',
+                defaultextension='.json',
+                initialfile=f'paperlab_backup_{now}.json',
+                filetypes=[('JSON 文件', '*.json')],
+            )
+            if not save_path:
+                return
+
+            def job():
+                payload = self._build_local_backup_payload()
+                with open(save_path, 'w', encoding='utf-8') as handle:
+                    json.dump(payload, handle, ensure_ascii=False, indent=2)
+                return save_path
+
+            run_in_background(
+                job,
+                '导出完成',
+                done_callback=lambda path: messagebox.showinfo('导出成功', f'备份已导出到：\n{path}', parent=window),
+            )
+
+        def import_local_backup():
+            backup_path = filedialog.askopenfilename(
+                parent=window,
+                title='导入备份数据',
+                filetypes=[('JSON 文件', '*.json')],
+            )
+            if not backup_path:
+                return
+            if not messagebox.askyesno(
+                '导入确认',
+                '导入会覆盖当前运行目录中的同名数据。\n建议先手动导出当前数据后再继续。\n\n是否继续导入？',
+                parent=window,
+            ):
+                return
+
+            def job():
+                with open(backup_path, 'r', encoding='utf-8') as handle:
+                    payload = json.load(handle)
+                self._restore_runtime_from_payload(payload)
+                return backup_path
+
+            run_in_background(
+                job,
+                '导入完成',
+                done_callback=lambda path: messagebox.showinfo(
+                    '导入成功',
+                    f'已从以下文件恢复数据：\n{path}\n\n建议重启应用以完整加载所有页面状态。',
+                    parent=window,
+                ),
+            )
+
+        add_actions(
+            backup_page,
+            '导入/导出',
+            '将当前运行目录完整打包为 JSON 备份文件，支持跨设备一键恢复全部配置与文本数据。',
+            [
+                {'text': '导出', 'style': 'primary', 'command': export_local_backup},
+                {'text': '导入', 'style': 'secondary', 'command': import_local_backup},
+            ],
+            note_text='导入会覆盖已有同名文件，建议先执行一次手动导出备份。',
+            note_color=COLORS['warning'],
+        )
+
+        webdav_form_shell = tk.Frame(backup_page, bg=COLORS['shadow'], bd=0, highlightthickness=0)
+        webdav_form_shell.pack(fill=tk.X, pady=(0, 14))
+        webdav_form = tk.Frame(
+            webdav_form_shell,
+            bg=COLORS['card_bg'],
+            highlightbackground=COLORS['card_border'],
+            highlightthickness=1,
+            bd=0,
+        )
+        webdav_form.pack(fill=tk.X, padx=(0, 4), pady=(0, 4))
+        tk.Label(
+            webdav_form,
+            text='WebDAV 同步',
+            font=FONTS['body_bold'],
+            fg=COLORS['text_main'],
+            bg=COLORS['card_bg'],
+        ).pack(anchor='w', padx=16, pady=(14, 0))
+        tk.Label(
+            webdav_form,
+            text='配置 WebDAV 后可共享备份数据。支持连接测试、手动上传与下载恢复。',
+            font=FONTS['small'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['card_bg'],
+            justify='left',
+            wraplength=1220,
+        ).pack(anchor='w', padx=16, pady=(6, 0))
+
+        webdav_grid = tk.Frame(webdav_form, bg=COLORS['card_bg'])
+        webdav_grid.pack(fill=tk.X, padx=16, pady=(16, 8))
+        webdav_grid.grid_columnconfigure(1, weight=1)
+        webdav_grid.grid_columnconfigure(3, weight=1)
+
+        tk.Label(webdav_grid, text='WebDAV 地址', font=FONTS['body'], fg=COLORS['text_main'], bg=COLORS['card_bg']).grid(
+            row=0, column=0, sticky='w', padx=(0, 10), pady=(0, 12)
+        )
+        ModernEntry(webdav_grid, textvariable=webdav_url_var, width=90, placeholder='https://example.com/dav/').grid(
+            row=0, column=1, columnspan=3, sticky='ew', pady=(0, 12), ipady=7
+        )
+
+        tk.Label(webdav_grid, text='用户名', font=FONTS['body'], fg=COLORS['text_main'], bg=COLORS['card_bg']).grid(
+            row=1, column=0, sticky='w', padx=(0, 10), pady=(0, 12)
+        )
+        ModernEntry(webdav_grid, textvariable=webdav_username_var, width=36, placeholder='账号').grid(
+            row=1, column=1, sticky='ew', padx=(0, 16), pady=(0, 12), ipady=7
+        )
+
+        tk.Label(webdav_grid, text='密码', font=FONTS['body'], fg=COLORS['text_main'], bg=COLORS['card_bg']).grid(
+            row=1, column=2, sticky='w', padx=(0, 10), pady=(0, 12)
+        )
+        ModernEntry(webdav_grid, textvariable=webdav_password_var, width=36, placeholder='密码', show='*').grid(
+            row=1, column=3, sticky='ew', pady=(0, 12), ipady=7
+        )
+
+        def current_webdav_settings():
+            return {
+                'url': (webdav_url_var.get() or '').strip(),
+                'username': (webdav_username_var.get() or '').strip(),
+                'password': webdav_password_var.get() or '',
+            }
+
+        def save_webdav_settings():
+            self.config_mgr.set_setting('backup_webdav_url', (webdav_url_var.get() or '').strip())
+            self.config_mgr.set_setting('backup_webdav_username', (webdav_username_var.get() or '').strip())
+            self.config_mgr.set_setting('backup_webdav_password', webdav_password_var.get() or '')
+            self.config_mgr.save()
+            self._set_status('WebDAV 配置已保存', COLORS['success'])
+            messagebox.showinfo('WebDAV', '配置已保存。', parent=window)
+
+        def test_webdav_connection():
+            run_in_background(
+                lambda: self._webdav_test_connection(current_webdav_settings()),
+                'WebDAV 连接正常',
+                done_callback=lambda target: messagebox.showinfo('连接成功', f'连接地址可用：\n{target}', parent=window),
+            )
+
+        def upload_webdav_backup():
+            run_in_background(
+                lambda: self._upload_backup_to_webdav(current_webdav_settings()),
+                'WebDAV 上传完成',
+                done_callback=lambda target: messagebox.showinfo('上传成功', f'已上传到：\n{target}', parent=window),
+            )
+
+        def download_webdav_backup():
+            if not messagebox.askyesno(
+                '下载并导入确认',
+                '该操作会从 WebDAV 下载备份并覆盖本地同名文件。\n建议先手动导出当前本地数据。\n\n是否继续？',
+                parent=window,
+            ):
+                return
+            run_in_background(
+                lambda: self._download_backup_from_webdav(current_webdav_settings()),
+                'WebDAV 导入完成',
+                done_callback=lambda target: messagebox.showinfo(
+                    '下载导入成功',
+                    f'已从以下地址下载并恢复：\n{target}\n\n建议重启应用以完整加载恢复内容。',
+                    parent=window,
+                ),
+            )
+
+        webdav_action_row = tk.Frame(webdav_form, bg=COLORS['card_bg'])
+        webdav_action_row.pack(fill=tk.X, padx=16, pady=(0, 14))
+        webdav_buttons = [
+            ('保存配置', 'primary', save_webdav_settings),
+            ('测试连接', 'secondary', test_webdav_connection),
+            ('上传同步数据', 'primary', upload_webdav_backup),
+            ('下载并导入共享数据', 'secondary', download_webdav_backup),
+        ]
+        for idx, (text, style, command) in enumerate(webdav_buttons):
+            shell, _button = create_home_shell_button(
+                webdav_action_row,
+                text,
+                command=command,
+                style=style,
+                font=FONTS['small'],
+                padx=12,
+                pady=8,
+            )
+            shell.pack(side=tk.LEFT, padx=(0, 10 if idx < len(webdav_buttons) - 1 else 0))
+
+        add_toggle(
+            backup_page,
+            'WebDAV 自动同步',
+            '开启后按间隔在后台执行同步任务，可用于多设备快速保持配置一致。',
+            webdav_auto_enabled_var,
+        )
+        add_select(
+            backup_page,
+            '同步间隔（秒）',
+            '建议设置为 600 秒以上；过短间隔可能触发远端限流。',
+            textvariable=webdav_auto_interval_var,
+            values=('600', '1200', '1800', '3600', '7200'),
+            width=12,
+        )
+        add_select(
+            backup_page,
+            '同步策略',
+            '智能合并默认优先上传本地最新状态；也可切换成仅上传或仅下载。',
+            textvariable=webdav_auto_strategy_var,
+            values=list(webdav_auto_strategy_display.values()),
+            width=28,
+        )
+
         current_theme = theme_display.get(self.config_mgr.get_setting('theme_mode', 'light'), '浅色模式')
         current_page = startup_display.get(self.config_mgr.get_setting('startup_page', 'home'), '首页')
         tk.Label(
@@ -4591,6 +5105,18 @@ class SmartPaperTool:
                 warnings.append('计费配置中的成本倍率无效，已自动恢复为默认值 x1。')
             self.config_mgr.set_setting('global_billing_multiplier', billing_multiplier_text)
             self.config_mgr.set_setting('global_billing_mode', billing_mode_reverse.get(global_billing_mode_var.get(), 'request_model'))
+            self.config_mgr.set_setting('backup_webdav_url', (webdav_url_var.get() or '').strip())
+            self.config_mgr.set_setting('backup_webdav_username', (webdav_username_var.get() or '').strip())
+            self.config_mgr.set_setting('backup_webdav_password', webdav_password_var.get() or '')
+            self.config_mgr.set_setting('backup_webdav_auto_enabled', webdav_auto_enabled_var.get())
+            self.config_mgr.set_setting(
+                'backup_webdav_auto_interval_sec',
+                parse_positive_number(webdav_auto_interval_var.get(), 3600, int, minimum=60),
+            )
+            self.config_mgr.set_setting(
+                'backup_webdav_auto_strategy',
+                webdav_auto_strategy_reverse.get(webdav_auto_strategy_var.get(), 'smart_merge'),
+            )
 
             try:
                 self._set_launch_on_startup(launch_on_startup_var.get(), silent=silent_startup_var.get())
@@ -4598,6 +5124,7 @@ class SmartPaperTool:
                 warnings.append(f'开机启动设置未能完全同步到系统：{exc}')
 
             self.config_mgr.save()
+            self._schedule_webdav_auto_sync()
             self._apply_theme(theme_mode)
 
             if 'home' in self.pages and hasattr(self.pages['home'], 'refresh_dashboard'):
@@ -4612,7 +5139,9 @@ class SmartPaperTool:
                 f'global_max_tokens={(global_parameter_vars["max_tokens"].get() or "").strip() or "-"}, '
                 f'global_timeout={(global_parameter_vars["timeout"].get() or "").strip() or "-"}, '
                 f'global_billing_multiplier={billing_multiplier_text or "1"}, '
-                f'global_billing_mode={billing_mode_reverse.get(global_billing_mode_var.get(), "request_model")}'
+                f'global_billing_mode={billing_mode_reverse.get(global_billing_mode_var.get(), "request_model")}, '
+                f'webdav_auto_enabled={webdav_auto_enabled_var.get()}, '
+                f'webdav_auto_interval={parse_positive_number(webdav_auto_interval_var.get(), 3600, int, minimum=60)}'
             )
 
             self._close_dialog(window)
