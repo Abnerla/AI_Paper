@@ -88,6 +88,17 @@
 - 请勿将 AI 生成的内容直接提交，务必进行人工审核和修改，以确保论文质量和学术诚信。
 - 务必不要过度依赖 AI 生成内容，保持自己的学术思考和写作能力。
 
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=voidborne-d%2Fhumanize-chinese%2CAbnerla%2FAI_paper&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=voidborne-d/humanize-chinese%2CAbnerla/AI_paper&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=voidborne-d/humanize-chinese%2CAbnerla/AI_paper&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=voidborne-d/humanize-chinese%2CAbnerla/AI_paper&type=date&legend=top-left" />
+ </picture>
+</a>
+
 ## 意见与建议
 
 纸研社仍在持续开发中，非常期待听到你的声音！无论是功能建议、使用体验反馈，还是发现了 Bug，都欢迎通过以下方式告诉我：
