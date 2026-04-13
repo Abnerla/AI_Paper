@@ -427,9 +427,9 @@ class ReportImportEngine:
     def parse_in_subprocess(self, path: str, page_kind: str, original_text: str, *, timeout=None) -> ImportSession:
         timeout_seconds = int(timeout or self.WORKER_TIMEOUT_SECONDS)
         payload = {
-            'path': path,
-            'page_kind': page_kind,
-            'original_text': original_text,
+            'path': _strip_unpaired_surrogates(path),
+            'page_kind': _strip_unpaired_surrogates(page_kind),
+            'original_text': _strip_unpaired_surrogates(original_text),
         }
         command = self._build_worker_command()
         creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -484,7 +484,7 @@ class ReportImportEngine:
         stderr_thread.start()
         try:
             if process.stdin is not None:
-                process.stdin.write(json.dumps(payload, ensure_ascii=False))
+                process.stdin.write(_strip_unpaired_surrogates(json.dumps(payload, ensure_ascii=False)))
                 process.stdin.close()
             process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
@@ -674,7 +674,15 @@ class ReportImportEngine:
 
 
 def normalize_block_text(text: str) -> str:
-    return str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip('\n')
+    normalized = str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip('\n')
+    return _strip_unpaired_surrogates(normalized)
+
+
+def _strip_unpaired_surrogates(text: str) -> str:
+    value = str(text or '')
+    # Some imported files may contain lone surrogate code points which cannot be
+    # encoded to UTF-8 in IPC/log serialization; replace them proactively.
+    return value.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
 
 
 def _emit_report_import_log(log_callback, message, level='INFO'):

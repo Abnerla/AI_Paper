@@ -12,8 +12,14 @@ import traceback
 from modules.report_importer import ReportImportEngine
 
 
+def _strip_unpaired_surrogates(text: str) -> str:
+    value = str(text or '')
+    return value.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+
+
 def _write_stdout_json(payload: dict):
-    sys.stdout.buffer.write(json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+    serialized = json.dumps(payload, ensure_ascii=False)
+    sys.stdout.buffer.write(_strip_unpaired_surrogates(serialized).encode('utf-8'))
     sys.stdout.buffer.flush()
 
 
