@@ -140,6 +140,7 @@ class ConfigManager:
                 'enable_loading_animation': True,
                 'launch_on_startup': False,
                 'silent_startup': False,
+                'minimize_to_tray_on_minimize': False,
                 'minimize_to_tray_on_close': False,
                 'ignored_update_version': '',
                 'global_test_model': '',

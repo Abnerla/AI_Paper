@@ -14,6 +14,14 @@ import threading
 import time
 import webbrowser
 try:
+    import pystray
+except Exception:
+    pystray = None
+try:
+    from PIL import Image as PILImage
+except Exception:
+    PILImage = None
+try:
     from ctypes import wintypes
 except (ImportError, ValueError):
     wintypes = None
@@ -374,6 +382,11 @@ class SmartPaperTool:
         self._top_nav_layout_job = None
         self._top_nav_last_width = None
         self._top_nav_last_stack_state = None
+        self._tray_icon = None
+        self._tray_thread = None
+        self._is_tray_minimized = False
+        self._is_shutting_down = False
+        self._tray_hint_shown = False
         self.settings_window = None
         self._api_config_window = None
         self._dialog_api_page = None
@@ -1808,7 +1821,107 @@ class SmartPaperTool:
 
     def _minimize_window(self):
         self._stop_window_drag()
+        if self.config_mgr and self.config_mgr.get_setting('minimize_to_tray_on_minimize', False):
+            self._minimize_to_tray(reason='manual_minimize')
+            return
         self.root.iconify()
+
+    def _supports_tray(self):
+        return pystray is not None and PILImage is not None
+
+    def _build_tray_icon_image(self):
+        icon_path = get_resource_path('logo.png')
+        if not os.path.exists(icon_path):
+            return None
+        try:
+            with PILImage.open(icon_path) as source:
+                image = source.convert('RGBA')
+                if image.size != (64, 64):
+                    resampling = getattr(getattr(PILImage, 'Resampling', PILImage), 'LANCZOS', getattr(PILImage, 'LANCZOS', 1))
+                    image = image.resize((64, 64), resampling)
+                return image.copy()
+        except Exception:
+            return None
+
+    def _ensure_tray_icon(self):
+        if self._tray_icon is not None:
+            return self._tray_icon
+        if not self._supports_tray():
+            return None
+        tray_image = self._build_tray_icon_image()
+        if tray_image is None:
+            return None
+
+        open_item = pystray.MenuItem('打开纸研社', lambda _icon, _item: self._restore_from_tray())
+        quit_item = pystray.MenuItem('退出', lambda _icon, _item: self._quit_from_tray())
+        self._tray_icon = pystray.Icon('paperlab', tray_image, APP_NAME, menu=pystray.Menu(open_item, quit_item))
+        self._tray_thread = threading.Thread(target=self._tray_icon.run, name='PaperLabTray', daemon=True)
+        self._tray_thread.start()
+        return self._tray_icon
+
+    def _restore_from_tray(self):
+        if self._is_shutting_down:
+            return
+        try:
+            self.root.after(0, self._restore_from_tray_ui)
+        except Exception:
+            pass
+
+    def _restore_from_tray_ui(self):
+        if self._is_shutting_down:
+            return
+        self._is_tray_minimized = False
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+        except Exception:
+            pass
+
+    def _quit_from_tray(self):
+        if self._is_shutting_down:
+            return
+        self._is_shutting_down = True
+        try:
+            self.root.after(0, self._perform_exit)
+        except Exception:
+            pass
+
+    def _stop_tray_icon(self):
+        icon = self._tray_icon
+        thread = self._tray_thread
+        self._tray_icon = None
+        self._tray_thread = None
+        if icon is not None:
+            try:
+                icon.stop()
+            except Exception:
+                pass
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            try:
+                thread.join(timeout=1.2)
+            except Exception:
+                pass
+
+    def _minimize_to_tray(self, reason=''):
+        self._stop_window_drag()
+        if not self._supports_tray():
+            self._write_app_log('最小化托盘失败：缺少 pystray 或 Pillow，回退到任务栏最小化。', level='WARNING')
+            self.root.iconify()
+            return
+        tray_icon = self._ensure_tray_icon()
+        if tray_icon is None:
+            self._write_app_log('最小化托盘失败：托盘图标初始化失败，回退到任务栏最小化。', level='WARNING')
+            self.root.iconify()
+            return
+        try:
+            self.root.withdraw()
+            self._is_tray_minimized = True
+            if not self._tray_hint_shown and reason:
+                self._write_app_log(f'窗口已最小化到系统托盘，原因：{reason}')
+                self._tray_hint_shown = True
+        except Exception:
+            self.root.iconify()
 
     def _toggle_window_maximize(self, _event=None):
         if self._window_is_maximized:
@@ -3676,7 +3789,12 @@ class SmartPaperTool:
         startup_var = tk.StringVar(value=startup_display.get(self.config_mgr.get_setting('startup_page', 'home'), '首页'))
         launch_on_startup_var = tk.BooleanVar(value=self.config_mgr.get_setting('launch_on_startup', False))
         silent_startup_var = tk.BooleanVar(value=self.config_mgr.get_setting('silent_startup', False))
-        minimize_to_tray_var = tk.BooleanVar(value=self.config_mgr.get_setting('minimize_to_tray_on_close', False))
+        minimize_to_tray_on_minimize_var = tk.BooleanVar(
+            value=self.config_mgr.get_setting('minimize_to_tray_on_minimize', False)
+        )
+        minimize_to_tray_on_close_var = tk.BooleanVar(
+            value=self.config_mgr.get_setting('minimize_to_tray_on_close', False)
+        )
         home_stats_var = tk.BooleanVar(value=self.config_mgr.get_setting('show_home_stats', True))
         loading_var = tk.BooleanVar(value=self.config_mgr.get_setting('enable_loading_animation', True))
         global_test_prompt_var = tk.StringVar(value=self.config_mgr.get_setting('global_test_prompt', 'Who are you?'))
@@ -4056,7 +4174,18 @@ class SmartPaperTool:
 
         add_toggle(general_page, '开机启动', '登录 Windows 后自动启动纸研社。保存设置后会同步当前用户的系统启动项。', launch_on_startup_var)
         add_toggle(general_page, '静默启动', '用于开机启动场景，启动后以较安静的最小化方式进入后台。', silent_startup_var)
-        add_toggle(general_page, '关闭时最小化托盘', '关闭主窗口时改为后台最小化，便于继续驻留当前工作。', minimize_to_tray_var)
+        add_toggle(
+            general_page,
+            '最小化按钮进入托盘',
+            '点击窗口最小化按钮时隐藏主窗口并驻留系统托盘；关闭后可从托盘恢复。',
+            minimize_to_tray_on_minimize_var,
+        )
+        add_toggle(
+            general_page,
+            '关闭按钮进入托盘',
+            '点击关闭按钮时不退出程序，改为最小化到系统托盘并继续后台驻留。',
+            minimize_to_tray_on_close_var,
+        )
         add_toggle(general_page, '首页统计面板', '保留原有首页统计显示偏好，可随时关闭或重新开启统计区。', home_stats_var)
         add_toggle(general_page, '加载动画', '保留原有 loading.gif 加载动画开关，控制异步操作的视觉反馈。', loading_var)
 
@@ -4446,7 +4575,8 @@ class SmartPaperTool:
             self.config_mgr.set_setting('enable_loading_animation', loading_var.get())
             self.config_mgr.set_setting('launch_on_startup', launch_on_startup_var.get())
             self.config_mgr.set_setting('silent_startup', silent_startup_var.get())
-            self.config_mgr.set_setting('minimize_to_tray_on_close', minimize_to_tray_var.get())
+            self.config_mgr.set_setting('minimize_to_tray_on_minimize', minimize_to_tray_on_minimize_var.get())
+            self.config_mgr.set_setting('minimize_to_tray_on_close', minimize_to_tray_on_close_var.get())
             self.config_mgr.set_setting('global_test_prompt', (global_test_prompt_var.get() or '').strip() or 'Who are you?')
             self.config_mgr.set_setting('global_test_timeout_sec', parse_positive_number(global_test_timeout_var.get(), 45.0, float, minimum=1.0))
             self.config_mgr.set_setting('global_test_degrade_ms', parse_positive_number(global_test_degrade_var.get(), 6000, int, minimum=0))
@@ -4476,7 +4606,9 @@ class SmartPaperTool:
             self._write_app_log(
                 '设置已保存: '
                 f'theme={theme_mode}, startup_page={startup_page}, launch_on_startup={launch_on_startup_var.get()}, '
-                f'silent_startup={silent_startup_var.get()}, minimize_to_tray_on_close={minimize_to_tray_var.get()}, '
+                f'silent_startup={silent_startup_var.get()}, '
+                f'minimize_to_tray_on_minimize={minimize_to_tray_on_minimize_var.get()}, '
+                f'minimize_to_tray_on_close={minimize_to_tray_on_close_var.get()}, '
                 f'global_max_tokens={(global_parameter_vars["max_tokens"].get() or "").strip() or "-"}, '
                 f'global_timeout={(global_parameter_vars["timeout"].get() or "").strip() or "-"}, '
                 f'global_billing_multiplier={billing_multiplier_text or "1"}, '
@@ -4621,14 +4753,19 @@ class SmartPaperTool:
         self.root.mainloop()
 
     def _on_close(self):
+        if self._is_shutting_down:
+            self._perform_exit()
+            return
+
         if self.config_mgr and self.config_mgr.get_setting('minimize_to_tray_on_close', False):
             self._write_app_log('关闭主窗口时执行后台最小化')
-            try:
-                self.root.iconify()
-                return
-            except Exception:
-                pass
+            self._minimize_to_tray(reason='close_button')
+            return
 
+        self._perform_exit()
+
+    def _perform_exit(self):
+        self._is_shutting_down = True
         self._write_app_log('应用退出')
         if self.config_mgr:
             try:
@@ -4648,6 +4785,7 @@ class SmartPaperTool:
             except Exception:
                 pass
             self.config_mgr.save()
+        self._stop_tray_icon()
         self._restore_runtime_log_hooks()
         self._clear_runtime_log_file()
         self.root.destroy()
