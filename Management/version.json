@@ -1,13 +1,13 @@
 {
-  "version": 7,
-  "latest_version": "v1.2.8",
+  "version": 8,
+  "latest_version": "v1.3.0",
   "min_supported_version": "v1.2.1",
-  "release_date": "2026-04-12",
+  "release_date": "2026-04-13",
   "download_url": "https://github.com/Abnerla/AI_paper/releases",
   "changelog": [
     {
-      "version": "v1.2.8",
-      "date": "2026-04-12",
+      "version": "v1.3.0",
+      "date": "2026-04-13",
       "changes": [
       "增加 模型支持和新增New API和Sub2API中转站",
       "增加 模型支持和新增谷歌gemini模型",

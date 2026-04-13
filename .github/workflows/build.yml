@@ -150,7 +150,7 @@ jobs:
       - name: 校验 Release 版本号
         if: env.RELEASE_TAG == ''
         run: |
-          echo "手动创建 Release 时必须填写 build_version，例如 v1.2.6"
+          echo "手动创建 Release 时必须填写 build_version"
           exit 1
 
       - name: 下载所有构建产物
