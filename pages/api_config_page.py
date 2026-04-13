@@ -263,34 +263,40 @@ class APIConfigPage:
         self._build_basic_section(parent, FORM_KEY)
         self._build_collapsible_section(parent, '高级选项', lambda p: self._build_advanced_options(p, FORM_KEY))
         self._build_json_section(parent, FORM_KEY)
-        self._build_test_section(parent, FORM_KEY)
+
+        entries = self._entries.setdefault(FORM_KEY, {})
+        use_separate_test = entries.get('use_separate_test')
+        if use_separate_test is None:
+            use_separate_test = tk.BooleanVar(value=bool(self._get_form_config().get('use_separate_test', False)))
+            entries['use_separate_test'] = use_separate_test
+
+        def make_test_toggle(title_row):
+            self._make_section_switch(title_row, use_separate_test)
+
+        self._build_collapsible_section(
+            parent,
+            '模型测试配置',
+            lambda p: self._build_test_section(p, FORM_KEY, use_separate_test),
+            collapsed=True,
+            right_widget_factory=make_test_toggle,
+            open_var=use_separate_test,
+        )
+
+        use_separate_params = entries.get('use_separate_params')
+        if use_separate_params is None:
+            use_separate_params = tk.BooleanVar(value=bool(self._get_form_config().get('use_separate_params', False)))
+            entries['use_separate_params'] = use_separate_params
 
         def make_params_toggle(title_row):
-            entries = self._entries.setdefault(FORM_KEY, {})
-            use_separate = entries.get('use_separate_params')
-            if use_separate is None:
-                use_separate = tk.BooleanVar(value=bool(self._get_form_config().get('use_separate_params', False)))
-                entries['use_separate_params'] = use_separate
-            tk.Checkbutton(
-                title_row,
-                text='使用单独配置',
-                variable=use_separate,
-                font=FONTS['small'],
-                fg=COLORS['text_sub'],
-                bg=COLORS['card_bg'],
-                activebackground=COLORS['card_bg'],
-                selectcolor=COLORS['card_bg'],
-                bd=0,
-                highlightthickness=0,
-                cursor='hand2',
-            ).pack(side=tk.RIGHT)
+            self._make_section_switch(title_row, use_separate_params)
 
         self._build_collapsible_section(
             parent,
             '参数需求',
-            lambda p: self._build_params_section(p, FORM_KEY),
+            lambda p: self._build_params_section(p, FORM_KEY, use_separate_params),
             collapsed=True,
             right_widget_factory=make_params_toggle,
+            open_var=use_separate_params,
         )
         self._build_billing_section(parent, FORM_KEY)
 
@@ -353,7 +359,39 @@ class APIConfigPage:
         inner.pack(fill=tk.X, padx=16, pady=(10, 14))
         return card, inner
 
-    def _build_collapsible_section(self, parent, title, build_fn, collapsed=True, right_widget_factory=None):
+    def _make_section_switch(self, title_row, variable):
+        switch = tk.Checkbutton(
+            title_row,
+            text='使用单独配置',
+            variable=variable,
+            indicatoron=False,
+            relief=tk.FLAT,
+            bd=0,
+            cursor='hand2',
+            font=FONTS['small'],
+            padx=14,
+            pady=6,
+            highlightthickness=0,
+        )
+
+        def refresh_switch():
+            active = bool(variable.get())
+            switch.configure(
+                bg=COLORS['accent'] if active else COLORS['surface_alt'],
+                fg=COLORS['text_main'] if active else COLORS['text_sub'],
+                activebackground=COLORS['accent'] if active else COLORS['surface_alt'],
+                activeforeground=COLORS['text_main'] if active else COLORS['text_sub'],
+                selectcolor=COLORS['accent'] if active else COLORS['surface_alt'],
+                text='使用单独配置' if active else '使用单独配置',
+            )
+
+        switch.configure(command=refresh_switch)
+        switch.bind('<Button-1>', lambda e: 'break')
+        variable.trace_add('write', lambda *_: refresh_switch())
+        refresh_switch()
+        switch.pack(side=tk.RIGHT)
+
+    def _build_collapsible_section(self, parent, title, build_fn, collapsed=True, right_widget_factory=None, open_var=None):
         shell = tk.Frame(parent, bg=COLORS['shadow'], bd=0, highlightthickness=0)
         shell.pack(fill=tk.X, pady=(0, 10))
 
@@ -396,26 +434,34 @@ class APIConfigPage:
         body = tk.Frame(card, bg=COLORS['card_bg'])
         built = [False]
 
-        def toggle(*_args):
-            if not built[0]:
-                build_fn(body)
-                built[0] = True
-            if is_open.get():
-                body.pack_forget()
-                arrow_lbl.configure(text='\u25b6')
-                is_open.set(False)
-            else:
+        def set_body_visible(visible):
+            if visible:
+                if not built[0]:
+                    build_fn(body)
+                    built[0] = True
                 body.pack(fill=tk.X, padx=16, pady=(0, 12))
                 arrow_lbl.configure(text='\u25bc')
-                is_open.set(True)
+            else:
+                body.pack_forget()
+                arrow_lbl.configure(text='\u25b6')
 
-        header_row.bind('<Button-1>', toggle)
-        arrow_lbl.bind('<Button-1>', toggle)
+        def toggle(event=None):
+            set_body_visible(not bool(body.winfo_manager()))
 
-        if not collapsed:
+        if open_var is not None:
             build_fn(body)
             built[0] = True
-            body.pack(fill=tk.X, padx=16, pady=(0, 12))
+            open_var.trace_add('write', lambda *_: set_body_visible(bool(open_var.get())))
+            set_body_visible(bool(open_var.get()))
+            header_row.bind('<Button-1>', toggle)
+            arrow_lbl.bind('<Button-1>', toggle)
+        else:
+            header_row.bind('<Button-1>', toggle)
+            arrow_lbl.bind('<Button-1>', toggle)
+            if not collapsed:
+                build_fn(body)
+                built[0] = True
+                set_body_visible(True)
 
         return card
 
@@ -973,40 +1019,21 @@ class APIConfigPage:
             header_txt.insert('1.0', saved_headers)
         self._entries[form_key]['extra_headers'] = header_txt
 
-    def _build_test_section(self, parent, form_key):
-        cfg = self._get_form_config()
-        use_separate = tk.BooleanVar(value=bool(cfg.get('use_separate_test', False)))
+    def _build_test_section(self, parent, form_key, use_separate):
         self._entries[form_key]['use_separate_test'] = use_separate
 
-        def make_toggle(title_row):
-            tk.Checkbutton(
-                title_row,
-                text='使用单独配置',
-                variable=use_separate,
-                font=FONTS['small'],
-                fg=COLORS['text_sub'],
-                bg=COLORS['card_bg'],
-                activebackground=COLORS['card_bg'],
-                selectcolor=COLORS['card_bg'],
-                bd=0,
-                highlightthickness=0,
-                cursor='hand2',
-            ).pack(side=tk.RIGHT)
-
-        _, inner = self._make_card(parent, '模型测试配置', right_widget_factory=make_toggle)
-
-        self._entry_row(inner, '测试模型 ID', 'test_model', form_key, placeholder='留空沿用当前模型 ID', width=40)
+        self._entry_row(parent, '测试模型 ID', 'test_model', form_key, placeholder='留空沿用当前模型 ID', width=40)
         self._entry_row(
-            inner,
+            parent,
             '提示词',
             'test_prompt',
             form_key,
             placeholder='留空沿用全局模型测试提示',
             width=40,
-            prefill=self.config.get_setting('global_test_prompt', 'Who are you?'),
+            prefill=self.config.get_setting('global_test_prompt', 'Who are you?') or '',
         )
         self._entry_row(
-            inner,
+            parent,
             '超时（秒）',
             'test_timeout',
             form_key,
@@ -1015,7 +1042,7 @@ class APIConfigPage:
             prefill=str(self.config.get_setting('global_test_timeout_sec', 45) or 45),
         )
         self._entry_row(
-            inner,
+            parent,
             '降级阈值（毫秒）',
             'test_degrade_ms',
             form_key,
@@ -1024,7 +1051,7 @@ class APIConfigPage:
             prefill=str(self.config.get_setting('global_test_degrade_ms', 6000) or 6000),
         )
         self._entry_row(
-            inner,
+            parent,
             '最大重试次数',
             'test_max_retries',
             form_key,
@@ -1033,18 +1060,7 @@ class APIConfigPage:
             prefill=str(self.config.get_setting('global_test_max_retries', 2) or 2),
         )
 
-        def refresh_state(*_args):
-            state = 'normal' if use_separate.get() else 'disabled'
-            for child in inner.winfo_children():
-                try:
-                    child.configure(state=state)
-                except Exception:
-                    pass
-
-        use_separate.trace_add('write', refresh_state)
-        refresh_state()
-
-        test_btn_row = tk.Frame(inner, bg=COLORS['card_bg'])
+        test_btn_row = tk.Frame(parent, bg=COLORS['card_bg'])
         test_btn_row.pack(fill=tk.X, pady=(10, 0))
         ModernButton(test_btn_row, '测试连接', style='accent', command=self._test_connection, padx=16, pady=8).pack(side=tk.RIGHT)
         self.connection_tip_label = tk.Label(
@@ -1058,12 +1074,20 @@ class APIConfigPage:
         )
         self.connection_tip_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
 
-    def _build_params_section(self, parent, form_key):
+        def refresh_state(*_args):
+            state = 'normal' if use_separate.get() else 'disabled'
+            for child in parent.winfo_children():
+                try:
+                    child.configure(state=state)
+                except Exception:
+                    pass
+
+        use_separate.trace_add('write', refresh_state)
+        refresh_state()
+
+    def _build_params_section(self, parent, form_key, use_separate):
         entries = self._entries.setdefault(form_key, {})
-        use_separate = entries.get('use_separate_params')
-        if use_separate is None:
-            use_separate = tk.BooleanVar(value=bool(self._get_form_config().get('use_separate_params', False)))
-            entries['use_separate_params'] = use_separate
+        entries['use_separate_params'] = use_separate
 
         self._entry_row(parent, '温度', 'temperature', form_key, placeholder='留空沿用全局', width=20)
         self._entry_row(parent, '最大生成长度', 'max_tokens', form_key, placeholder='留空沿用全局', width=20)
@@ -1089,19 +1113,7 @@ class APIConfigPage:
         self._entries[form_key]['use_separate_billing'] = use_separate
 
         def make_toggle(title_row):
-            tk.Checkbutton(
-                title_row,
-                text='使用单独配置',
-                variable=use_separate,
-                font=FONTS['small'],
-                fg=COLORS['text_sub'],
-                bg=COLORS['card_bg'],
-                activebackground=COLORS['card_bg'],
-                selectcolor=COLORS['card_bg'],
-                bd=0,
-                highlightthickness=0,
-                cursor='hand2',
-            ).pack(side=tk.RIGHT)
+            self._make_section_switch(title_row, use_separate)
 
         def build_body(inner):
             self._entry_row(inner, '成本倍率', 'billing_multiplier', form_key, placeholder='1.0（空=沿用全局）', width=30)
@@ -1118,7 +1130,7 @@ class APIConfigPage:
             use_separate.trace_add('write', refresh_state)
             refresh_state()
 
-        self._build_collapsible_section(parent, '计费配置', build_body, collapsed=True, right_widget_factory=make_toggle)
+        self._build_collapsible_section(parent, '计费配置', build_body, collapsed=True, right_widget_factory=make_toggle, open_var=use_separate)
 
     def _format_json_field(self, form_key, field_key, field_label):
         txt = self._entries.get(form_key, {}).get(field_key)
