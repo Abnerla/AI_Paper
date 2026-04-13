@@ -394,7 +394,7 @@ cp -a "{payload_root}/." "%{{buildroot}}/"
     spec_path = os.path.join(spec_dir, f'{APP_PACKAGE_ID}.spec')
     write_text_file(spec_path, spec_content)
 
-    print(f'[build] Creating RPM package')
+    print('[build] Creating RPM package')
     subprocess.check_call([
         rpmbuild,
         '--define', f'_topdir {rpm_root}',
@@ -445,7 +445,7 @@ def create_inno_setup_installer():
         raise FileNotFoundError('[build] Missing dependency: Inno Setup (ISCC)')
 
     cmd = [iscc, f'/DMyAppVersion={APP_VERSION}', iss_path]
-    print(f'[build] Creating Windows installer with Inno Setup')
+    print('[build] Creating Windows installer with Inno Setup')
     subprocess.check_call(cmd)
     print('[build] Windows installer created')
 

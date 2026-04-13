@@ -1,7 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-纸研社 v1.2.2
-独立运行的 Windows 桌面应用
+纸研社桌面应用主壳（窗口、导航与各页面挂载）。
 """
 
 import os
@@ -2330,10 +2329,6 @@ class SmartPaperTool:
             username_font = tkfont.Font(font=FONTS['small'])
         except Exception:
             username_font = tkfont.nametofont('TkDefaultFont')
-        try:
-            arrow_font = tkfont.Font(font=FONTS['tiny'])
-        except Exception:
-            arrow_font = tkfont.nametofont('TkDefaultFont')
 
         username_width = username_font.measure(username_text) + 12
         cursor_x = row_pad_left
@@ -2635,7 +2630,6 @@ class SmartPaperTool:
             return value if value % 2 == 0 else value + 1
 
         nav_shadow_gap = getattr(self, 'top_nav_shadow_gap', 3)
-        tool_shell_extra = getattr(self, 'top_nav_shell_inset', 0) + nav_shadow_gap
         nav_min_border_width = 92
         nav_button_inset_x = 0
         nav_button_inset_y = 0
@@ -3234,7 +3228,6 @@ class SmartPaperTool:
         base_bg = COLORS['card_bg']
         title_fg = COLORS['text_main']
         subtitle_fg = COLORS['text_sub']
-        icon_fg = COLORS['primary'] if selected else COLORS['text_main']
         title_font = (FONTS['body'][0], 9)
         subtitle_font = (FONTS['tiny'][0], 7)
         text_width = 220
@@ -4043,7 +4036,7 @@ class SmartPaperTool:
         advanced_page = section_pages['advanced']
         about_page = section_pages['about']
 
-        theme_combo = add_select(
+        add_select(
             general_page,
             '主题模式',
             '保留原有主题设置，可在设置内直接切换浅色、深色或跟随系统。',
@@ -4052,7 +4045,7 @@ class SmartPaperTool:
             width=16,
         )
 
-        startup_combo = add_select(
+        add_select(
             general_page,
             '默认启动页',
             '保留原有默认启动页设置，控制软件启动后的首个页面。',

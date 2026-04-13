@@ -2195,8 +2195,6 @@ class HomePage:
         text_width = int(max(text_width, 1))
         subtitle_width = min(max(text_width - 8, 620), 928)
         tip_width = min(max(text_width - 8, 560), 840)
-        actions_width = min(text_width, 404)
-        tags_width = min(text_width, 760)
 
         self.hero_text.configure(width=text_width)
         self.hero_text.itemconfigure(

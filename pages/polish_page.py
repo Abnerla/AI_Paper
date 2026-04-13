@@ -8,6 +8,7 @@ from tkinter import messagebox, ttk
 
 from modules.app_metadata import MODULE_POLISH, SOURCE_KIND_LABELS as GLOBAL_SOURCE_KIND_LABELS
 from modules.polisher import AcademicPolisher
+from modules.report_importer import normalize_block_text
 from modules.prompt_center import PromptCenter
 from modules.task_runner import TaskRunner
 from pages.home_support import ensure_model_configured
@@ -544,12 +545,8 @@ class PolishPage(WorkspaceStateMixin):
         if readonly:
             widget.configure(state=tk.DISABLED)
 
-    @staticmethod
-    def _normalize_block_text(text):
-        return str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip('\n')
-
     def _set_input_text(self, text, source_kind, source_desc, topic_hint='', paper_title=None, fingerprint=None):
-        normalized_text = self._normalize_block_text(text)
+        normalized_text = normalize_block_text(text)
         self._programmatic_input = True
         try:
             self.input_text.delete('1.0', tk.END)
@@ -570,7 +567,7 @@ class PolishPage(WorkspaceStateMixin):
         self._schedule_workspace_state_save()
 
     def _get_input_text(self):
-        return self._normalize_block_text(self.input_text.get('1.0', tk.END))
+        return normalize_block_text(self.input_text.get('1.0', tk.END))
 
     def _get_note_text(self):
         return self.note_text.get('1.0', tk.END).strip()
@@ -769,7 +766,7 @@ class PolishPage(WorkspaceStateMixin):
         if not isinstance(payload, dict):
             return {'ok': False, 'message': '发送内容格式不正确'}
 
-        text = self._normalize_block_text(payload.get('text', ''))
+        text = normalize_block_text(payload.get('text', ''))
         if not text.strip():
             return {'ok': False, 'message': '当前章节没有可发送的正文内容'}
 
@@ -808,7 +805,7 @@ class PolishPage(WorkspaceStateMixin):
         return '论文写作页 / 当前正文区'
 
     def _ensure_result_for_apply(self):
-        result = self._normalize_block_text(self.latest_result_text)
+        result = normalize_block_text(self.latest_result_text)
         if not result.strip():
             messagebox.showwarning('提示', '请先执行任务，生成可回填的结果', parent=self.frame)
             return ''
@@ -931,7 +928,7 @@ class PolishPage(WorkspaceStateMixin):
             return
 
         snapshot = self._pull_paper_write_selection_snapshot()
-        snapshot_text = self._normalize_block_text((snapshot or {}).get('text', ''))
+        snapshot_text = normalize_block_text((snapshot or {}).get('text', ''))
         if snapshot and snapshot_text.strip():
             fingerprint = (
                 'selection',
@@ -955,7 +952,7 @@ class PolishPage(WorkspaceStateMixin):
                 return
 
         context = self._pull_paper_write_context()
-        current_content = self._normalize_block_text(context.get('current_content', ''))
+        current_content = normalize_block_text(context.get('current_content', ''))
         current_section = context.get('current_section', '').strip()
         if not current_content.strip():
             return

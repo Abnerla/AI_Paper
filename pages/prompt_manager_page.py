@@ -538,7 +538,7 @@ class PromptManagerPanel:
     def _refresh_scene_visibility(self):
         if not self.scene_card:
             return
-        show_scene_card = self.current_page_id == 'paper_write'
+        show_scene_card = bool(PAGE_SCENE_MAP.get(self.current_page_id))
         is_visible = self.scene_card.winfo_manager() == 'pack'
         if show_scene_card and not is_visible:
             pack_kwargs = {'fill': tk.X, 'pady': (0, 10)}
@@ -549,9 +549,11 @@ class PromptManagerPanel:
             self.scene_card.pack_forget()
 
     def _refresh_scene_tabs(self):
-        for widget in self.scene_tabs_bar.widgets:
-            widget.destroy()
-        self.scene_tabs_bar.widgets = []
+        if self.scene_tabs_bar:
+            self.scene_tabs_bar.destroy()
+
+        self.scene_tabs_bar = ResponsiveButtonBar(self.scene_card.inner, min_item_width=160, gap_x=8, gap_y=8, bg=COLORS['card_bg'])
+        self.scene_tabs_bar.pack(fill=tk.X)
         self._scene_buttons = {}
 
         for scene_id in PAGE_SCENE_MAP.get(self.current_page_id, []):
@@ -567,6 +569,7 @@ class PromptManagerPanel:
             self.scene_tabs_bar.add(button)
             self._scene_buttons[scene_id] = button
         self.scene_tabs_bar.after_idle(self.scene_tabs_bar._relayout)
+        self.scene_tabs_bar.update_idletasks()
 
     def _refresh_scene_header(self):
         scene_def = self.prompt_center.get_scene_def(self.current_scene_id)

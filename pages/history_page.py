@@ -603,7 +603,6 @@ class HistoryPage:
         title = self._get_paper_title(display)
         module = selected.get('module', '') or '未分类'
         operation = selected.get('operation', '') or '未命名操作'
-        time_text = selected.get('time', '') or '未记录时间'
         word_count = self._get_word_count(display)
         version_id = display.get('id', '') if display else ''
 

@@ -1206,55 +1206,6 @@ class ScrollablePage(tk.Frame):
 
 
 def bind_combobox_dropdown_mousewheel(combo):
-    """为 Combobox 下拉列表绑定独立滚轮，避免外层滚动容器接管事件。"""
-    if not isinstance(combo, ttk.Combobox):
-        return
-
-    def _locate_listbox():
-        try:
-            popdown = combo.tk.eval(f'ttk::combobox::PopdownWindow {combo}')
-        except tk.TclError:
-            return None
-
-        if not popdown:
-            return None
-
-        for child_name in (f'{popdown}.f.l', f'{popdown}.l'):
-            try:
-                return combo.nametowidget(child_name)
-            except (KeyError, tk.TclError):
-                continue
-        return None
-
-    def _on_listbox_mousewheel(event):
-        listbox = event.widget
-        if event.num == 4:
-            listbox.yview_scroll(-1, 'units')
-        elif event.num == 5:
-            listbox.yview_scroll(1, 'units')
-        else:
-            delta = int(-1 * (event.delta / 120))
-            if delta == 0 and event.delta:
-                delta = -1 if event.delta > 0 else 1
-            if delta:
-                listbox.yview_scroll(delta, 'units')
-        return 'break'
-
-    def _ensure_binding(_event=None):
-        listbox = _locate_listbox()
-        if listbox is None or getattr(listbox, '_mousewheel_bound_for_combobox', False):
-            return
-        listbox.bind('<MouseWheel>', _on_listbox_mousewheel, add='+')
-        listbox.bind('<Button-4>', _on_listbox_mousewheel, add='+')
-        listbox.bind('<Button-5>', _on_listbox_mousewheel, add='+')
-        listbox._mousewheel_bound_for_combobox = True
-
-    combo.bind('<Button-1>', _ensure_binding, add='+')
-    combo.bind('<Down>', _ensure_binding, add='+')
-    combo.after_idle(_ensure_binding)
-
-
-def bind_combobox_dropdown_mousewheel(combo):
     """为 Combobox 下拉列表绑定独立滚轮，避免事件继续传递到外层页面。"""
     if not isinstance(combo, ttk.Combobox):
         return
@@ -2261,7 +2212,6 @@ def bind_ellipsis_tooltip(label, *, padding=0, wraplength=320, tooltip_style='de
         _build_tooltip_shell(state['tooltip'], text, wraplength=wraplength, tooltip_style=tooltip_style)
         state['tooltip'].update_idletasks()
         width = state['tooltip'].winfo_reqwidth()
-        height = state['tooltip'].winfo_reqheight()
         x = label.winfo_rootx() + max(label.winfo_width() - width, 0)
         y = label.winfo_rooty() + label.winfo_height() + 6
         screen_width = label.winfo_screenwidth()

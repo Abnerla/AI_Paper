@@ -7,7 +7,6 @@ from modules.provider_registry import (
     AUTH_VALUE_MODE_BEARER,
     API_FORMAT_OPENAI_CHAT_COMPLETIONS,
     PRESET_MAP,
-    PRESET_OPTIONS,
     normalize_provider_type,
 )
 

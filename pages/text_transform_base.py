@@ -8,7 +8,7 @@ from tkinter import messagebox, ttk
 
 from modules.aux_tools import AuxTools
 from modules.prompt_center import PromptCenter
-from modules.report_importer import ImportSession, ParagraphAnnotation
+from modules.report_importer import ImportSession, ParagraphAnnotation, normalize_block_text
 from modules.task_runner import TaskRunner
 from pages.home_support import ensure_model_configured
 from modules.ui_components import (
@@ -35,10 +35,6 @@ from modules.workspace_state import WorkspaceStateMixin
 
 
 TRANSIENT_RESULT_MARKERS = {'处理中...'}
-
-
-def normalize_block_text(text):
-    return str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip('\n')
 
 
 def has_meaningful_text(text):

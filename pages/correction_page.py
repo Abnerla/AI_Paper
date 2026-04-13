@@ -12,6 +12,7 @@ from modules.ai_reducer import AIReducer
 from modules.app_metadata import MODULE_CORRECTION, SOURCE_KIND_LABELS as GLOBAL_SOURCE_KIND_LABELS
 from modules.aux_tools import AuxTools
 from modules.intelligent_corrector import CATEGORY_LABELS, CATEGORY_ORDER, SEVERITY_LABELS, CorrectionRun, IntelligentCorrector
+from modules.report_importer import normalize_block_text
 from modules.plagiarism import PlagiarismReducer
 from modules.prompt_center import PromptCenter
 from modules.task_runner import TaskRunner
@@ -551,15 +552,11 @@ class CorrectionPage(WorkspaceStateMixin):
         detail_frame.pack(fill=tk.BOTH, expand=True)
         self.detail_text.configure(state=tk.DISABLED, cursor='arrow')
 
-    @staticmethod
-    def _normalize_block_text(text):
-        return str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip('\n')
-
     def _get_input_text(self):
-        return self._normalize_block_text(self.input_text.get('1.0', tk.END))
+        return normalize_block_text(self.input_text.get('1.0', tk.END))
 
     def _set_input_text(self, text, source_kind, source_desc, *, paper_title=None, docx_path='', fingerprint=None):
-        normalized_text = self._normalize_block_text(text)
+        normalized_text = normalize_block_text(text)
         self._programmatic_input = True
         try:
             self.input_text.delete('1.0', tk.END)
@@ -974,11 +971,12 @@ class CorrectionPage(WorkspaceStateMixin):
             self._set_info_text('智能纠错失败，请检查模型配置或文稿内容。', fg=COLORS['error'])
             self.set_status('智能纠错失败', COLORS['error'])
 
-        work = lambda: self.corrector.analyze_text(
-            text,
-            citation_style=citation_style,
-            source_kind=self.current_source_kind,
-        )
+        def work():
+            return self.corrector.analyze_text(
+                text,
+                citation_style=citation_style,
+                source_kind=self.current_source_kind,
+            )
 
         self.task_runner.run(
             work=work,
@@ -1054,7 +1052,7 @@ class CorrectionPage(WorkspaceStateMixin):
         if not isinstance(payload, dict):
             return {'ok': False, 'message': '发送内容格式不正确'}
 
-        text = self._normalize_block_text(payload.get('text', ''))
+        text = normalize_block_text(payload.get('text', ''))
         if not text.strip():
             return {'ok': False, 'message': '当前章节没有可发送的正文内容'}
 
@@ -1379,7 +1377,7 @@ class CorrectionPage(WorkspaceStateMixin):
     def _ensure_corrected_text(self):
         if not self._ensure_correction_mode():
             return ''
-        corrected_text = self._normalize_block_text(self.current_run.corrected_text if self.current_run else '')
+        corrected_text = normalize_block_text(self.current_run.corrected_text if self.current_run else '')
         if not self.current_run or not corrected_text.strip():
             messagebox.showwarning('提示', '当前没有可导出或写回的修正文稿', parent=self.frame)
             return ''
@@ -1458,7 +1456,7 @@ class CorrectionPage(WorkspaceStateMixin):
             return
 
         snapshot = self.app_bridge.pull_paper_write_selection_snapshot() if self.app_bridge else None
-        snapshot_text = self._normalize_block_text((snapshot or {}).get('text', ''))
+        snapshot_text = normalize_block_text((snapshot or {}).get('text', ''))
         if snapshot and snapshot_text.strip():
             fingerprint = (
                 'selection',
@@ -1481,7 +1479,7 @@ class CorrectionPage(WorkspaceStateMixin):
                 return
 
         context = self.app_bridge.pull_paper_write_context() if self.app_bridge else {}
-        current_content = self._normalize_block_text(context.get('current_content', ''))
+        current_content = normalize_block_text(context.get('current_content', ''))
         current_section = context.get('current_section', '').strip()
         if not current_content.strip():
             return

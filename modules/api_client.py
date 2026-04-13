@@ -26,7 +26,6 @@ from modules.provider_registry import (
     HANDLER_GEMINI,
     HANDLER_OPENAI,
     MODEL_LIST_MANUAL,
-    MODEL_LIST_REMOTE,
     MODEL_LIST_STATIC,
     MODEL_LIST_UNAVAILABLE,
     get_preset_definition,
@@ -166,7 +165,7 @@ class APIClient:
             if use_separate:
                 resolved[field] = local_value or global_value
             else:
-                resolved[field] = global_value
+                resolved[field] = local_value if local_value != '' else global_value
         return resolved
 
     def _resolve_request_temperature(self, cfg, temperature):
@@ -181,29 +180,35 @@ class APIClient:
         return None
 
     @classmethod
-    def _resolve_auto_request_timeout(cls, *, default=60.0, prompt='', system='', max_tokens=None):
-        timeout_value = max(float(default or 60.0), 1.0)
+    def _resolve_auto_request_timeout(cls, *, default=30.0, prompt='', system='', max_tokens=None):
+        # 默认超时仍然较短；但对于长提示词/大生成量，需要更大的读取超时。
+        timeout_value = max(float(default or 30.0), 1.0)  # 默认30秒
         total_prompt_chars = len(str(prompt or '')) + len(str(system or ''))
         token_budget = cls._coerce_positive_int(max_tokens, default=0) or 0
 
-        # 未显式设置最大生成长度时，长提示词通常仍会产生较长响应，需要更宽的读取超时。
         if total_prompt_chars >= 1500:
-            timeout_value = max(timeout_value, 120.0)
+            timeout_value = max(timeout_value, 60.0)
         if total_prompt_chars >= 3000:
-            timeout_value = max(timeout_value, 180.0)
+            timeout_value = max(timeout_value, 90.0)
         if total_prompt_chars >= 4500:
-            timeout_value = max(timeout_value, 240.0)
-        if total_prompt_chars >= 6000:
-            timeout_value = max(timeout_value, 300.0)
-        if token_budget >= 1024:
             timeout_value = max(timeout_value, 120.0)
-        if token_budget >= 2000:
+        if total_prompt_chars >= 6000:
+            timeout_value = max(timeout_value, 150.0)
+        if total_prompt_chars >= 9000:
             timeout_value = max(timeout_value, 180.0)
+
+        if token_budget >= 1024:
+            timeout_value = max(timeout_value, 60.0)
+        if token_budget >= 2000:
+            timeout_value = max(timeout_value, 90.0)
         if token_budget >= 3000:
-            timeout_value = max(timeout_value, 240.0)
+            timeout_value = max(timeout_value, 120.0)
         if token_budget >= 4096:
-            timeout_value = max(timeout_value, 300.0)
-        return timeout_value
+            timeout_value = max(timeout_value, 180.0)
+        if token_budget >= 8192:
+            timeout_value = max(timeout_value, 240.0)
+
+        return min(timeout_value, 240.0)
 
     def _resolve_request_timeout(self, cfg, request_timeout, *, default=60.0, prompt='', system='', max_tokens=None):
         explicit_timeout = self._coerce_positive_float(request_timeout)
@@ -638,10 +643,17 @@ class APIClient:
 
     @classmethod
     def _is_retryable_http_status(cls, status_code):
+        """判断HTTP状态码是否应该重试 - 避免对认证失败等错误进行无效重试"""
         try:
             code = int(status_code)
         except Exception:
             return False
+        
+        # 某些错误不应该重试（立即返回）
+        NON_RETRYABLE = {400, 401, 403, 404, 422}  # 请求错误或认证失败等
+        if code in NON_RETRYABLE:
+            return False
+        
         return code in cls.RETRYABLE_HTTP_STATUS_CODES
 
     @classmethod
@@ -1821,7 +1833,9 @@ class APIClient:
                 elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                 error_message = self._format_http_error_message(exc.code, err_body)
                 if self._is_retryable_http_status(exc.code) and attempt < max_attempts:
-                    delay_seconds = self._resolve_transport_retry_delay(attempt)
+                    # 检测速率限制，使用更长的延迟
+                    is_rate_limited = exc.code in {429, 430}
+                    delay_seconds = self._resolve_transport_retry_delay(attempt, is_rate_limited=is_rate_limited)
                     self._log(
                         '[http_retry] '
                         f'method=POST url={safe_url} '
@@ -1921,7 +1935,9 @@ class APIClient:
                 elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                 error_message = self._format_http_error_message(exc.code, err_body)
                 if self._is_retryable_http_status(exc.code) and attempt < max_attempts:
-                    delay_seconds = self._resolve_transport_retry_delay(attempt)
+                    # 检测速率限制，使用更长的延迟
+                    is_rate_limited = exc.code in {429, 430}
+                    delay_seconds = self._resolve_transport_retry_delay(attempt, is_rate_limited=is_rate_limited)
                     self._log(
                         '[http_retry] '
                         f'method=GET url={safe_url} '
@@ -2035,18 +2051,6 @@ class APIClient:
                     payload = adjusted_payload
                     continue
                 raise self._wrap_request_error(exc, detail={'request': request_detail}) from exc
-                response_detail = self._build_response_debug_section(
-                    body=resp,
-                    extra={
-                        'response_model': str(resp.get('model', '') or prepared['request_model']),
-                        'response_keys': sorted(str(key) for key in resp.keys()),
-                    },
-                )
-                raise APIRequestError(
-                    f'OpenAI 兼容接口返回错误: {error_message}',
-                    detail={'request': request_detail, 'response': response_detail, 'error': {'message': error_message}},
-                )
-                raise self._wrap_request_error(exc, detail={'request': request_detail}) from exc
             error_message = self._extract_openai_error_message(resp)
             if error_message:
                 adjusted_payload, retry_rules = self._apply_openai_error_compatibility_retry(payload, error_message)
@@ -2074,7 +2078,6 @@ class APIClient:
                     f'OpenAI 兼容接口返回错误: {error_message}',
                     detail={'request': request_detail, 'response': response_detail, 'error': {'message': error_message}},
                 )
-                raise RuntimeError(f'闁规亽鍎辫ぐ娑欐交閺傛寧绀€闂佹寧鐟ㄩ? {error_message}')
             break
         extracted = self._extract_openai_response_text(resp)
         if not extracted['text']:
@@ -2355,12 +2358,26 @@ class APIClient:
         return max(1, attempts)
 
     @classmethod
-    def _resolve_transport_retry_delay(cls, attempt):
-        try:
-            base_delay = float(cls.DEFAULT_TRANSPORT_RETRY_DELAY_SECONDS)
-        except Exception:
-            base_delay = 0.0
-        return max(0.0, base_delay) * max(1, int(attempt))
+    def _resolve_transport_retry_delay(cls, attempt, is_rate_limited=False):
+        """指数级退避+Jitter，而不是线性递增"""
+        import random
+        
+        # 新策略：指数级退避 (0.1s -> 0.2s -> 0.4s)
+        base_delay = 0.1  # 起始延迟100ms
+        exponential_delay = base_delay * (2 ** (attempt - 1))
+        
+        # 对于速率限制(429)，使用更激进的延迟
+        if is_rate_limited:
+            exponential_delay = exponential_delay * 5
+        
+        # 添加随机jitter以避免雷群效应(±10%)
+        jitter = random.uniform(0, exponential_delay * 0.1)
+        
+        # 设置延迟上限：
+        # - 普通错误：最多5秒
+        # - 速率限制：最多30秒
+        max_delay = 30.0 if is_rate_limited else 5.0
+        return min(exponential_delay + jitter, max_delay)
 
     def _record_usage_event(
         self,

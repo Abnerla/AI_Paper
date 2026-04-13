@@ -333,7 +333,6 @@ class AuxTools:
     def export_pdf(self, text: str, filepath: str, title: str = '') -> bool:
         """导出为PDF（通过Word转换）"""
         # 先导出为docx，再尝试转PDF
-        import tempfile
         tmp_docx = filepath.replace('.pdf', '_tmp.docx')
         try:
             self.export_docx(text, tmp_docx, title)

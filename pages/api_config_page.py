@@ -23,6 +23,7 @@ from modules.provider_registry import (
     AUTH_VALUE_MODE_BEARER,
     AUTH_VALUE_MODE_RAW,
     MODEL_LIST_MANUAL,
+    PRESET_OPTIONS,
     get_api_format_label,
     get_preset_definition,
     get_protocol_auth_option_label,
@@ -37,7 +38,6 @@ from modules.provider_registry import (
 from pages.api_config_support import (
     FORM_KEY,
     PRESET_MAP,
-    PRESET_OPTIONS,
     build_base_form_template,
     merge_with_preset_defaults,
 )
@@ -250,7 +250,7 @@ class APIConfigPage:
         ).pack(side=tk.LEFT)
         tk.Label(
             grid_title_row,
-            text='点击后只会创建当前表单草稿，不会立即新增记录',
+            text='预设按钮只负责填充模板，填写服务商名称和密钥后再保存为一条记录。',
             font=FONTS['small'],
             fg=COLORS['text_muted'],
             bg=COLORS['card_bg'],
@@ -264,7 +264,34 @@ class APIConfigPage:
         self._build_collapsible_section(parent, '高级选项', lambda p: self._build_advanced_options(p, FORM_KEY))
         self._build_json_section(parent, FORM_KEY)
         self._build_test_section(parent, FORM_KEY)
-        self._build_collapsible_section(parent, '参数需求', lambda p: self._build_params_section(p, FORM_KEY))
+
+        def make_params_toggle(title_row):
+            entries = self._entries.setdefault(FORM_KEY, {})
+            use_separate = entries.get('use_separate_params')
+            if use_separate is None:
+                use_separate = tk.BooleanVar(value=bool(self._get_form_config().get('use_separate_params', False)))
+                entries['use_separate_params'] = use_separate
+            tk.Checkbutton(
+                title_row,
+                text='使用单独配置',
+                variable=use_separate,
+                font=FONTS['small'],
+                fg=COLORS['text_sub'],
+                bg=COLORS['card_bg'],
+                activebackground=COLORS['card_bg'],
+                selectcolor=COLORS['card_bg'],
+                bd=0,
+                highlightthickness=0,
+                cursor='hand2',
+            ).pack(side=tk.RIGHT)
+
+        self._build_collapsible_section(
+            parent,
+            '参数需求',
+            lambda p: self._build_params_section(p, FORM_KEY),
+            collapsed=True,
+            right_widget_factory=make_params_toggle,
+        )
         self._build_billing_section(parent, FORM_KEY)
 
     def _build_provider_grid(self, parent):
@@ -969,10 +996,42 @@ class APIConfigPage:
         _, inner = self._make_card(parent, '模型测试配置', right_widget_factory=make_toggle)
 
         self._entry_row(inner, '测试模型 ID', 'test_model', form_key, placeholder='留空沿用当前模型 ID', width=40)
-        self._entry_row(inner, '提示词', 'test_prompt', form_key, placeholder='Who are you?', width=40)
-        self._entry_row(inner, '超时（秒）', 'test_timeout', form_key, placeholder='45', width=20)
-        self._entry_row(inner, '降级阈值（毫秒）', 'test_degrade_ms', form_key, placeholder='6000', width=20)
-        self._entry_row(inner, '最大重试次数', 'test_max_retries', form_key, placeholder='2', width=20)
+        self._entry_row(
+            inner,
+            '提示词',
+            'test_prompt',
+            form_key,
+            placeholder='留空沿用全局模型测试提示',
+            width=40,
+            prefill=self.config.get_setting('global_test_prompt', 'Who are you?'),
+        )
+        self._entry_row(
+            inner,
+            '超时（秒）',
+            'test_timeout',
+            form_key,
+            placeholder='留空沿用全局测试超时',
+            width=20,
+            prefill=str(self.config.get_setting('global_test_timeout_sec', 45) or 45),
+        )
+        self._entry_row(
+            inner,
+            '降级阈值（毫秒）',
+            'test_degrade_ms',
+            form_key,
+            placeholder='留空沿用全局测试降级阈值',
+            width=20,
+            prefill=str(self.config.get_setting('global_test_degrade_ms', 6000) or 6000),
+        )
+        self._entry_row(
+            inner,
+            '最大重试次数',
+            'test_max_retries',
+            form_key,
+            placeholder='留空沿用全局测试重试次数',
+            width=20,
+            prefill=str(self.config.get_setting('global_test_max_retries', 2) or 2),
+        )
 
         def refresh_state(*_args):
             state = 'normal' if use_separate.get() else 'disabled'
@@ -1000,12 +1059,29 @@ class APIConfigPage:
         self.connection_tip_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
 
     def _build_params_section(self, parent, form_key):
-        self._entry_row(parent, '温度', 'temperature', form_key, placeholder='0.7', width=20)
-        self._entry_row(parent, '最大生成长度', 'max_tokens', form_key, placeholder='留空表示不限制', width=20)
-        self._entry_row(parent, '请求超时（秒）', 'timeout', form_key, placeholder='留空启用自动策略', width=20)
-        self._entry_row(parent, '核采样', 'top_p', form_key, placeholder='1.0', width=20)
-        self._entry_row(parent, '存在惩罚', 'presence_penalty', form_key, placeholder='0.0', width=20)
-        self._entry_row(parent, '频率惩罚', 'frequency_penalty', form_key, placeholder='0.0', width=20)
+        entries = self._entries.setdefault(form_key, {})
+        use_separate = entries.get('use_separate_params')
+        if use_separate is None:
+            use_separate = tk.BooleanVar(value=bool(self._get_form_config().get('use_separate_params', False)))
+            entries['use_separate_params'] = use_separate
+
+        self._entry_row(parent, '温度', 'temperature', form_key, placeholder='留空沿用全局', width=20)
+        self._entry_row(parent, '最大生成长度', 'max_tokens', form_key, placeholder='留空沿用全局', width=20)
+        self._entry_row(parent, '请求超时（秒）', 'timeout', form_key, placeholder='留空沿用全局', width=20)
+        self._entry_row(parent, '核采样', 'top_p', form_key, placeholder='留空沿用全局', width=20)
+        self._entry_row(parent, '存在惩罚', 'presence_penalty', form_key, placeholder='留空沿用全局', width=20)
+        self._entry_row(parent, '频率惩罚', 'frequency_penalty', form_key, placeholder='留空沿用全局', width=20)
+
+        def refresh_state(*_args):
+            state = 'normal' if use_separate.get() else 'disabled'
+            for child in parent.winfo_children():
+                try:
+                    child.configure(state=state)
+                except Exception:
+                    pass
+
+        use_separate.trace_add('write', refresh_state)
+        refresh_state()
 
     def _build_billing_section(self, parent, form_key):
         cfg = self._get_form_config()
@@ -1365,98 +1441,3 @@ class APIConfigPage:
         self._initialize_current_form()
         self._build()
         self._show_tip('已清空已保存记录，当前显示新的模板草稿。', COLORS['success'], duration_ms=4000)
-def _build_api_panel_with_param_toggle(self, parent):
-    self._entries[FORM_KEY] = {}
-
-    grid_card = tk.Frame(
-        parent,
-        bg=COLORS['card_bg'],
-        highlightbackground=COLORS['card_border'],
-        highlightthickness=1,
-    )
-    grid_card.pack(fill=tk.X, pady=(0, 10))
-
-    grid_title_row = tk.Frame(grid_card, bg=COLORS['card_bg'])
-    grid_title_row.pack(fill=tk.X, padx=16, pady=(10, 6))
-    tk.Label(
-        grid_title_row,
-        text='选择预设模板',
-        font=FONTS['body_bold'],
-        fg=COLORS['text_main'],
-        bg=COLORS['card_bg'],
-    ).pack(side=tk.LEFT)
-    tk.Label(
-        grid_title_row,
-        text='预设按钮只负责填充模板，填写服务商名称和密钥后再保存为一条记录。',
-        font=FONTS['small'],
-        fg=COLORS['text_muted'],
-        bg=COLORS['card_bg'],
-    ).pack(side=tk.RIGHT)
-
-    self._provider_grid_frame = tk.Frame(grid_card, bg=COLORS['card_bg'])
-    self._provider_grid_frame.pack(fill=tk.X, padx=16, pady=(0, 10))
-    self._build_provider_grid(self._provider_grid_frame)
-
-    self._build_basic_section(parent, FORM_KEY)
-    self._build_collapsible_section(parent, '高级选项', lambda p: self._build_advanced_options(p, FORM_KEY))
-    self._build_json_section(parent, FORM_KEY)
-    self._build_test_section(parent, FORM_KEY)
-
-    def make_params_toggle(title_row):
-        entries = self._entries.setdefault(FORM_KEY, {})
-        use_separate = entries.get('use_separate_params')
-        if use_separate is None:
-            use_separate = tk.BooleanVar(value=bool(self._get_form_config().get('use_separate_params', False)))
-            entries['use_separate_params'] = use_separate
-        tk.Checkbutton(
-            title_row,
-            text='使用单独配置',
-            variable=use_separate,
-            font=FONTS['small'],
-            fg=COLORS['text_sub'],
-            bg=COLORS['card_bg'],
-            activebackground=COLORS['card_bg'],
-            selectcolor=COLORS['card_bg'],
-            bd=0,
-            highlightthickness=0,
-            cursor='hand2',
-        ).pack(side=tk.RIGHT)
-
-    self._build_collapsible_section(
-        parent,
-        '参数需求',
-        lambda p: self._build_params_section(p, FORM_KEY),
-        collapsed=True,
-        right_widget_factory=make_params_toggle,
-    )
-    self._build_billing_section(parent, FORM_KEY)
-
-
-def _build_params_section_with_header_toggle(self, parent, form_key):
-    entries = self._entries.setdefault(form_key, {})
-    use_separate = entries.get('use_separate_params')
-    if use_separate is None:
-        use_separate = tk.BooleanVar(value=bool(self._get_form_config().get('use_separate_params', False)))
-        entries['use_separate_params'] = use_separate
-
-    self._entry_row(parent, '温度', 'temperature', form_key, placeholder='留空沿用全局', width=20)
-    self._entry_row(parent, '最大生成长度', 'max_tokens', form_key, placeholder='留空沿用全局', width=20)
-    self._entry_row(parent, '请求超时（秒）', 'timeout', form_key, placeholder='留空沿用全局', width=20)
-    self._entry_row(parent, '核采样', 'top_p', form_key, placeholder='留空沿用全局', width=20)
-    self._entry_row(parent, '存在惩罚', 'presence_penalty', form_key, placeholder='留空沿用全局', width=20)
-    self._entry_row(parent, '频率惩罚', 'frequency_penalty', form_key, placeholder='留空沿用全局', width=20)
-
-    def refresh_state(*_args):
-        state = 'normal' if use_separate.get() else 'disabled'
-        for child in parent.winfo_children():
-            try:
-                child.configure(state=state)
-            except Exception:
-                pass
-
-    use_separate.trace_add('write', refresh_state)
-    refresh_state()
-
-
-APIConfigPage._build_api_panel = _build_api_panel_with_param_toggle
-APIConfigPage._build_params_section = _build_params_section_with_header_toggle

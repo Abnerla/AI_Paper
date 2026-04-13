@@ -355,7 +355,6 @@ def build_dashboard_view_model(show_home_stats, config_mgr, history_mgr, period_
         'total': 0,
         'latest_time': '',
     }
-    records = history_mgr.get_records_in_period(period_key) if show_home_stats and history_mgr else []
     latest_record = _latest_record(history_mgr)
     latest_time = stats.get('latest_time') or '暂无记录'
     total = int(stats.get('total', 0) or 0)
