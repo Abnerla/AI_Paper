@@ -452,14 +452,57 @@ class AIReducePage(TextTransformPageBase):
         return '\n'.join(lines), status_text, color
 
     def _transform_text(self, text, mode):
+        return self._rewrite_until_score_improves(
+            text,
+            mode,
+            rewrite_runner=lambda selected_mode: self._rewrite_text_by_mode(text, selected_mode),
+        )
+
+    def _transform_with_annotations(self, text, mode, annotations):
+        return self._rewrite_until_score_improves(
+            text,
+            mode,
+            rewrite_runner=lambda selected_mode: self.processor.rewrite_with_annotations(text, annotations, selected_mode),
+        )
+
+    def _rewrite_text_by_mode(self, text, mode):
         if mode == 'light':
             return self.processor.rewrite_light(text)
         if mode == 'deep':
             return self.processor.rewrite_deep(text)
         return self.processor.rewrite_academic(text)
 
-    def _transform_with_annotations(self, text, mode, annotations):
-        return self.processor.rewrite_with_annotations(text, annotations, mode)
+    @staticmethod
+    def _next_stronger_mode(mode):
+        if mode == 'light':
+            return 'academic'
+        if mode == 'academic':
+            return 'deep'
+        return None
+
+    def _rewrite_until_score_improves(self, source_text, mode, rewrite_runner):
+        baseline = self.processor.scan_ai_features(source_text)
+        best_result = rewrite_runner(mode)
+        best_scan = self.processor.scan_ai_features(best_result)
+        if best_scan['score'] < baseline['score']:
+            return best_result
+
+        tried_modes = {mode}
+        current_mode = mode
+        for _ in range(2):
+            next_mode = self._next_stronger_mode(current_mode)
+            if not next_mode or next_mode in tried_modes:
+                break
+            tried_modes.add(next_mode)
+            current_mode = next_mode
+            candidate_result = rewrite_runner(next_mode)
+            candidate_scan = self.processor.scan_ai_features(candidate_result)
+            if candidate_scan['score'] < best_scan['score']:
+                best_result = candidate_result
+                best_scan = candidate_scan
+            if best_scan['score'] < baseline['score']:
+                break
+        return best_result
 
     def _history_operation(self, mode):
         return f'{MODULE_AI_REDUCE}({mode})'

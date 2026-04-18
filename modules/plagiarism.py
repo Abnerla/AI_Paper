@@ -198,9 +198,16 @@ class PlagiarismReducer:
             usage_context=self._usage_context('reduce_deep'),
         )
 
-    def reduce_with_annotations(self, text: str, annotations: list[ParagraphAnnotation], mode: str) -> str:
+    def reduce_with_annotations(
+        self,
+        text: str,
+        annotations: list[ParagraphAnnotation],
+        mode: str,
+        source_text: str = '',
+    ) -> str:
         """仅处理被标注且纳入执行的正文段落。"""
         paragraph_map = {item.paragraph_id: item for item in annotations or []}
+        global_source_text = str(source_text or '').strip()
         parts = []
         last_end = 0
         for paragraph in split_document_paragraphs(text):
@@ -218,11 +225,19 @@ class PlagiarismReducer:
                 )
                 if can_reduce_partial:
                     focus_text = paragraph.text[local_start:local_end]
-                    rewritten_focus = self._reduce_by_mode(focus_text, source_excerpt or focus_text, mode)
+                    rewritten_focus = self._reduce_by_mode(
+                        focus_text,
+                        source_excerpt or focus_text,
+                        mode,
+                    )
                     if self._preserves_citation_marks(focus_text, rewritten_focus) and str(rewritten_focus or '').strip():
                         updated_text = paragraph.text[:local_start] + rewritten_focus + paragraph.text[local_end:]
                 else:
-                    updated_text = self._reduce_by_mode(paragraph.text, source_excerpt, mode)
+                    updated_text = self._reduce_by_mode(
+                        paragraph.text,
+                        source_excerpt or global_source_text,
+                        mode,
+                    )
                     if not self._preserves_citation_marks(paragraph.text, updated_text):
                         updated_text = paragraph.text
                     if not str(updated_text or '').strip():

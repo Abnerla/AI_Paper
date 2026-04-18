@@ -458,14 +458,65 @@ class PlagiarismPage(TextTransformPageBase):
 
     def _transform_text(self, text, mode):
         source_text = self._get_compare_text()
+        return self._reduce_until_rate_improves(
+            text,
+            mode,
+            source_text,
+            reduce_runner=lambda selected_mode: self._reduce_text_by_mode(text, source_text, selected_mode),
+        )
+
+    def _transform_with_annotations(self, text, mode, annotations):
+        source_text = self._get_compare_text()
+        return self._reduce_until_rate_improves(
+            text,
+            mode,
+            source_text,
+            reduce_runner=lambda selected_mode: self.processor.reduce_with_annotations(
+                text,
+                annotations,
+                selected_mode,
+                source_text=source_text,
+            ),
+        )
+
+    def _reduce_text_by_mode(self, text, source_text, mode):
         if mode == 'light':
             return self.processor.reduce_light(text, source_text)
         if mode == 'medium':
             return self.processor.reduce_medium(text, source_text)
         return self.processor.reduce_deep(text, source_text)
 
-    def _transform_with_annotations(self, text, mode, annotations):
-        return self.processor.reduce_with_annotations(text, annotations, mode)
+    @staticmethod
+    def _next_stronger_mode(mode):
+        if mode == 'light':
+            return 'medium'
+        if mode == 'medium':
+            return 'deep'
+        return None
+
+    def _reduce_until_rate_improves(self, source_text, mode, compare_text, reduce_runner):
+        baseline = self.processor.simulate_repeat_risk(source_text, compare_text)
+        best_result = reduce_runner(mode)
+        best_risk = self.processor.simulate_repeat_risk(best_result, compare_text)
+        if best_risk['simulated_rate'] < baseline['simulated_rate']:
+            return best_result
+
+        tried_modes = {mode}
+        current_mode = mode
+        for _ in range(2):
+            next_mode = self._next_stronger_mode(current_mode)
+            if not next_mode or next_mode in tried_modes:
+                break
+            tried_modes.add(next_mode)
+            current_mode = next_mode
+            candidate_result = reduce_runner(next_mode)
+            candidate_risk = self.processor.simulate_repeat_risk(candidate_result, compare_text)
+            if candidate_risk['simulated_rate'] < best_risk['simulated_rate']:
+                best_result = candidate_result
+                best_risk = candidate_risk
+            if best_risk['simulated_rate'] < baseline['simulated_rate']:
+                break
+        return best_result
 
     def _history_operation(self, mode):
         return f'{MODULE_PLAGIARISM}({mode})'
