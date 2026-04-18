@@ -158,8 +158,21 @@ class ConfigManager:
                 'global_billing_mode': 'request_model',
                 'home_last_import_failure': None,
                 'usage_pricing_rules': [],
+                'model_routing_mode': 'global',
+                'feature_model_map': {},
+                'scene_model_map': {},
+                'fallback_api': '',
             },
         }
+
+    SUPPORTED_ROUTING_MODES = ('global', 'per_feature')
+    ROUTING_FEATURE_IDS = (
+        'paper_write',
+        'polish',
+        'ai_reduce',
+        'plagiarism',
+        'correction',
+    )
 
     def _load(self) -> dict:
         """从文件加载配置"""
@@ -281,7 +294,7 @@ class ConfigManager:
             return False
         return not self._record_has_credentials(cfg)
 
-    def _sanitize_prompt_record(self, prompt):
+    def _sanitize_prompt_record(self, prompt, scene_id=None):
         if not isinstance(prompt, dict):
             return None
 
@@ -289,9 +302,24 @@ class ConfigManager:
         if not prompt_id:
             return None
 
-        mode = str(prompt.get('mode', 'instruction') or 'instruction').strip().lower()
-        if mode not in ('instruction', 'template'):
-            mode = 'instruction'
+        mode = str(prompt.get('mode', 'template') or 'template').strip().lower()
+        content = str(prompt.get('content', '') or '')
+        now_ts = int(time.time())
+        migrated = False
+
+        if mode == 'instruction':
+            # 旧版"纯说明文本"记录：用冻结的 wrapper 把用户内容套成新模板，然后切到 template 模式。
+            try:
+                from modules.prompt_center import migrate_legacy_instruction
+                migrated_content = migrate_legacy_instruction(scene_id, content) if scene_id else content
+            except Exception:
+                migrated_content = content
+            content = migrated_content or content
+            mode = 'template'
+            migrated = True
+        elif mode != 'template':
+            # 未知模式兜底到 template，避免历史脏数据把记录卡死。
+            mode = 'template'
 
         source = str(prompt.get('source', 'user') or 'user').strip().lower()
         if source not in ('system', 'user'):
@@ -305,26 +333,28 @@ class ConfigManager:
             updated_at = int(prompt.get('updated_at', created_at) or created_at)
         except Exception:
             updated_at = created_at
+        if migrated:
+            updated_at = now_ts
 
         return {
             'id': prompt_id,
             'name': str(prompt.get('name', '') or '').strip(),
             'description': str(prompt.get('description', '') or '').strip(),
             'mode': mode,
-            'content': str(prompt.get('content', '') or ''),
+            'content': content,
             'source': source,
             'created_at': created_at,
             'updated_at': updated_at,
         }
 
-    def _sanitize_prompt_scene(self, scene):
+    def _sanitize_prompt_scene(self, scene, scene_id=None):
         if not isinstance(scene, dict):
             return {'active_prompt_id': '', 'prompts': []}
 
         prompts = []
         seen = set()
         for prompt in scene.get('prompts', []):
-            sanitized = self._sanitize_prompt_record(prompt)
+            sanitized = self._sanitize_prompt_record(prompt, scene_id=scene_id)
             if not sanitized:
                 continue
             prompt_id = sanitized['id']
@@ -353,7 +383,7 @@ class ConfigManager:
                 scene_key = str(scene_id or '').strip()
                 if not scene_key:
                     continue
-                scenes[scene_key] = self._sanitize_prompt_scene(scene)
+                scenes[scene_key] = self._sanitize_prompt_scene(scene, scene_id=scene_key)
 
         return {
             'seeded': bool(prompt_center.get('seeded', False)),
@@ -391,7 +421,40 @@ class ConfigManager:
             data['active_api'] = next(iter(cleaned_apis), '')
         data['prompt_center'] = self._sanitize_prompt_center(data.get('prompt_center', {}))
         data['workspace_state'] = self._sanitize_workspace_state(data.get('workspace_state', {}))
+        self._sanitize_routing_settings(data, cleaned_apis)
         return data
+
+    def _sanitize_routing_settings(self, data, apis):
+        settings = data.setdefault('settings', {})
+        mode = str(settings.get('model_routing_mode', 'global') or 'global').strip().lower()
+        if mode not in self.SUPPORTED_ROUTING_MODES:
+            mode = 'global'
+        settings['model_routing_mode'] = mode
+
+        feature_map_raw = settings.get('feature_model_map', {})
+        feature_map = {}
+        if isinstance(feature_map_raw, dict):
+            for feature_id, api_id in feature_map_raw.items():
+                fid = str(feature_id or '').strip()
+                aid = str(api_id or '').strip()
+                if fid and aid and aid in apis:
+                    feature_map[fid] = aid
+        settings['feature_model_map'] = feature_map
+
+        scene_map_raw = settings.get('scene_model_map', {})
+        scene_map = {}
+        if isinstance(scene_map_raw, dict):
+            for scene_id, api_id in scene_map_raw.items():
+                sid = str(scene_id or '').strip()
+                aid = str(api_id or '').strip()
+                if sid and aid and aid in apis:
+                    scene_map[sid] = aid
+        settings['scene_model_map'] = scene_map
+
+        fallback_api = str(settings.get('fallback_api', '') or '').strip()
+        if fallback_api and fallback_api not in apis:
+            fallback_api = ''
+        settings['fallback_api'] = fallback_api
 
     def save(self):
         """保存配置到文件"""
@@ -477,6 +540,7 @@ class ConfigManager:
             del apis[api_name]
         if self._data.get('active_api', '') == api_name:
             self._data['active_api'] = next(iter(apis), '')
+        self._cleanup_routing_references(api_name, apis)
 
     def reorder_apis(self, ordered_ids):
         """按给定顺序重新排列 apis 字典。"""
@@ -634,6 +698,130 @@ class ConfigManager:
         from modules.usage_stats import normalize_pricing_rules
 
         self.set_setting('usage_pricing_rules', normalize_pricing_rules(rules))
+
+    def _cleanup_routing_references(self, removed_api_id, apis=None):
+        removed_api_id = str(removed_api_id or '').strip()
+        if not removed_api_id:
+            return
+        apis = apis if apis is not None else self.get_saved_apis()
+        settings = self._data.setdefault('settings', {})
+
+        feature_map = settings.get('feature_model_map', {})
+        if isinstance(feature_map, dict):
+            settings['feature_model_map'] = {
+                fid: aid
+                for fid, aid in feature_map.items()
+                if aid != removed_api_id and aid in apis
+            }
+
+        scene_map = settings.get('scene_model_map', {})
+        if isinstance(scene_map, dict):
+            settings['scene_model_map'] = {
+                sid: aid
+                for sid, aid in scene_map.items()
+                if aid != removed_api_id and aid in apis
+            }
+
+        if settings.get('fallback_api', '') == removed_api_id:
+            settings['fallback_api'] = ''
+
+    def get_model_routing_config(self):
+        """返回已归一化的模型路由配置。"""
+        apis = self.get_saved_apis()
+        settings = self._data.setdefault('settings', {})
+
+        mode = str(settings.get('model_routing_mode', 'global') or 'global').strip().lower()
+        if mode not in self.SUPPORTED_ROUTING_MODES:
+            mode = 'global'
+
+        feature_map_raw = settings.get('feature_model_map', {}) or {}
+        feature_map = {}
+        if isinstance(feature_map_raw, dict):
+            for feature_id, api_id in feature_map_raw.items():
+                fid = str(feature_id or '').strip()
+                aid = str(api_id or '').strip()
+                if fid and aid and aid in apis:
+                    feature_map[fid] = aid
+
+        scene_map_raw = settings.get('scene_model_map', {}) or {}
+        scene_map = {}
+        if isinstance(scene_map_raw, dict):
+            for scene_id, api_id in scene_map_raw.items():
+                sid = str(scene_id or '').strip()
+                aid = str(api_id or '').strip()
+                if sid and aid and aid in apis:
+                    scene_map[sid] = aid
+
+        fallback_api = str(settings.get('fallback_api', '') or '').strip()
+        if fallback_api and fallback_api not in apis:
+            fallback_api = ''
+
+        return {
+            'mode': mode,
+            'feature_map': feature_map,
+            'scene_map': scene_map,
+            'fallback_api': fallback_api,
+        }
+
+    def set_model_routing_config(self, mode, feature_map=None, scene_map=None, fallback_api=''):
+        """写入模型路由配置，未知 API 会被自动忽略。"""
+        apis = self.get_saved_apis()
+        mode_value = str(mode or 'global').strip().lower()
+        if mode_value not in self.SUPPORTED_ROUTING_MODES:
+            mode_value = 'global'
+
+        cleaned_feature_map = {}
+        if isinstance(feature_map, dict):
+            for feature_id, api_id in feature_map.items():
+                fid = str(feature_id or '').strip()
+                aid = str(api_id or '').strip()
+                if fid and aid and aid in apis:
+                    cleaned_feature_map[fid] = aid
+
+        cleaned_scene_map = {}
+        if isinstance(scene_map, dict):
+            for scene_id, api_id in scene_map.items():
+                sid = str(scene_id or '').strip()
+                aid = str(api_id or '').strip()
+                if sid and aid and aid in apis:
+                    cleaned_scene_map[sid] = aid
+
+        fallback_value = str(fallback_api or '').strip()
+        if fallback_value and fallback_value not in apis:
+            fallback_value = ''
+
+        settings = self._data.setdefault('settings', {})
+        settings['model_routing_mode'] = mode_value
+        settings['feature_model_map'] = cleaned_feature_map
+        settings['scene_model_map'] = cleaned_scene_map
+        settings['fallback_api'] = fallback_value
+
+    def resolve_routed_api(self, scene_id='', feature_id='', *, respect_mode=True):
+        """依据路由配置解析最终使用的 API id。"""
+        routing = self.get_model_routing_config()
+        apis = self.get_saved_apis()
+
+        if respect_mode and routing.get('mode') != 'per_feature':
+            return self.active_api
+
+        scene_id = str(scene_id or '').strip()
+        feature_id = str(feature_id or '').strip()
+        if not feature_id and scene_id:
+            feature_id = scene_id.split('.', 1)[0].strip()
+
+        scene_map = routing.get('scene_map', {}) or {}
+        if scene_id and scene_map.get(scene_id) in apis:
+            return scene_map[scene_id]
+
+        feature_map = routing.get('feature_map', {}) or {}
+        if feature_id and feature_map.get(feature_id) in apis:
+            return feature_map[feature_id]
+
+        fallback_api = routing.get('fallback_api', '')
+        if fallback_api and fallback_api in apis:
+            return fallback_api
+
+        return self.active_api
 
     def ensure_prompt_center_seeded(self, scene_payloads):
         prompt_center = self._sanitize_prompt_center(self._data.get('prompt_center', {}))

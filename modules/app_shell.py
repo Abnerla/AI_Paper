@@ -2864,6 +2864,7 @@ class SmartPaperTool:
             show_about=self._show_about_dialog,
             show_api_config=self._show_api_config_dialog,
             show_prompt_manager=self._show_prompt_manager,
+            show_model_routing=self._show_model_routing,
             switch_api_provider_direct=self._switch_api_provider_in_dialog,
             add_new_provider=self._add_new_provider_in_dialog,
             pull_paper_write_context=self._pull_paper_write_context,
@@ -3714,6 +3715,70 @@ class SmartPaperTool:
                 lambda: self._dialog_api_page._select_preset('openai')
                 if self._dialog_api_page else None
             )
+
+    def _show_model_routing(self):
+        from pages.model_routing_page import ModelRoutingPanel
+
+        existing_window = getattr(self, '_model_routing_window', None)
+        if existing_window and existing_window.winfo_exists():
+            existing_window.lift()
+            existing_window.focus_force()
+            return getattr(self, '_model_routing_panel', None)
+
+        geometry = '1280x960'
+        window, body = self._create_dialog_shell('模型路由', geometry)
+        window.resizable(True, True)
+        apply_adaptive_window_geometry(window, geometry, min_width=960, min_height=720)
+        self._model_routing_window = window
+
+        # 底部悬浮保存按钮（与模型配置弹窗的底部栏保持一致）
+        footer = tk.Frame(body, bg=COLORS['card_bg'],
+                          highlightbackground=COLORS['card_border'], highlightthickness=1)
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+        save_row = tk.Frame(footer, bg=COLORS['card_bg'])
+        save_row.pack(fill=tk.X, padx=24, pady=12)
+
+        tip_label = tk.Label(
+            save_row, text='', font=FONTS['small'],
+            fg=COLORS['success'], bg=COLORS['card_bg'], anchor='w',
+        )
+        tip_label.pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+        action_row = tk.Frame(save_row, bg=COLORS['card_bg'])
+        action_row.pack(side=tk.RIGHT)
+
+        # 内容区
+        content = tk.Frame(body, bg=COLORS['bg_main'])
+        content.pack(fill=tk.BOTH, expand=True, padx=24, pady=24)
+
+        def _close():
+            self._model_routing_window = None
+            self._model_routing_panel = None
+            self._close_dialog(window)
+
+        panel = ModelRoutingPanel(
+            content,
+            self.config_mgr,
+            set_status=self._set_status,
+            close_panel=_close,
+            embed_action_bar=False,
+        )
+        panel.frame.pack(fill=tk.BOTH, expand=True)
+        panel.attach_tip_label(tip_label)
+        self._model_routing_panel = panel
+
+        ModernButton(
+            action_row, '保存配置', style='primary',
+            command=panel.save, padx=20, pady=10,
+        ).pack(side=tk.RIGHT)
+
+        ModernButton(
+            action_row, '重置', style='secondary',
+            command=panel.reset_to_global, padx=20, pady=10,
+        ).pack(side=tk.RIGHT, padx=(0, 10))
+
+        window.protocol('WM_DELETE_WINDOW', _close)
+        return panel
 
     def _show_prompt_manager(self, page_id=None, compact=False, scene_id=None):
         from pages.prompt_manager_page import PromptManagerPanel

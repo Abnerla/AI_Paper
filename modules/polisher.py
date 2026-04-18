@@ -21,10 +21,10 @@ class AcademicPolisher:
         self.prompt_center = prompt_center or PromptCenter(getattr(api_client, 'config', None))
 
     @staticmethod
-    def _usage_context(action):
+    def _usage_context(action, scene_id='polish.run_task'):
         return {
             'page_id': 'polish',
-            'scene_id': 'polish.run_task',
+            'scene_id': scene_id,
             'action': action,
         }
 
@@ -176,7 +176,7 @@ class AcademicPolisher:
             prompt,
             system,
             temperature=0.4,
-            usage_context=self._usage_context('translate_polish'),
+            usage_context=self._usage_context('translate_polish', scene_id='polish.translate'),
         )
 
     def check_format(self, text: str, style: str = '学术论文') -> dict:

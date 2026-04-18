@@ -98,6 +98,49 @@ class APIClient:
     def _get_active(self):
         return self.config.active_api
 
+    def _resolve_api_for_request(self, api_name, usage_context, cfg):
+        """根据调用上下文解析最终使用的 API id。
+
+        优先级：
+        1. 显式传入的 api_name（保持原有行为）
+        2. 直接提供的 cfg（测试连接等场景）
+        3. scene_model_map[scene_id]
+        4. feature_model_map[feature_id]（scene_id 的前缀或 usage_context.page_id）
+        5. fallback_api
+        6. active_api
+        """
+        explicit_name = str(api_name or '').strip()
+        if explicit_name:
+            return explicit_name
+        if cfg is not None:
+            return explicit_name
+
+        resolver = getattr(self.config, 'resolve_routed_api', None)
+        if not callable(resolver):
+            return self._get_active()
+
+        scene_id = ''
+        feature_id = ''
+        if isinstance(usage_context, dict):
+            scene_id = str(usage_context.get('scene_id', '') or '').strip()
+            feature_id = str(usage_context.get('page_id', '') or '').strip()
+
+        try:
+            resolved = resolver(scene_id=scene_id, feature_id=feature_id)
+        except Exception:
+            resolved = self._get_active()
+        if not resolved:
+            resolved = self._get_active()
+
+        if resolved and resolved != self._get_active():
+            self._log(
+                '[api_routing] '
+                f'scene={scene_id or "-"} '
+                f'feature={feature_id or "-"} '
+                f'resolved={resolved}'
+            )
+        return resolved
+
     def _get_config(self, api_name, cfg=None):
         if cfg is not None:
             return dict(cfg)
@@ -1534,7 +1577,7 @@ class APIClient:
     ):
         """Call the AI API asynchronously and return the result by callback."""
         if api_name is None:
-            api_name = self._get_active()
+            api_name = self._resolve_api_for_request(api_name, usage_context, cfg)
 
         def _run():
             try:
@@ -1571,7 +1614,7 @@ class APIClient:
     ) -> str:
         """闁告艾鏈鐐垫嫬閸愵亝鏆廇I API"""
         if api_name is None:
-            api_name = self._get_active()
+            api_name = self._resolve_api_for_request(api_name, usage_context, cfg)
         return self._call_sync(
             prompt,
             system,

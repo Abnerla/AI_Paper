@@ -39,6 +39,9 @@ class AppBridge:
             scene_id=scene_id,
         )
 
+    def show_model_routing(self):
+        return self._call('show_model_routing')
+
     def switch_api_provider_direct(self, api_id):
         return self._call('switch_api_provider_direct', api_id)
 

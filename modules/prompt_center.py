@@ -13,11 +13,11 @@ from string import Formatter
 from modules.runtime_paths import resolve_resource_path
 
 
-PROMPT_MODE_INSTRUCTION = 'instruction'
 PROMPT_MODE_TEMPLATE = 'template'
+PROMPT_MODE_INSTRUCTION = 'instruction'  # 仅用于识别历史数据并迁移，不再出现在新记录里
 PROMPT_SOURCE_SYSTEM = 'system'
 PROMPT_SOURCE_USER = 'user'
-PROMPT_MODES = (PROMPT_MODE_INSTRUCTION, PROMPT_MODE_TEMPLATE)
+PROMPT_MODES = (PROMPT_MODE_TEMPLATE,)
 PROMPT_SOURCES = (PROMPT_SOURCE_SYSTEM, PROMPT_SOURCE_USER)
 
 PAGE_ORDER = (
@@ -130,6 +130,83 @@ DEFAULTS_PATH = resolve_resource_path('modules', 'prompt_defaults.json')
 SYSTEM_DEFAULT_SYNC_SCENE_IDS = ('paper_write.outline', 'polish.run_task')
 
 
+# 冻结的历史 instruction_wrapper：仅用于把旧版本的"纯说明文本"用户提示词一次性迁移为完整模板。
+# 不要参与正常渲染路径，也不要在 UI 里暴露。
+LEGACY_INSTRUCTION_WRAPPERS = {
+    'paper_write.outline': (
+        '请根据以下论文信息完成大纲生成。\n'
+        '论文标题：{topic}\n'
+        '论文类型：{style}\n'
+        '学科/方向：{subject}\n'
+        '引用格式：{reference_style}\n\n'
+        '附加提示词：\n{instruction}\n\n'
+        '请直接输出最终大纲正文。'
+    ),
+    'paper_write.section': (
+        '请根据以下信息撰写论文章节。\n\n'
+        '完整大纲：\n{outline}\n\n'
+        '当前章节：{section_title}\n'
+        '已有上下文：\n{context}\n'
+        '目标字数：约 {word_count} 字\n'
+        '引用格式：{reference_style}\n\n'
+        '附加提示词：\n{instruction}\n\n'
+        '请直接输出最终章节正文。'
+    ),
+    'paper_write.abstract': (
+        '请根据以下论文内容生成摘要。\n\n'
+        '论文内容：\n{full_text}\n'
+        '摘要语言：{language}\n\n'
+        '附加提示词：\n{instruction}\n\n'
+        '请直接输出最终摘要与关键词。'
+    ),
+    'ai_reduce.transform': (
+        '请对以下论文文本执行 AI 痕迹消除改写。\n\n'
+        '处理模式：{mode_label}（{mode}）\n'
+        '原文：\n{text}\n\n'
+        '附加提示词：\n{instruction}\n\n'
+        '请直接输出处理后的正文。'
+    ),
+    'plagiarism.transform': (
+        '请对以下论文内容执行降重。\n\n'
+        '处理模式：{mode_label}（{mode}）\n'
+        '待降重原文：\n{text}\n\n'
+        '查重报告/重复源文本：\n{source_text}\n\n'
+        '附加提示词：\n{instruction}\n\n'
+        '请直接输出降重后的正文。'
+    ),
+    'polish.run_task': (
+        '请根据以下任务设置处理学术文本。\n'
+        '任务类型：{task_type}\n'
+        '润色方式：{polish_type}\n'
+        '执行模式：{execution_mode}\n'
+        '主题/章节：{topic}\n'
+        '待处理文本：\n{text}\n\n'
+        '附加提示词：\n{instruction}\n\n'
+        '补充说明：\n{notes}\n\n'
+        '请直接输出最终处理后的文本。'
+    ),
+    'correction.ai_review': (
+        '请对下面的论文文本做智能纠错，只返回 JSON 数组，不要输出 Markdown。\n\n'
+        '附加提示词：\n{instruction}\n\n'
+        '引用规范上下文：{citation_style}\n\n'
+        '待检查文本：\n{text}'
+    ),
+}
+
+
+def migrate_legacy_instruction(scene_id, content):
+    """把旧 `instruction` 模式的用户内容用对应 wrapper 包成新模板文本。
+
+    - 若 scene_id 没有 wrapper，原样返回（兜底，不丢失用户数据）。
+    - content 作为 `{instruction}` 的替换值填入 wrapper；其它变量保持占位符，
+      仍由调用端在 render_scene 里做 format_map 实际替换。
+    """
+    wrapper = LEGACY_INSTRUCTION_WRAPPERS.get(scene_id)
+    if not wrapper:
+        return content or ''
+    return wrapper.replace('{instruction}', content or '')
+
+
 class PromptCenterError(Exception):
     """Base prompt-center error."""
 
@@ -181,7 +258,7 @@ def build_default_scene_payloads(now_ts=None):
                     'id': prompt_id,
                     'name': resource.get('default_name') or '系统默认提示词',
                     'description': resource.get('default_description') or '',
-                    'mode': resource.get('default_mode', PROMPT_MODE_TEMPLATE),
+                    'mode': PROMPT_MODE_TEMPLATE,
                     'content': resource.get('default_prompt', ''),
                     'source': PROMPT_SOURCE_SYSTEM,
                     'created_at': now_ts,
@@ -322,20 +399,13 @@ class PromptCenter:
         return {'total': total, 'active_groups': active, 'groups': groups}
 
     def validate_prompt(self, scene_id, mode, content):
-        if mode not in PROMPT_MODES:
-            raise PromptValidationError('提示词模式无效')
+        # 新架构只保留 template 模式；mode 参数仅作为向后兼容的占位，统一按模板校验。
         content = (content or '').strip()
         if not content:
             raise PromptValidationError('提示词内容不能为空')
 
         scene_def = self.get_scene_def(scene_id)
         supported_fields = {name for name, _label in scene_def.get('variables', ())}
-        if mode != PROMPT_MODE_TEMPLATE:
-            return {
-                'fields': [],
-                'required': list(scene_def.get('required_variables', ())),
-                'supported': list(supported_fields),
-            }
 
         fields = list_template_fields(content)
         unknown_fields = [field for field in fields if field not in supported_fields]
@@ -346,7 +416,7 @@ class PromptCenter:
         missing = [field for field in scene_def.get('required_variables', ()) if field not in fields]
         if missing:
             joined = '、'.join(missing)
-            raise PromptValidationError(f'完整模板缺少必需变量：{joined}')
+            raise PromptValidationError(f'提示词缺少必需变量：{joined}')
 
         render_template(content, {field: '示例' for field in supported_fields})
         return {
@@ -455,12 +525,7 @@ class PromptCenter:
         values = values or {}
         render_values = {field: values.get(field, '') for field in supported_fields}
 
-        if prompt.get('mode') == PROMPT_MODE_TEMPLATE:
-            rendered_prompt = render_template(prompt.get('content', ''), render_values)
-        else:
-            wrapper_values = dict(render_values)
-            wrapper_values['instruction'] = prompt.get('content', '')
-            rendered_prompt = render_template(resource.get('instruction_wrapper', '{instruction}'), wrapper_values)
+        rendered_prompt = render_template(prompt.get('content', ''), render_values)
 
         return {
             'system': resource.get('system', ''),

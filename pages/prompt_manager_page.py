@@ -4,13 +4,12 @@ Prompt manager panel shared by full and compact dialogs.
 """
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox
 
 from modules.prompt_center import (
     PAGE_META,
     PAGE_ORDER,
     PAGE_SCENE_MAP,
-    PROMPT_MODE_INSTRUCTION,
     PROMPT_MODE_TEMPLATE,
     PromptCenter,
     PromptValidationError,
@@ -27,13 +26,6 @@ from modules.ui_components import (
     bind_responsive_two_pane,
     create_scrolled_text,
 )
-
-
-MODE_LABELS = {
-    PROMPT_MODE_INSTRUCTION: '纯说明文本',
-    PROMPT_MODE_TEMPLATE: '完整模板',
-}
-MODE_REVERSE = {label: key for key, label in MODE_LABELS.items()}
 
 
 class PromptManagerPanel:
@@ -66,8 +58,6 @@ class PromptManagerPanel:
 
         self.name_var = tk.StringVar(value='')
         self.desc_var = tk.StringVar(value='')
-        self.mode_label_var = tk.StringVar(value=MODE_LABELS[PROMPT_MODE_INSTRUCTION])
-        self.mode_label_var.trace_add('write', lambda *_args: self._refresh_mode_tip())
 
         self.summary_label = None
         self.scene_card = None
@@ -76,13 +66,13 @@ class PromptManagerPanel:
         self.list_card = None
         self.prompt_list_view = None
         self.prompt_list_inner = None
-        self.mode_tip_label = None
+        self.variable_tip_label = None
         self.content_text = None
         self.editor_title_label = None
         self.scene_tabs_bar = None
         self._editor_window = None
         self._editor_dialog_title_label = None
-        self._editor_dialog_mode_tip_label = None
+        self._editor_dialog_variable_tip_label = None
         self._editor_dialog_content_text = None
         self._editor_dialog_name_entry = None
         self._editor_dialog_scroll_view = None
@@ -289,18 +279,10 @@ class PromptManagerPanel:
 
         mode_shell = tk.Frame(parent, bg=COLORS['card_bg'])
         mode_shell.pack(fill=tk.X, pady=(10, 0))
-        tk.Label(mode_shell, text='模式', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w')
-        ttk.Combobox(
-            mode_shell,
-            textvariable=self.mode_label_var,
-            values=list(MODE_REVERSE.keys()),
-            state='readonly',
-            style='Modern.TCombobox',
-            width=24,
-        ).pack(anchor='w', pady=(6, 0))
+        tk.Label(mode_shell, text='可用变量', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w')
 
-        self.mode_tip_label = tk.Label(
-            parent,
+        self.variable_tip_label = tk.Label(
+            mode_shell,
             text='',
             font=FONTS['small'],
             fg=COLORS['text_sub'],
@@ -308,8 +290,8 @@ class PromptManagerPanel:
             justify='left',
             anchor='w',
         )
-        self.mode_tip_label.pack(fill=tk.X, pady=(8, 0))
-        bind_adaptive_wrap(self.mode_tip_label, parent, padding=12, min_width=220)
+        self.variable_tip_label.pack(fill=tk.X, pady=(6, 0))
+        bind_adaptive_wrap(self.variable_tip_label, parent, padding=12, min_width=220)
 
         tk.Label(parent, text='内容', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w', pady=(12, 0))
         content_frame, self.content_text = create_scrolled_text(parent, height=14)
@@ -361,18 +343,10 @@ class PromptManagerPanel:
 
         mode_shell = tk.Frame(parent, bg=COLORS['card_bg'])
         mode_shell.pack(fill=tk.X, pady=(12, 0))
-        tk.Label(mode_shell, text='模式', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w')
-        ttk.Combobox(
-            mode_shell,
-            textvariable=self.mode_label_var,
-            values=list(MODE_REVERSE.keys()),
-            state='readonly',
-            style='Modern.TCombobox',
-            width=24,
-        ).pack(anchor='w', pady=(6, 0))
+        tk.Label(mode_shell, text='可用变量', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w')
 
-        mode_tip_label = tk.Label(
-            parent,
+        variable_tip_label = tk.Label(
+            mode_shell,
             text='',
             font=FONTS['small'],
             fg=COLORS['text_sub'],
@@ -380,8 +354,8 @@ class PromptManagerPanel:
             justify='left',
             anchor='w',
         )
-        mode_tip_label.pack(fill=tk.X, pady=(10, 0))
-        bind_adaptive_wrap(mode_tip_label, parent, padding=12, min_width=260)
+        variable_tip_label.pack(fill=tk.X, pady=(6, 0))
+        bind_adaptive_wrap(variable_tip_label, parent, padding=12, min_width=260)
 
         tk.Label(parent, text='内容', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w', pady=(14, 0))
         content_frame, content_text = create_scrolled_text(parent, height=18)
@@ -393,7 +367,7 @@ class PromptManagerPanel:
         actions.add(ModernButton(actions, '取消编辑', style='ghost', command=self._reset_editor))
 
         self._editor_dialog_title_label = title_label
-        self._editor_dialog_mode_tip_label = mode_tip_label
+        self._editor_dialog_variable_tip_label = variable_tip_label
         self._editor_dialog_content_text = content_text
         self._editor_dialog_name_entry = name_entry
 
@@ -431,7 +405,7 @@ class PromptManagerPanel:
         self._editor_window = window
         self._editor_dialog_scroll_view = content_view
         window.protocol('WM_DELETE_WINDOW', self._close_editor_dialog)
-        self._refresh_mode_tip()
+        self._refresh_variable_tip()
         content_view.scroll_to_top()
         return window
 
@@ -440,7 +414,7 @@ class PromptManagerPanel:
             self._editor_window.destroy()
         self._editor_window = None
         self._editor_dialog_title_label = None
-        self._editor_dialog_mode_tip_label = None
+        self._editor_dialog_variable_tip_label = None
         self._editor_dialog_content_text = None
         self._editor_dialog_name_entry = None
         self._editor_dialog_scroll_view = None
@@ -492,9 +466,8 @@ class PromptManagerPanel:
         self._set_editor_title('新建提示词')
         self.name_var.set('')
         self.desc_var.set('')
-        self.mode_label_var.set(MODE_LABELS[PROMPT_MODE_INSTRUCTION])
         self._set_editor_content('')
-        self._refresh_mode_tip()
+        self._refresh_variable_tip()
 
     def _open_full(self):
         if callable(self.open_full):
@@ -527,7 +500,7 @@ class PromptManagerPanel:
         self._refresh_scene_tabs()
         self._refresh_scene_header()
         self._refresh_prompt_list()
-        self._refresh_mode_tip()
+        self._refresh_variable_tip()
 
     def _refresh_summary(self):
         summary = self.prompt_center.count_summary(page_id=self.current_page_id if self.compact else None)
@@ -654,7 +627,7 @@ class PromptManagerPanel:
         source_label = '系统默认' if prompt.get('source') == 'system' else '自定义'
         tk.Label(
             left,
-            text=f'{MODE_LABELS.get(prompt.get("mode"), prompt.get("mode"))} · {source_label} · {desc}',
+            text=f'{source_label} · {desc}',
             font=FONTS['small'],
             fg=COLORS['text_sub'],
             bg=COLORS['card_bg'],
@@ -682,9 +655,8 @@ class PromptManagerPanel:
         self._set_editor_title(f'编辑提示词：{prompt.get("name", "")}')
         self.name_var.set(prompt.get('name', ''))
         self.desc_var.set(prompt.get('description', ''))
-        self.mode_label_var.set(MODE_LABELS.get(prompt.get('mode'), MODE_LABELS[PROMPT_MODE_INSTRUCTION]))
         self._set_editor_content(prompt.get('content', ''))
-        self._refresh_mode_tip()
+        self._refresh_variable_tip()
         self.set_status(f'正在编辑提示词：{prompt.get("name", "未命名提示词")}')
         self._focus_editor(focus_name=False)
 
@@ -693,24 +665,28 @@ class PromptManagerPanel:
         self._close_editor_dialog()
         self.set_status('已取消编辑')
 
-    def _refresh_mode_tip(self):
+    def _refresh_variable_tip(self):
         if not self.current_scene_id:
             return
         scene_def = self.prompt_center.get_scene_def(self.current_scene_id)
-        variable_help = '；'.join(f'{{{name}}}={label}' for name, label in scene_def.get('variables', ()))
-        mode = MODE_REVERSE.get(self.mode_label_var.get(), PROMPT_MODE_INSTRUCTION)
-        if mode == PROMPT_MODE_TEMPLATE:
-            required = ', '.join(f'{{{name}}}' for name in scene_def.get('required_variables', ()))
-            text = f'完整模板模式：你需要自行编写完整提示词模板。变量说明：{variable_help}。必需变量：{required}。'
-        else:
-            text = f'纯说明文本模式：运行时会自动包裹上下文。变量说明：{variable_help}。'
-        if self.mode_tip_label:
-            self.mode_tip_label.configure(text=text)
-        if self._editor_dialog_mode_tip_label:
-            self._editor_dialog_mode_tip_label.configure(text=text)
+        variables = scene_def.get('variables', ())
+        required = set(scene_def.get('required_variables', ()))
+        parts = []
+        for name, label in variables:
+            placeholder = f'{{{name}}}'
+            marker = '（必填）' if name in required else ''
+            parts.append(f'{placeholder}={label}{marker}')
+        text = (
+            '直接书写完整 Markdown 提示词。可用变量：'
+            + ('；'.join(parts) if parts else '（无）')
+            + '。保存时会校验变量是否合法。'
+        )
+        if self.variable_tip_label:
+            self.variable_tip_label.configure(text=text)
+        if self._editor_dialog_variable_tip_label:
+            self._editor_dialog_variable_tip_label.configure(text=text)
 
     def _save_current(self):
-        mode = MODE_REVERSE.get(self.mode_label_var.get(), PROMPT_MODE_INSTRUCTION)
         content = self._get_editor_content()
         try:
             self.prompt_center.save_prompt(
@@ -718,7 +694,7 @@ class PromptManagerPanel:
                 self._editing_prompt_id,
                 name=self.name_var.get(),
                 description=self.desc_var.get(),
-                mode=mode,
+                mode=PROMPT_MODE_TEMPLATE,
                 content=content,
                 source=self._editing_source,
             )
