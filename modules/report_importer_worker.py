@@ -28,6 +28,25 @@ def _write_stderr_line(message: str):
     sys.stderr.buffer.flush()
 
 
+def _read_stdin_payload_text() -> str:
+    """
+    Read worker payload from stdin as bytes and decode deterministically.
+
+    In frozen Windows builds, `sys.stdin` may default to legacy codepages
+    (e.g. cp936). Parent process always writes UTF-8 JSON, so text-mode
+    `sys.stdin.read()` can mojibake non-ASCII file paths. Decode bytes
+    explicitly to keep Chinese filenames intact.
+    """
+    raw = sys.stdin.buffer.read()
+    if not raw:
+        return ''
+    try:
+        return raw.decode('utf-8')
+    except UnicodeDecodeError:
+        # Compatibility fallback for unexpected legacy payload encodings.
+        return raw.decode(sys.getfilesystemencoding() or 'utf-8', errors='replace')
+
+
 def _stderr_logger(message, level='INFO'):
     _write_stderr_line(f'[{str(level or "INFO").upper()}] {message}')
 
@@ -48,7 +67,7 @@ def run_worker(payload: dict) -> dict:
 def main(argv=None):
     del argv
     try:
-        raw_payload = sys.stdin.read()
+        raw_payload = _read_stdin_payload_text()
         payload = json.loads(raw_payload or '{}')
         if not isinstance(payload, dict):
             raise RuntimeError('子进程收到的解析参数无效')
