@@ -52,8 +52,18 @@ HEADING_RE = re.compile(
     r'|^(（[一二三四五六七八九十百千万\d]+）)'
 )
 PERCENT_RE = re.compile(r'(\d+(?:\.\d+)?)\s*[％%]')
-AI_RATE_RE = re.compile(r'(?:AI(?:检测)?率|AIGC(?:疑似)?率|疑似AI率)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*[％%]?', re.IGNORECASE)
-REPEAT_RATE_RE = re.compile(r'(?:重复率|查重率|文字复制比)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*[％%]?', re.IGNORECASE)
+AI_RATE_RE = re.compile(
+    r'(?:'
+    r'AI(?:检测|生成|疑似)?率'
+    r'|AIGC(?:检测|生成|疑似)?率'
+    r'|疑似AI率'
+    r')\s*(?:为|是|[:：])?\s*(\d+(?:\.\d+)?)\s*[％%]?',
+    re.IGNORECASE,
+)
+REPEAT_RATE_RE = re.compile(
+    r'(?:重复率|查重率|文字复制比|总文字复制比|相似度)\s*(?:为|是|[:：])?\s*(\d+(?:\.\d+)?)\s*[％%]?',
+    re.IGNORECASE,
+)
 AI_BADGE_RE = re.compile(
     r'(?:AI\s*[:：]?\s*(\d+(?:\.\d+)?)\s*[％%]|(\d+(?:\.\d+)?)\s*[％%]\s*AI)',
     re.IGNORECASE,
@@ -895,10 +905,13 @@ def _build_ai_annotation(paragraph, report_text, matched_fragment, matched_score
     if ai_score is None and matched_text:
         ai_score = _extract_nearby_score(report_text, paragraph.text, page_kind='ai_reduce')
 
-    if risk_level == 'safe' and matched_fragment is None and ai_score is not None:
-        risk_level = _score_to_ai_risk(ai_score)
-    elif risk_level == 'safe' and matched_score >= 0.45 and ai_score is not None:
-        risk_level = _score_to_ai_risk(ai_score)
+    has_fragment_score = False
+    if matched_fragment is not None:
+        has_fragment_score = _coerce_optional_float(matched_fragment.get('score')) is not None
+
+    if risk_level == 'safe' and ai_score is not None:
+        if matched_fragment is None or has_fragment_score or matched_score >= 0.35:
+            risk_level = _score_to_ai_risk(ai_score)
 
     if not matched_text:
         matched_text = paragraph.text.strip()[:80]
@@ -939,16 +952,19 @@ def _build_plagiarism_annotation(paragraph, report_text, matched_fragment, match
         if resolved_range is not None:
             annotation_start, annotation_end = resolved_range
 
-    allow_nearby_score = matched_fragment is not None and risk_level != 'safe'
+    has_fragment_score = False
+    if matched_fragment is not None:
+        has_fragment_score = _coerce_optional_float(matched_fragment.get('score')) is not None
+
+    allow_nearby_score = matched_fragment is not None and (risk_level != 'safe' or has_fragment_score or matched_score >= 0.35)
     if repeat_score is None and allow_nearby_score:
         repeat_score = _extract_nearby_score(report_text, matched_text or paragraph.text, page_kind='plagiarism')
     if repeat_score is None and matched_text and allow_nearby_score:
         repeat_score = _extract_nearby_score(report_text, paragraph.text, page_kind='plagiarism')
 
-    if risk_level == 'safe' and matched_fragment is None and repeat_score is not None:
-        risk_level = _score_to_repeat_risk(repeat_score)
-    elif risk_level == 'safe' and matched_score >= 0.45 and repeat_score is not None:
-        risk_level = _score_to_repeat_risk(repeat_score)
+    if risk_level == 'safe' and repeat_score is not None:
+        if matched_fragment is None or has_fragment_score or matched_score >= 0.35:
+            risk_level = _score_to_repeat_risk(repeat_score)
 
     if duplicate_status in {'none', None}:
         duplicate_status = _risk_to_duplicate_status(risk_level)
