@@ -51,12 +51,12 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: 安装 Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.13'
           cache: 'pip'
@@ -92,7 +92,7 @@ jobs:
 
       - name: 上传 Windows 可执行文件
         if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: AI_Paper-Windows-EXE
           path: dist/AI_Paper-v*-windows.exe
@@ -100,7 +100,7 @@ jobs:
 
       - name: 上传 Windows 安装程序
         if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: AI_Paper-Windows-Installer
           path: dist/AI_Paper-v*-windows-setup.exe
@@ -108,7 +108,7 @@ jobs:
 
       - name: 上传 macOS 安装程序
         if: matrix.platform == 'macos'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: AI_Paper-macOS-DMG
           path: dist/AI_Paper-v*-macos.dmg
@@ -116,7 +116,7 @@ jobs:
 
       - name: 上传 Linux AppImage
         if: matrix.platform == 'linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: AI_Paper-Linux-AppImage
           path: dist/AI_Paper-v*-linux.AppImage
@@ -124,7 +124,7 @@ jobs:
 
       - name: 上传 Linux DEB
         if: matrix.platform == 'linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: AI_Paper-Linux-DEB
           path: dist/AI_Paper-v*-linux-*.deb
@@ -132,7 +132,7 @@ jobs:
 
       - name: 上传 Linux RPM
         if: matrix.platform == 'linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: AI_Paper-Linux-RPM
           path: dist/AI_Paper-v*-linux-*.rpm
@@ -154,7 +154,7 @@ jobs:
           exit 1
 
       - name: 下载所有构建产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: release-assets
           merge-multiple: true
