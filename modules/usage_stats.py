@@ -59,6 +59,7 @@ TIME_FORMATS = (
     '%Y/%m/%d %H:%M',
     '%Y-%m-%d',
     '%Y/%m/%d',
+    '%Y-%m-%d %H:%M:%S.%f',
 )
 
 
@@ -129,15 +130,52 @@ def normalize_request_detail(payload) -> dict:
     return normalized if isinstance(normalized, dict) else {}
 
 
+def safe_datetime_fromtimestamp(timestamp):
+    """安全地从时间戳转换为 datetime 对象，处理 Windows 平台可能的 range error"""
+    try:
+        # Windows 上的 time_t 限制，处理超出 1970-2038/3000 范围的情况
+        return datetime.fromtimestamp(timestamp)
+    except (ValueError, OSError, OverflowError):
+        # 如果超出范围，返回一个合理的边界值或默认值
+        if timestamp <= 0:
+            return datetime(1970, 1, 1)
+        return datetime(2099, 12, 31)
+
+
 def parse_time_string(value: str):
     text = str(value or '').strip()
     if not text:
         return None
+    
+    # 尝试直接解析 ISO 格式或带毫秒的格式
+    if '.' in text:
+        try:
+            return datetime.fromisoformat(text.replace('Z', '+00:00'))
+        except ValueError:
+            pass
+
     for fmt in TIME_FORMATS:
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
             continue
+    
+    # 如果是纯数字，尝试作为时间戳解析
+    if text.replace('.', '', 1).isdigit():
+        try:
+            ts = float(text)
+            # 兼容秒、毫秒和微秒时间戳
+            # 1e10 ~ 300+ 年，通常秒级时间戳 < 1e10
+            # 1e13 ~ 300+ 年，通常毫秒级时间戳 < 1e13
+            # 1e16 ~ 300+ 年，通常微秒级时间戳 < 1e16
+            if ts > 1e15: # 微秒
+                ts /= 1000000
+            elif ts > 1e12: # 毫秒
+                ts /= 1000
+            return safe_datetime_fromtimestamp(ts)
+        except Exception:
+            pass
+            
     return None
 
 
@@ -150,6 +188,15 @@ def parse_time_bound(value: str, *, is_end=False):
             bound = datetime.strptime(text, fmt)
         except ValueError:
             continue
+        
+        # Windows 平台 timestamp() 限制 (1970 以前会报错)
+        try:
+            _ = bound.timestamp()
+        except (ValueError, OSError, OverflowError):
+            if not is_end:
+                return datetime(1970, 1, 1, 0, 0, 1)
+            return datetime(2099, 12, 31, 23, 59, 59)
+
         if not is_end:
             return bound
         if fmt in {'%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M'}:
@@ -436,11 +483,15 @@ class UsageStatsStore:
         self.file_path = os.path.join(base_dir, filename)
 
     def append_event(self, event: dict | UsageEvent):
-        payload = event.to_dict() if isinstance(event, UsageEvent) else normalize_usage_event(event)
-        os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
-        with open(self.file_path, 'a', encoding='utf-8') as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + '\n')
-        return payload
+        try:
+            payload = event.to_dict() if isinstance(event, UsageEvent) else normalize_usage_event(event)
+            os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
+            with open(self.file_path, 'a', encoding='utf-8') as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False) + '\n')
+            return payload
+        except Exception:
+            # 即使记录统计失败，也不应阻断 AI 主流程
+            return {}
 
     def iter_events(self):
         if not os.path.exists(self.file_path):

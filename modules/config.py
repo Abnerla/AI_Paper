@@ -524,9 +524,16 @@ class ConfigManager:
 
     def get_api_config(self, api_name=None):
         """获取指定模型服务的配置"""
-        if api_name is None:
-            api_name = self._data.get('active_api', '')
-        return dict(self.get_saved_apis().get(api_name, {}))
+        target_id = str(api_name if api_name is not None else '').strip()
+        if not target_id:
+            target_id = self.active_api
+        
+        # 确保 target_id 存在于保存的 API 中
+        apis = self.get_saved_apis()
+        if not target_id or target_id not in apis:
+            return {}
+            
+        return dict(apis.get(target_id, {}))
 
     def set_api_config(self, api_name, config: dict):
         """设置指定模型服务的配置"""

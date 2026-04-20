@@ -30,8 +30,14 @@ class TaskRunner:
         task_label = self._build_task_label(work, status_text=status_text, loading_text=loading_text)
         if callable(on_start):
             on_start()
+        
+        # 确保在启动线程前显示加载动画
         if self.loading and loading_text:
             self.loading.show(loading_text)
+            # 在某些情况下 Tkinter 可能需要一点时间来渲染 place 出来的组件
+            # 特别是如果后续紧跟着 CPU 密集型操作
+            self.scheduler.update_idletasks()
+            
         if self.set_status and status_text:
             self.set_status(status_text, status_color)
         self._log(f'[task_start] {task_label}')
@@ -40,10 +46,12 @@ class TaskRunner:
             try:
                 result = work()
             except Exception as exc:
-                self.scheduler.after(0, lambda err=exc: self._finish_error(err, on_error, task_label))
+                # 即使出错也稍微延迟隐藏，避免闪烁
+                self.scheduler.after(100, lambda err=exc: self._finish_error(err, on_error, task_label))
                 return
 
-            self.scheduler.after(0, lambda value=result: self._finish_success(value, on_success, task_label))
+            # 成功时也稍微延迟隐藏，让用户看清“处理完成”等状态
+            self.scheduler.after(100, lambda value=result: self._finish_success(value, on_success, task_label))
 
         thread = self.thread_factory(target=worker, daemon=True)
         thread.start()

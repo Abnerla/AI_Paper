@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-API閻庡箍鍨洪崺娑氱博椤栨丹渚€宕?- 闁衡偓椤栨稑鐦鑸电煯闁叉穾I闁哄牆绉存慨鐔煎疮?
+AI 接口客户端模块 - 统一调用各种 AI 服务
 """
 
 import json
@@ -67,7 +67,7 @@ class APIClient:
     )
     DEFAULT_BROWSER_ACCEPT = 'application/json, text/plain, */*'
     DEFAULT_BROWSER_ACCEPT_LANGUAGE = 'zh-CN,zh;q=0.9,en;q=0.8'
-    DEFAULT_TRANSPORT_RETRY_ATTEMPTS = 3
+    DEFAULT_TRANSPORT_RETRY_ATTEMPTS = 2
     DEFAULT_TRANSPORT_RETRY_DELAY_SECONDS = 0.35
     RETRYABLE_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
     PROTECTED_AUTH_FIELDS = {
@@ -112,8 +112,10 @@ class APIClient:
         explicit_name = str(api_name or '').strip()
         if explicit_name:
             return explicit_name
+
+        # 如果直接提供了配置（如测试连接场景），则不需要再解析路由
         if cfg is not None:
-            return explicit_name
+            return ''
 
         resolver = getattr(self.config, 'resolve_routed_api', None)
         if not callable(resolver):
@@ -247,11 +249,11 @@ class APIClient:
         if token_budget >= 3000:
             timeout_value = max(timeout_value, 120.0)
         if token_budget >= 4096:
-            timeout_value = max(timeout_value, 180.0)
+            timeout_value = max(timeout_value, 150.0)
         if token_budget >= 8192:
-            timeout_value = max(timeout_value, 240.0)
+            timeout_value = max(timeout_value, 180.0)
 
-        return min(timeout_value, 240.0)
+        return min(timeout_value, 180.0)
 
     def _resolve_request_timeout(self, cfg, request_timeout, *, default=60.0, prompt='', system='', max_tokens=None):
         explicit_timeout = self._coerce_positive_float(request_timeout)
@@ -596,7 +598,7 @@ class APIClient:
         if not cls._contains_header(merged, 'Pragma'):
             merged['Pragma'] = 'no-cache'
         if not cls._contains_header(merged, 'Connection'):
-            merged['Connection'] = 'close'
+            merged['Connection'] = 'keep-alive'
 
         base_url = str((cfg or {}).get('base_url', '') or '').strip()
         if base_url:
@@ -836,9 +838,9 @@ class APIClient:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise ValueError(f'濡ゅ倹顭囨鍥╂嫚闁垮婀村ù?JSON 闁哄秶鍘х槐锟犳煥濞嗘帩鍤? {exc}') from exc
+            raise ValueError(f'额外请求体 JSON 格式错误: {exc}') from exc
         if not isinstance(payload, dict):
-            raise ValueError('Extra JSON payload must be a JSON object')
+            raise ValueError('额外请求体 JSON 必须是一个对象')
         return payload
 
     @staticmethod
@@ -1548,7 +1550,7 @@ class APIClient:
         elif provider_name == HANDLER_BEDROCK_RESERVED:
             raise NotImplementedError('AWS Bedrock model list fetch is not implemented yet')
         else:
-            raise ValueError(f'濞戞挸绉甸弫顕€骞愭担鐑樼暠婵☆垪鈧磭鈧兘宕氬Δ鍕┾偓鍐╁緞閸曨厽鍊為柛? {provider_name}')
+            raise ValueError(f'不支持的 API 或协议: {provider_name}')
 
         service_provider_name = self._resolve_service_provider_name((cfg or {}).get('provider_type') or provider_name, cfg)
         self._log(
@@ -1612,7 +1614,7 @@ class APIClient:
         cfg: dict = None,
         usage_context: dict = None,
     ) -> str:
-        """闁告艾鏈鐐垫嫬閸愵亝鏆廇I API"""
+        """同步调用 AI API"""
         if api_name is None:
             api_name = self._resolve_api_for_request(api_name, usage_context, cfg)
         return self._call_sync(
@@ -1687,7 +1689,9 @@ class APIClient:
         handler_name = self._resolve_handler_name(api_name, cfg)
         handler = handlers.get(handler_name)
         if not handler:
-            raise ValueError(f'濞戞挸绉甸弫顕€骞愭担鐑樼暠API: {api_name}')
+            if not api_name:
+                raise ValueError('未配置活动模型。请前往「模型配置」页面配置 AI 模型并将其设为活动状态。')
+            raise ValueError(f'不支持的 API 或协议: {api_name} (handler={handler_name})')
         if model_override:
             cfg['model'] = model_override
         cfg = self._resolve_effective_request_config(cfg)
@@ -1912,6 +1916,21 @@ class APIClient:
                 elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                 error_message = self._format_transport_error(exc)
                 is_timeout_error = self._is_timeout_transport_error(exc)
+                
+                # 如果单次尝试耗时极长（如超过 30 秒）且失败，通常重试意义不大，直接抛出以节省用户时间
+                if elapsed_ms > 30000 and attempt < max_attempts:
+                    self._log(
+                        '[http_skip_retry] '
+                        f'url={safe_url} '
+                        f'elapsed_ms={elapsed_ms} '
+                        'duration too long, skipping further retries',
+                        level='WARN'
+                    )
+                    raise APIRequestError(
+                        f'请求响应过慢 ({int(elapsed_ms/1000)}s) 且失败。请检查网络状态或尝试更换模型。',
+                        detail={'error': {'transport_message': error_message}},
+                    ) from exc
+
                 if self._is_retryable_transport_error(exc) and not is_timeout_error and attempt < max_attempts:
                     delay_seconds = self._resolve_transport_retry_delay(attempt)
                     self._log(
@@ -1938,7 +1957,6 @@ class APIClient:
                         f'网络传输异常: {error_message}',
                         detail={'error': {'transport_message': error_message}},
                     )
-                    raise RuntimeError(f'缂冩垹绮堕柨娆掝嚖: {error_message}')
                 raise APIRequestError(
                     error_message,
                     detail={'error': {'transport_message': error_message}},
@@ -2027,7 +2045,7 @@ class APIClient:
                     level='ERROR',
                 )
                 if isinstance(exc, urllib.error.URLError):
-                    raise RuntimeError(f'缂冩垹绮堕柨娆掝嚖: {error_message}')
+                    raise RuntimeError(f'网络传输异常: {error_message}')
                 raise RuntimeError(error_message)
     def _call_openai_compat(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False):
         """Call an OpenAI-compatible endpoint."""
@@ -2282,9 +2300,6 @@ class APIClient:
                 f'Gemini 返回内容不可显示，block_reason={block_reason}，finish_reasons={finish_reasons}',
                 detail={'request': request_detail, 'response': response_detail},
             )
-            raise RuntimeError(
-                f'Gemini 闁哄牜浜ｇ换鎴﹀炊閻愭彃璁查柡鍕⒔閵囨岸寮崶銊︽嫳闁挎稑鐣發ock_reason={block_reason}闁挎稑鐣篿nish_reason={finish_reasons}'
-            )
         response_detail = self._build_response_debug_section(
             body=resp,
             extra={
@@ -2374,10 +2389,14 @@ class APIClient:
 
     @staticmethod
     def _format_transport_error(exc):
+        text = str(exc or '').strip()
+        if 'timestamp out of range' in text.lower():
+            return '系统时钟异常或 SSL 证书日期无效 (timestamp out of range)。请检查您的 Windows 系统时间是否准确，或者 API 代理地址是否存在证书过期/无效日期问题。'
+        
         if isinstance(exc, urllib.error.URLError):
             reason = exc.reason
             return str(reason or exc)
-        return str(exc or exc.__class__.__name__)
+        return text or str(exc.__class__.__name__)
 
     @staticmethod
     def _is_timeout_transport_error(exc):

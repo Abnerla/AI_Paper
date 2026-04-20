@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+""" 为什么我配置模型以后，使用AI功能会直接失败,甚至不显示等待画面
 Thin desktop entrypoint for 纸研社.
 """
 

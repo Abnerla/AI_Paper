@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 纸研社桌面应用主壳（窗口、导航与各页面挂载）。
 """
@@ -3877,6 +3877,7 @@ class SmartPaperTool:
         return 0
 
     def _build_local_backup_payload(self):
+        from modules.usage_stats import safe_datetime_fromtimestamp
         zip_bytes = self._collect_runtime_backup_zip_bytes()
         data_timestamp = self._get_local_data_timestamp()
         return {
@@ -3885,7 +3886,7 @@ class SmartPaperTool:
             'app_version': APP_VERSION,
             'exported_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'data_timestamp': data_timestamp,
-            'data_datetime': datetime.fromtimestamp(data_timestamp).strftime('%Y-%m-%d %H:%M:%S'),
+            'data_datetime': safe_datetime_fromtimestamp(data_timestamp).strftime('%Y-%m-%d %H:%M:%S'),
             'data_dir': os.path.abspath(self.config_mgr.app_dir),
             'payload_base64': base64.b64encode(zip_bytes).decode('ascii'),
         }
