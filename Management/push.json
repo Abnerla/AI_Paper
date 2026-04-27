@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "id": "2026-04-27-001",
+  "title": "版本推送",
+  "publish_date": "2026-04-27",
+  "description": "这是一次性推送示例。每次更新 id 后，客户端会在启动时自动展示一次，并记录为已读。",
+  "sections": [
+    {
+      "heading": "使用说明",
+      "items": [
+        "修改 push.json 的 id，可以触发新的推送。",
+        "推送内容展示后会写入本地已读记录，同一 id 不会重复弹出。",
+        "sections 和 links 的结构可以按需要扩展。"
+      ],
+      "links": [
+        {
+          "label": "项目主页",
+          "url": "https://github.com/Abnerla/AI_paper"
+        }
+      ]
+    }
+  ],
+  "footer_note": "如需重新测试，请更新 id 后重新启动程序。"
+}
