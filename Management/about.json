@@ -2,6 +2,12 @@
   "version": 1,
   "app_name": "纸研社",
   "description": "使用大模型面向论文写作与学术处理的本地桌面工具。",
+  "images": [
+    {
+      "path": "Introduction/qun.jpg",
+      "caption": "官方交流群"
+    }
+  ],
   "features": [
     "论文写作与大纲生成",
     "降AI检测与降查重率",

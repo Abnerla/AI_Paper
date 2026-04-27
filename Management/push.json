@@ -4,6 +4,12 @@
   "title": "版本推送",
   "publish_date": "2026-04-27",
   "description": "论文写作运行后未生成内容的问题",
+  "images": [
+    {
+      "path": "Introduction/qun.jpg",
+      "caption": "官方交流群"
+    }
+  ],
   "sections": [
     {
       "heading": "解决办法：",

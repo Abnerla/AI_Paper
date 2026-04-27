@@ -3,6 +3,12 @@
   "id": "2026-04-27-001",
   "title": "纸研社",
   "publish_date": "2026-04-12",
+  "images": [
+    {
+      "path": "Introduction/qun.jpg",
+      "caption": "官方交流群"
+    }
+  ],
   "sections": [
     {
       "heading": "公告",

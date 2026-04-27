@@ -51,6 +51,7 @@ BASE_DATA_DIR = RUNTIME_PATHS.base_data_root
 
 APP_NAME = '纸研社'
 APP_VERSION = 'v1.3.0'
+REPO_RAW_BASE_URL = 'https://raw.githubusercontent.com/Abnerla/AI_paper/main'
 STARTUP_REG_PATH = r'Software\Microsoft\Windows\CurrentVersion\Run'
 STARTUP_VALUE_NAME = APP_NAME
 TOP_NAV_ITEMS = (
@@ -3074,6 +3075,114 @@ class SmartPaperTool:
         window.after_idle(content_view.scroll_to_top)
         return window, content_view.inner, footer
 
+    @staticmethod
+    def _normalize_info_image_item(item):
+        if isinstance(item, str):
+            return {
+                'source': str(item or '').strip(),
+                'caption': '',
+                'max_width': 560,
+                'max_height': 420,
+            }
+        if not isinstance(item, dict):
+            return {
+                'source': '',
+                'caption': '',
+                'max_width': 560,
+                'max_height': 420,
+            }
+        return {
+            'source': str(item.get('url') or item.get('path') or item.get('src') or '').strip(),
+            'caption': str(item.get('caption') or item.get('alt') or '').strip(),
+            'max_width': max(int(item.get('max_width', 560) or 560), 1),
+            'max_height': max(int(item.get('max_height', 420) or 420), 1),
+        }
+
+    @staticmethod
+    def _resolve_info_image_source(source):
+        raw_source = str(source or '').strip()
+        if not raw_source:
+            return ''
+        parsed = urllib.parse.urlsplit(raw_source)
+        if parsed.scheme in {'http', 'https'}:
+            return raw_source
+        normalized_path = raw_source.replace('\\', '/').lstrip('/')
+        local_path = get_resource_path(normalized_path)
+        if os.path.exists(local_path):
+            return local_path
+        quoted_path = urllib.parse.quote(normalized_path, safe='/')
+        return f'{REPO_RAW_BASE_URL}/{quoted_path}'
+
+    @staticmethod
+    def _load_info_image(source, max_size):
+        try:
+            from PIL import Image as _PILImage
+            from PIL import ImageTk as _ImageTk
+        except Exception:
+            return None
+
+        try:
+            parsed = urllib.parse.urlsplit(str(source or '').strip())
+            if parsed.scheme in {'http', 'https'}:
+                request = urllib.request.Request(source, method='GET')
+                request.add_header('User-Agent', 'PaperLab/1.0')
+                request.add_header('Cache-Control', 'no-cache')
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    raw_bytes = response.read()
+                image_stream = io.BytesIO(raw_bytes)
+                with _PILImage.open(image_stream) as source_image:
+                    image = source_image.convert('RGBA')
+            else:
+                with _PILImage.open(source) as source_image:
+                    image = source_image.convert('RGBA')
+
+            if max_size:
+                resampling = getattr(getattr(_PILImage, 'Resampling', _PILImage), 'LANCZOS', getattr(_PILImage, 'LANCZOS', 1))
+                image.thumbnail(max_size, resampling)
+            return _ImageTk.PhotoImage(image)
+        except Exception:
+            return None
+
+    def _render_info_images(self, parent, images, owner):
+        image_items = list(images or [])
+        if not image_items:
+            return
+
+        image_refs = getattr(owner, '_info_image_refs', None)
+        if image_refs is None:
+            image_refs = []
+            setattr(owner, '_info_image_refs', image_refs)
+
+        for item in image_items:
+            image_meta = self._normalize_info_image_item(item)
+            image_source = self._resolve_info_image_source(image_meta.get('source', ''))
+            if not image_source:
+                continue
+            photo = self._load_info_image(
+                image_source,
+                max_size=(image_meta.get('max_width', 560), image_meta.get('max_height', 420)),
+            )
+            if photo is None:
+                continue
+
+            image_refs.append(photo)
+            image_label = tk.Label(parent, image=photo, bg=COLORS['card_bg'], bd=0, highlightthickness=0)
+            image_label.pack(anchor='center', pady=(8, 8))
+
+            caption = image_meta.get('caption', '')
+            if caption:
+                caption_label = tk.Label(
+                    parent,
+                    text=caption,
+                    font=FONTS['small'],
+                    fg=COLORS['text_sub'],
+                    bg=COLORS['card_bg'],
+                    anchor='center',
+                    justify='center',
+                )
+                caption_label.pack(anchor='center', fill=tk.X, pady=(0, 8))
+                bind_adaptive_wrap(caption_label, parent, padding=16, min_width=320)
+
     def _close_dialog(self, window):
         if window in self.dialogs:
             self.dialogs.remove(window)
@@ -3160,6 +3269,7 @@ class SmartPaperTool:
             if not _safe_exists():
                 return
             loading_label.destroy()
+            self._render_info_images(content, data.get('images', []), window)
             for section in data.get('sections', []):
                 heading = section.get('heading', '')
                 if heading:
@@ -3168,6 +3278,7 @@ class SmartPaperTool:
                     lbl = tk.Label(content, text=f'  · {item}', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
                     lbl.pack(anchor='w', fill=tk.X)
                     bind_adaptive_wrap(lbl, content, padding=8, min_width=320)
+                self._render_info_images(content, section.get('images', []), window)
             foot_note = data.get('footer_note', '')
             if foot_note:
                 fn_label = tk.Label(content, text=foot_note, font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
@@ -3234,6 +3345,7 @@ class SmartPaperTool:
             if not _safe_exists():
                 return
             loading_label.destroy()
+            self._render_info_images(content, data.get('images', []), window)
             title = str(data.get('title', '') or '').strip() or '消息推送'
             publish_date = str(data.get('publish_date', '') or '').strip()
             title_text = title if not publish_date else f'{title}  {publish_date}'
@@ -3259,6 +3371,7 @@ class SmartPaperTool:
                     link_label = tk.Label(content, text=label_text, font=FONTS['body'], fg=COLORS['primary'], bg=COLORS['card_bg'], anchor='w', cursor='hand2')
                     link_label.pack(anchor='w', fill=tk.X, pady=(2, 0))
                     link_label.bind('<Button-1>', lambda _event, u=url: webbrowser.open(u))
+                self._render_info_images(content, section.get('images', []), window)
             foot_note = str(data.get('footer_note', '') or '').strip()
             if foot_note:
                 fn_label = tk.Label(content, text=foot_note, font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
@@ -3336,6 +3449,7 @@ class SmartPaperTool:
             if not _safe_exists():
                 return
             loading_label.destroy()
+            self._render_info_images(content, data.get('images', []), window)
             desc = data.get('description', '')
             if desc:
                 desc_label = tk.Label(content, text=desc, font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
