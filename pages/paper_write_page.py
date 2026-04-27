@@ -4660,13 +4660,18 @@ class PaperWritePage(WorkspaceStateMixin):
             if title == reference_title or not self._is_reference_linkable_section_title(title):
                 continue
             if title == section:
-                append_keys(self._collect_citation_reference_keys(existing_text, old_number_map))
+                if write_mode == 'append':
+                    append_keys(self._collect_citation_reference_keys(existing_text, old_number_map))
                 append_keys(self._collect_citation_reference_keys(new_text, local_number_map))
                 continue
             section_body = self._normalize_section_body(self._sections.get(title, ''))
             append_keys(self._collect_citation_reference_keys(section_body, old_number_map))
 
-        for entries in (old_reference_entries, local_reference_entries):
+        trailing_entry_groups = (old_reference_entries, local_reference_entries)
+        if write_mode == 'replace':
+            trailing_entry_groups = (local_reference_entries,)
+
+        for entries in trailing_entry_groups:
             for entry in entries:
                 entry_key = entry.get('key') or self._reference_entry_key(entry.get('text', ''))
                 if not entry_key or entry_key in seen_keys:
@@ -5702,7 +5707,16 @@ class PaperWritePage(WorkspaceStateMixin):
             self._section_formats[display_section] = merged_formats
         else:
             clean_result, references_text = self._extract_references_from_section_result(result)
-            if references_text and self._supports_numeric_reference_linking():
+            should_sync_numeric_references = (
+                self._supports_numeric_reference_linking()
+                and (
+                    bool(references_text)
+                    or bool(self._find_reference_section_title())
+                    or bool(re.search(r'\[[^\[\]]+\]', existing))
+                    or bool(re.search(r'\[[^\[\]]+\]', clean_result))
+                )
+            )
+            if should_sync_numeric_references:
                 merged, merged_formats, reference_section_title = self._sync_document_references_after_section_write(
                     section,
                     existing,
