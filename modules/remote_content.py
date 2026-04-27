@@ -14,6 +14,7 @@ BASE_URL = 'https://raw.githubusercontent.com/Abnerla/AI_paper/main/Management'
 ENDPOINTS = {
     'announcement': f'{BASE_URL}/announcement.json',
     'about': f'{BASE_URL}/about.json',
+    'push': f'{BASE_URL}/push.json',
     'version': f'{BASE_URL}/version.json',
 }
 
@@ -120,6 +121,14 @@ class RemoteContentManager:
         """判断缓存的公告 id 是否与 last_seen_id 不同"""
         with self._lock:
             data = self._cache.get('announcement')
+        if not data:
+            return False
+        current_id = data.get('id', '')
+        return bool(current_id) and current_id != last_seen_id
+
+    def has_new_push(self, last_seen_id):
+        with self._lock:
+            data = self._cache.get('push')
         if not data:
             return False
         current_id = data.get('id', '')

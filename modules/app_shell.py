@@ -682,6 +682,7 @@ class SmartPaperTool:
         if self.launch_silently:
             self.root.after(180, self._apply_silent_launch)
         self.root.after(500, self._prefetch_announcement)
+        self.root.after(650, self._prefetch_push)
         self.root.after(900, self._check_version_update_on_startup)
 
     def _finish_startup_render(self):
@@ -3107,6 +3108,20 @@ class SmartPaperTool:
         else:
             self._clear_bell_badge()
 
+    def _prefetch_push(self):
+        if not self._remote_content or self.launch_silently:
+            return
+        self._remote_content.fetch('push', on_success=self._on_push_prefetch)
+
+    def _on_push_prefetch(self, data):
+        push_id = str((data or {}).get('id', '') or '').strip()
+        if not push_id:
+            return
+        last_seen = self.config_mgr.get_setting('last_seen_push_id', '')
+        if push_id == last_seen:
+            return
+        self._show_push_dialog(prefetched_data=data)
+
     def _show_bell_badge(self):
         self._bell_badge_visible = True
         bell_button = self._resolve_tool_button(getattr(self, 'bell_button', None))
@@ -3181,6 +3196,95 @@ class SmartPaperTool:
 
         ModernButton(footer, '我知道了', style='primary', command=lambda: self._close_dialog(window)).pack(anchor='e')
         self._remote_content.fetch('announcement', on_success=on_loaded, on_error=on_error)
+
+    def _show_push_dialog(self, prefetched_data=None):
+        existing_window = getattr(self, '_push_window', None)
+        if existing_window is not None:
+            try:
+                if existing_window.winfo_exists():
+                    existing_window.lift()
+                    existing_window.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        window, content, footer = self._create_info_dialog_shell('消息推送', '860x680', min_width=720, min_height=560)
+        self._push_window = window
+        window.bind('<Destroy>', lambda _event: setattr(self, '_push_window', None), add='+')
+
+        tk.Label(content, text='消息推送', font=FONTS['title'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w', fill=tk.X, pady=(0, 8))
+
+        loading_label = tk.Label(content, text='正在加载推送内容...', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w')
+        loading_label.pack(anchor='w', fill=tk.X)
+
+        def _safe_exists():
+            try:
+                return window.winfo_exists()
+            except tk.TclError:
+                return False
+
+        def _mark_seen(push_id):
+            push_id = str(push_id or '').strip()
+            if not push_id:
+                return
+            self.config_mgr.set_setting('last_seen_push_id', push_id)
+            self.config_mgr.save()
+
+        def _render_content(data, from_cache=False):
+            if not _safe_exists():
+                return
+            loading_label.destroy()
+            title = str(data.get('title', '') or '').strip() or '消息推送'
+            publish_date = str(data.get('publish_date', '') or '').strip()
+            title_text = title if not publish_date else f'{title}  {publish_date}'
+            tk.Label(content, text=title_text, font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(0, 8))
+            description = str(data.get('description', '') or '').strip()
+            if description:
+                desc_label = tk.Label(content, text=description, font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
+                desc_label.pack(anchor='w', fill=tk.X, pady=(0, 8))
+                bind_adaptive_wrap(desc_label, content, padding=8, min_width=320)
+            for section in data.get('sections', []):
+                heading = str(section.get('heading', '') or '').strip()
+                if heading:
+                    tk.Label(content, text=heading, font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg'], anchor='w').pack(anchor='w', fill=tk.X, pady=(8, 4))
+                for item in section.get('items', []):
+                    item_label = tk.Label(content, text=f'  • {item}', font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
+                    item_label.pack(anchor='w', fill=tk.X)
+                    bind_adaptive_wrap(item_label, content, padding=8, min_width=320)
+                for link in section.get('links', []):
+                    label_text = str(link.get('label', '') or '').strip()
+                    url = str(link.get('url', '') or '').strip()
+                    if not label_text or not url:
+                        continue
+                    link_label = tk.Label(content, text=label_text, font=FONTS['body'], fg=COLORS['primary'], bg=COLORS['card_bg'], anchor='w', cursor='hand2')
+                    link_label.pack(anchor='w', fill=tk.X, pady=(2, 0))
+                    link_label.bind('<Button-1>', lambda _event, u=url: webbrowser.open(u))
+            foot_note = str(data.get('footer_note', '') or '').strip()
+            if foot_note:
+                fn_label = tk.Label(content, text=foot_note, font=FONTS['body'], fg=COLORS['text_sub'], bg=COLORS['card_bg'], anchor='w', justify='left')
+                fn_label.pack(anchor='w', fill=tk.X, pady=(10, 0))
+                bind_adaptive_wrap(fn_label, content, padding=8, min_width=320)
+            if from_cache:
+                tk.Label(footer, text='(缓存内容)', font=FONTS['small'], fg=COLORS['text_sub'], bg=COLORS['card_bg']).pack(side=tk.LEFT)
+            _mark_seen(data.get('id', ''))
+
+        def on_loaded(data):
+            _render_content(data, from_cache=False)
+
+        def on_error(_exc):
+            if not _safe_exists():
+                return
+            cached = self._remote_content.get_cached('push')
+            if cached:
+                _render_content(cached, from_cache=True)
+            else:
+                loading_label.configure(text='无法加载推送内容。')
+
+        ModernButton(footer, '关闭', style='primary', command=lambda: self._close_dialog(window)).pack(anchor='e')
+        if prefetched_data:
+            on_loaded(prefetched_data)
+        else:
+            self._remote_content.fetch('push', on_success=on_loaded, on_error=on_error)
 
     def _show_tutorial(self):
         window, content, footer = self._create_info_dialog_shell('使用教程', '920x720', min_width=760, min_height=600)

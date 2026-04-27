@@ -4549,12 +4549,18 @@ class PaperWritePage(WorkspaceStateMixin):
         return reference_title
 
     @classmethod
-    def _merge_section_text(cls, existing_text, new_text):
+    def _compose_section_text(cls, existing_text, new_text, write_mode='replace'):
         existing = cls._normalize_editor_block_text(existing_text)
         new = cls._normalize_editor_block_text(new_text)
-        if existing and new:
-            return f'{existing}\n\n{new}'
+        if write_mode == 'append':
+            if existing and new:
+                return f'{existing}\n\n{new}'
+            return new or existing
         return new or existing
+
+    @classmethod
+    def _merge_section_text(cls, existing_text, new_text):
+        return cls._compose_section_text(existing_text, new_text, write_mode='append')
 
     @classmethod
     def _merge_reference_entry_lists(cls, *groups):
@@ -4618,7 +4624,15 @@ class PaperWritePage(WorkspaceStateMixin):
         self._section_levels[section] = level
         self._section_parent[section] = self._find_parent_for_insert(insert_index, level)
 
-    def _sync_document_references_after_section_write(self, section, existing_text, new_text, references_text, existing_formats=None):
+    def _sync_document_references_after_section_write(
+        self,
+        section,
+        existing_text,
+        new_text,
+        references_text,
+        existing_formats=None,
+        write_mode='replace',
+    ):
         reference_title = self._ensure_reference_section()
         old_reference_entries = self._parse_reference_entries(self._sections.get(reference_title, ''))
         local_reference_entries = self._parse_reference_entries(references_text)
@@ -4685,8 +4699,8 @@ class PaperWritePage(WorkspaceStateMixin):
 
         rewritten_existing = self._rewrite_citations_with_entry_map(existing_text, old_number_map)
         rewritten_new = self._rewrite_citations_with_entry_map(new_text, local_number_map)
-        merged_text = self._merge_section_text(rewritten_existing, rewritten_new)
-        original_merged_text = self._merge_section_text(existing_text, new_text)
+        merged_text = self._compose_section_text(rewritten_existing, rewritten_new, write_mode=write_mode)
+        original_merged_text = self._compose_section_text(existing_text, new_text, write_mode=write_mode)
         merged_formats = (
             self._preserve_existing_formats(section, existing_text, merged_text, source_spans=existing_formats)
             if merged_text == original_merged_text
@@ -5658,6 +5672,7 @@ class PaperWritePage(WorkspaceStateMixin):
         existing_text='',
         existing_formats=None,
         set_display=True,
+        write_mode='replace',
     ):
         section = (section or '').strip()
         if not section:
@@ -5694,9 +5709,10 @@ class PaperWritePage(WorkspaceStateMixin):
                     clean_result,
                     references_text,
                     existing_formats=existing_formats,
+                    write_mode=write_mode,
                 )
             else:
-                merged = self._merge_section_text(existing, clean_result)
+                merged = self._compose_section_text(existing, clean_result, write_mode=write_mode)
                 merged_formats = self._preserve_existing_formats(
                     section,
                     existing,
@@ -5917,6 +5933,7 @@ class PaperWritePage(WorkspaceStateMixin):
                         existing_text=item.get('existing_text', ''),
                         existing_formats=item.get('existing_formats', []),
                         set_display=True,
+                        write_mode='replace',
                     )
                     self.set_status(
                         f'已完成第 {index}/{total} 节：{section}',
@@ -6024,6 +6041,7 @@ class PaperWritePage(WorkspaceStateMixin):
                 result,
                 existing_text=existing,
                 existing_formats=existing_formats,
+                write_mode='replace',
             )
             if outcome.get('reference_section_title'):
                 self.set_status(f'章节写作完成，参考文献已写入 {outcome["reference_section_title"]}')
