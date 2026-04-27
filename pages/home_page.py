@@ -1712,6 +1712,19 @@ class HomePage:
                 ),
             )
             self.usage_log_row_map[item_id] = dict(item)
+        self._scroll_usage_log_to_latest()
+
+    def _scroll_usage_log_to_latest(self):
+        tree = self.usage_log_tree
+        if not tree:
+            return
+        try:
+            children = tree.get_children()
+            tree.yview_moveto(0)
+            if children:
+                tree.see(children[0])
+        except tk.TclError:
+            return
 
     def _open_request_log_detail_from_click(self, event=None):
         if not self.usage_log_tree or event is None:
