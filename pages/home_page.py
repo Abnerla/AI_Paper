@@ -44,6 +44,7 @@ from pages.api_config_support import (
 
 DASHBOARD_TITLE_FONT_SIZE = 20
 DASHBOARD_SECTION_TITLE_FONT_SIZE = 16
+DEFAULT_USAGE_PERIOD_KEY = '24h'
 
 
 class HomePage:
@@ -106,7 +107,7 @@ class HomePage:
         self.system_status_list = None
         self.system_status_card = None
         self.usage_card = None
-        self.usage_period_key = 'all'
+        self.usage_period_key = self._load_usage_period_key()
         self.usage_period_buttons = {}
         self.usage_summary_labels = {}
         self.usage_summary_row = None
@@ -152,6 +153,21 @@ class HomePage:
         self._usage_chart_last_signature = None
 
         self._build()
+
+    def _load_usage_period_key(self):
+        valid_keys = {key for key, _label in USAGE_PERIOD_OPTIONS}
+        stored_key = str(
+            self.config.get_setting('home_usage_period_key', DEFAULT_USAGE_PERIOD_KEY)
+            or DEFAULT_USAGE_PERIOD_KEY
+        ).strip()
+        if stored_key in valid_keys:
+            return stored_key
+        return DEFAULT_USAGE_PERIOD_KEY
+
+    def _save_usage_period_key(self):
+        period_key = str(self.usage_period_key or '').strip() or DEFAULT_USAGE_PERIOD_KEY
+        self.config.set_setting('home_usage_period_key', period_key)
+        self.config.save()
 
     def _build(self):
         self._build_hero()
@@ -1430,7 +1446,11 @@ class HomePage:
         save_shell.pack(side=tk.RIGHT, padx=(0, 8))
 
     def _set_usage_period(self, key):
+        key = str(key or '').strip()
+        if not key or key == self.usage_period_key:
+            return
         self.usage_period_key = key
+        self._save_usage_period_key()
         self._refresh_usage_period_styles()
         self._refresh_usage_panel()
 

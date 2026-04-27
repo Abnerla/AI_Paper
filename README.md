@@ -105,6 +105,10 @@
 
 - **提交 Issue**：在 [Issues](../../issues) 页面描述你的问题或想法
 - **邮箱**：773131249@qq.com
+- **QQ群**：1090997054
+<div align="center">
+  <img src="Introduction/qun.jpg" width="30%">
+</div>
 - 每一条建议都会被认真阅读，你的反馈将直接影响后续版本的开发方向。感谢你帮助纸研社变得更好！
 
 ## 致谢

@@ -5890,7 +5890,39 @@ class PaperWritePage(WorkspaceStateMixin):
         self.set_status(f'批量写作已中止：{failed_section or "执行失败"}', COLORS['error'])
         dialog('批量写作已中止', message, parent=self.frame)
 
-    def _run_batch_write_task(self, targets, outline, word_count, reference_style):
+    def _run_on_ui_thread_sync(self, callback):
+        event = threading.Event()
+        payload = {}
+
+        def runner():
+            try:
+                payload['result'] = callback()
+            except Exception as exc:
+                payload['error'] = exc
+            finally:
+                event.set()
+
+        self.frame.after(0, runner)
+        event.wait()
+        if payload.get('error') is not None:
+            raise payload['error']
+        return payload.get('result')
+
+    def _prepare_batch_section_write_inputs(self, section, index, total):
+        self.set_status(
+            f'姝ｅ湪鍐欑 {index}/{total} 鑺傦細{section}',
+            COLORS['warning'],
+        )
+        self._select_section(section, touch_context=False)
+        return {
+            'outline': self.outline_text.get('1.0', tk.END).strip(),
+            'existing_text': self._resolve_section_existing_content(section),
+            'existing_formats': self._resolve_section_existing_formats(section),
+            'word_count': int(self.wcount_var.get() or '1000'),
+            'reference_style': self.ref_var.get(),
+        }
+
+    def _run_batch_write_task_legacy(self, targets, outline, word_count, reference_style):
         total = len(targets)
         completed_sections = []
 
@@ -5949,6 +5981,86 @@ class PaperWritePage(WorkspaceStateMixin):
 
             if apply_result.get('error') is not None:
                 error_message = str(apply_result['error'])
+                return {
+                    'ok': False,
+                    'failed_section': section,
+                    'completed_sections': completed_sections,
+                    'remaining_sections': [entry.get('section', '') for entry in targets[index - 1:]],
+                    'error_type': 'generic',
+                    'error_message': error_message,
+                }
+
+            completed_sections.append(section)
+
+        return {
+            'ok': True,
+            'completed_sections': completed_sections,
+            'completed_count': len(completed_sections),
+        }
+
+    def _run_batch_write_task(self, targets, outline, word_count, reference_style):
+        total = len(targets)
+        completed_sections = []
+
+        for index, item in enumerate(targets, start=1):
+            section = item.get('section', '')
+            try:
+                write_inputs = self._run_on_ui_thread_sync(
+                    lambda title=section, current=index, overall=total: self._prepare_batch_section_write_inputs(
+                        title,
+                        current,
+                        overall,
+                    )
+                )
+            except Exception as exc:
+                error_message = str(exc)
+                return {
+                    'ok': False,
+                    'failed_section': section,
+                    'completed_sections': completed_sections,
+                    'remaining_sections': [entry.get('section', '') for entry in targets[index - 1:]],
+                    'error_type': 'generic',
+                    'error_message': error_message,
+                }
+
+            try:
+                result = self.writer.write_section(
+                    write_inputs.get('outline', outline or ''),
+                    section,
+                    write_inputs.get('existing_text', ''),
+                    write_inputs.get('word_count', word_count),
+                    write_inputs.get('reference_style', reference_style),
+                )
+            except Exception as exc:
+                error_message = str(exc)
+                return {
+                    'ok': False,
+                    'failed_section': section,
+                    'completed_sections': completed_sections,
+                    'remaining_sections': [entry.get('section', '') for entry in targets[index - 1:]],
+                    'error_type': self._classify_batch_write_error(error_message),
+                    'error_message': error_message,
+                }
+
+            try:
+                self._run_on_ui_thread_sync(
+                    lambda title=section, response=result, current=index, overall=total, payload=write_inputs: (
+                        self._apply_written_section_result(
+                            title,
+                            response,
+                            existing_text=payload.get('existing_text', ''),
+                            existing_formats=payload.get('existing_formats', []),
+                            set_display=True,
+                            write_mode='replace',
+                        ),
+                        self.set_status(
+                            f'宸插畬鎴愮 {current}/{overall} 鑺傦細{title}',
+                            COLORS['warning'] if current < overall else COLORS['info'],
+                        ),
+                    )
+                )
+            except Exception as exc:
+                error_message = str(exc)
                 return {
                     'ok': False,
                     'failed_section': section,
