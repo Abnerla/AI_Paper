@@ -19,11 +19,11 @@ from modules.ui_components import (
     COLORS,
     FONTS,
     CardFrame,
-    ModernButton,
     ScrollablePage,
     ResponsiveButtonBar,
     bind_adaptive_wrap,
     bind_responsive_two_pane,
+    create_home_shell_button,
     create_scrolled_text,
 )
 
@@ -86,6 +86,15 @@ class PromptManagerPanel:
             return
         self._build_full()
 
+    def _create_prompt_button(self, parent, text, *, command, style='secondary', **kwargs):
+        return create_home_shell_button(
+            parent,
+            text,
+            command=command,
+            style=style,
+            **kwargs,
+        )
+
     def _build_full(self):
         header = tk.Frame(self.frame, bg=COLORS['bg_main'])
         header.pack(fill=tk.X, pady=(0, 12))
@@ -139,7 +148,8 @@ class PromptManagerPanel:
         if callable(self.open_full):
             head_actions = ResponsiveButtonBar(header, min_item_width=120, gap_x=8, gap_y=8, bg=COLORS['bg_main'])
             head_actions.pack(side=tk.RIGHT)
-            head_actions.add(ModernButton(head_actions, '打开总管理', style='secondary', command=self._open_full))
+            shell, _button = self._create_prompt_button(head_actions, '打开总管理', style='secondary', command=self._open_full)
+            head_actions.add(shell)
 
         self.summary_label = tk.Label(
             self.frame,
@@ -156,7 +166,7 @@ class PromptManagerPanel:
 
     def _build_page_nav(self, parent):
         for page_id in PAGE_ORDER:
-            button = ModernButton(
+            shell, button = self._create_prompt_button(
                 parent,
                 PAGE_META.get(page_id, {}).get('label', page_id),
                 style='pill',
@@ -164,7 +174,7 @@ class PromptManagerPanel:
                 padx=14,
                 pady=8,
             )
-            button.pack(fill=tk.X, pady=(10, 0))
+            shell.pack(fill=tk.X, pady=(10, 0))
             self._page_buttons[page_id] = button
 
     def _build_content_host(self, parent):
@@ -214,7 +224,7 @@ class PromptManagerPanel:
 
         list_actions = tk.Frame(list_header, bg=COLORS['card_bg'])
         list_actions.pack(side=tk.RIGHT, anchor='e')
-        ModernButton(
+        create_shell, _button = self._create_prompt_button(
             list_actions,
             '添加提示词',
             style='primary',
@@ -222,9 +232,9 @@ class PromptManagerPanel:
             font=FONTS['heading'],
             padx=10,
             pady=0,
-            highlightthickness=0,
-        ).pack(side=tk.LEFT)
-        ModernButton(
+        )
+        create_shell.pack(side=tk.LEFT)
+        refresh_shell, _button = self._create_prompt_button(
             list_actions,
             '刷新列表',
             style='ghost',
@@ -232,8 +242,8 @@ class PromptManagerPanel:
             font=FONTS['heading'],
             padx=10,
             pady=0,
-            highlightthickness=0,
-        ).pack(side=tk.LEFT, padx=(8, 0))
+        )
+        refresh_shell.pack(side=tk.LEFT, padx=(8, 0))
 
         self.prompt_list_view = ScrollablePage(self.list_card.inner, bg=COLORS['card_bg'])
         self.prompt_list_view.pack(fill=tk.BOTH, expand=True)
@@ -299,8 +309,10 @@ class PromptManagerPanel:
 
         editor_actions = ResponsiveButtonBar(parent, min_item_width=140, gap_x=8, gap_y=8, bg=COLORS['card_bg'])
         editor_actions.pack(fill=tk.X, pady=(12, 0))
-        editor_actions.add(ModernButton(editor_actions, '保存提示词', style='primary', command=self._save_current))
-        editor_actions.add(ModernButton(editor_actions, '取消编辑', style='ghost', command=self._reset_editor))
+        save_shell, _button = self._create_prompt_button(editor_actions, '保存提示词', style='primary', command=self._save_current)
+        cancel_shell, _button = self._create_prompt_button(editor_actions, '取消编辑', style='ghost', command=self._reset_editor)
+        editor_actions.add(save_shell)
+        editor_actions.add(cancel_shell)
 
     def _build_dialog_editor(self, parent):
         title_label = tk.Label(
@@ -363,8 +375,10 @@ class PromptManagerPanel:
 
         actions = ResponsiveButtonBar(parent, min_item_width=140, gap_x=8, gap_y=8, bg=COLORS['card_bg'])
         actions.pack(fill=tk.X, pady=(14, 0))
-        actions.add(ModernButton(actions, '保存提示词', style='primary', command=self._save_current))
-        actions.add(ModernButton(actions, '取消编辑', style='ghost', command=self._reset_editor))
+        save_shell, _button = self._create_prompt_button(actions, '保存提示词', style='primary', command=self._save_current)
+        cancel_shell, _button = self._create_prompt_button(actions, '取消编辑', style='ghost', command=self._reset_editor)
+        actions.add(save_shell)
+        actions.add(cancel_shell)
 
         self._editor_dialog_title_label = title_label
         self._editor_dialog_variable_tip_label = variable_tip_label
@@ -531,7 +545,7 @@ class PromptManagerPanel:
 
         for scene_id in PAGE_SCENE_MAP.get(self.current_page_id, []):
             label = self.prompt_center.get_scene_def(scene_id)['label']
-            button = ModernButton(
+            shell, button = self._create_prompt_button(
                 self.scene_tabs_bar,
                 label,
                 style='pill_active' if scene_id == self.current_scene_id else 'pill',
@@ -539,7 +553,7 @@ class PromptManagerPanel:
                 padx=14,
                 pady=7,
             )
-            self.scene_tabs_bar.add(button)
+            self.scene_tabs_bar.add(shell)
             self._scene_buttons[scene_id] = button
         self.scene_tabs_bar.after_idle(self.scene_tabs_bar._relayout)
         self.scene_tabs_bar.update_idletasks()
@@ -600,9 +614,10 @@ class PromptManagerPanel:
 
         row = tk.Frame(card, bg=COLORS['card_bg'])
         row.pack(fill=tk.X, padx=14, pady=12)
+        row.grid_columnconfigure(0, weight=1)
 
         left = tk.Frame(row, bg=COLORS['card_bg'])
-        left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        left.grid(row=0, column=0, sticky='ew')
 
         badge = tk.Label(
             left,
@@ -635,12 +650,17 @@ class PromptManagerPanel:
             anchor='w',
         ).pack(anchor='w')
 
-        right = ResponsiveButtonBar(row, min_item_width=92, gap_x=8, gap_y=8, bg=COLORS['card_bg'])
-        right.pack(side=tk.RIGHT)
+        right = tk.Frame(row, bg=COLORS['card_bg'])
+        right.grid(row=0, column=1, padx=(16, 0), sticky='e')
         if not is_active:
-            right.add(ModernButton(right, '启用', style='accent', command=lambda pid=prompt['id']: self._activate(pid), padx=10, pady=6))
-        right.add(ModernButton(right, '编辑', style='secondary', command=lambda item=prompt: self._start_edit(item), padx=10, pady=6))
-        right.add(ModernButton(right, '删除', style='ghost', command=lambda pid=prompt['id'], name=prompt.get('name', ''): self._delete(pid, name), padx=10, pady=6))
+            activate_shell, _button = self._create_prompt_button(right, '启用', style='accent', command=lambda pid=prompt['id']: self._activate(pid), padx=10, pady=6)
+            activate_shell.pack(side=tk.LEFT, padx=(0, 8))
+        copy_shell, _button = self._create_prompt_button(right, '复制', style='secondary', command=lambda item=prompt: self._copy_prompt(item), padx=10, pady=6)
+        edit_shell, _button = self._create_prompt_button(right, '编辑', style='secondary', command=lambda item=prompt: self._start_edit(item), padx=10, pady=6)
+        delete_shell, _button = self._create_prompt_button(right, '删除', style='ghost', command=lambda pid=prompt['id'], name=prompt.get('name', ''): self._delete(pid, name), padx=10, pady=6)
+        copy_shell.pack(side=tk.LEFT, padx=(0, 8))
+        edit_shell.pack(side=tk.LEFT, padx=(0, 8))
+        delete_shell.pack(side=tk.LEFT)
 
     def _start_create(self):
         self._ensure_editor_dialog()
@@ -659,6 +679,12 @@ class PromptManagerPanel:
         self._refresh_variable_tip()
         self.set_status(f'正在编辑提示词：{prompt.get("name", "未命名提示词")}')
         self._focus_editor(focus_name=False)
+
+    def _copy_prompt(self, prompt):
+        copied_prompt = self.prompt_center.duplicate_prompt(self.current_scene_id, prompt.get('id'))
+        self._refresh_scene()
+        self._start_edit(copied_prompt)
+        self.set_status('提示词已复制')
 
     def _reset_editor(self):
         self._reset_editor_state()
