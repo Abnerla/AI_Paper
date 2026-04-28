@@ -638,9 +638,39 @@ class SmartPaperTool:
                 startup_page._relayout_dashboard()
         self.root.update_idletasks()
         self.root.update()
+        pre_stabilized = False
+        if startup_page and hasattr(startup_page, 'stabilize_startup_render'):
+            pre_stabilized = bool(startup_page.stabilize_startup_render('startup_pre_maximize'))
+            self.root.update_idletasks()
+            self.root.update()
         # 布局完成后先关闭加载窗，再把主窗口切到最大化窗口状态
         self._close_loading_screen()
         self._maximize_window(remember_restore=False)
+        self.root.update_idletasks()
+        if hasattr(self, 'content_view'):
+            canvas = self.content_view.canvas
+            w = canvas.winfo_width()
+            if w > 1:
+                canvas.itemconfigure(self.content_view.window_id, width=w)
+        self.root.update()
+        prepared_on_show = False
+        if startup_page and hasattr(startup_page, 'on_show'):
+            startup_page.on_show()
+            prepared_on_show = True
+            if hasattr(startup_page, '_stabilize_usage_layout'):
+                startup_page._stabilize_usage_layout()
+            self.root.update_idletasks()
+            self.root.update()
+        post_stabilized = False
+        if startup_page and hasattr(startup_page, 'stabilize_startup_render'):
+            post_stabilized = bool(startup_page.stabilize_startup_render('startup_post_on_show'))
+            self.root.update_idletasks()
+            self.root.update()
+        self._write_app_log(
+            f'[startup_page_stabilize] page={self._startup_page_id} '
+            f'pre={pre_stabilized} post={post_stabilized} on_show={prepared_on_show}'
+        )
+        self._close_loading_screen()
         self.root.update_idletasks()
         self._rebuild_window_chrome_after_show()
         # 顶部导航在离屏预布局后，部分子控件的屏幕坐标不会自动修正。
@@ -653,7 +683,7 @@ class SmartPaperTool:
                 canvas.itemconfigure(self.content_view.window_id, width=w)
         self.root.update_idletasks()
         self._startup_complete = True
-        if startup_page and hasattr(startup_page, 'on_show'):
+        if startup_page and hasattr(startup_page, 'on_show') and not prepared_on_show:
             self.root.after(40, lambda page_id=self._startup_page_id: self._invoke_page_on_show(page_id))
         self.root.after(120, self._repair_shell_after_map)
         self._startup_metrics['show'] = time.perf_counter() - started_at

@@ -107,8 +107,14 @@ class HomePage:
         self.system_status_list = None
         self.system_status_card = None
         self.usage_card = None
+        self.usage_card_title_label = None
+        self.usage_period_bar = None
+        self.usage_period_hover_key = ''
         self.usage_period_key = self._load_usage_period_key()
         self.usage_period_buttons = {}
+        self._home_render_repair_after_id = None
+        self._usage_card_post_map_rebuilt = False
+        self._usage_period_verify_after_id = None
         self.usage_summary_labels = {}
         self.usage_summary_row = None
         self.usage_summary_cards = []
@@ -129,6 +135,10 @@ class HomePage:
         self.usage_model_tree = None
         self.pricing_panel_body = None
         self.pricing_expanded = False
+        self.pricing_title_label = None
+        self.pricing_desc_label = None
+        self.pricing_info_shell = None
+        self.pricing_toggle_shell = None
         self.pricing_toggle_button = None
         self.pricing_rule_tree = None
         self.pricing_provider_var = None
@@ -174,6 +184,14 @@ class HomePage:
         self._build_dashboard()
         self.frame.after_idle(lambda: self._schedule_hero_relayout(delay_ms=0))
         self.frame.after_idle(lambda: self._schedule_dashboard_relayout(delay_ms=0))
+        self.frame.after_idle(
+            lambda: self._schedule_home_render_watchdogs(
+                'build_idle',
+                repair_delay_ms=160,
+                verify_delay_ms=220,
+                log_event=False,
+            )
+        )
         self.refresh_dashboard()
 
     def _cancel_scheduled_job(self, attr_name):
@@ -194,6 +212,83 @@ class HomePage:
         except tk.TclError:
             job_id = None
         setattr(self, attr_name, job_id)
+
+    def _write_home_render_log(self, message, level='INFO'):
+        text = str(message or '').strip()
+        if not text:
+            return
+        if self.app_bridge and hasattr(self.app_bridge, 'write_app_log'):
+            try:
+                self.app_bridge.write_app_log(text, level=level)
+                return
+            except Exception:
+                pass
+        print(text)
+
+    def _schedule_home_render_watchdogs(
+        self,
+        reason,
+        *,
+        repair_delay_ms=140,
+        verify_delay_ms=200,
+        log_event=True,
+    ):
+        if log_event:
+            self._write_home_render_log(
+                f'[home_render_watchdog] reason={reason} '
+                f'repair_delay_ms={repair_delay_ms} verify_delay_ms={verify_delay_ms}'
+            )
+        self._schedule_home_render_repair(delay_ms=repair_delay_ms, attempt=0)
+        self._schedule_usage_period_button_verify(delay_ms=verify_delay_ms, attempt=0)
+        try:
+            self.frame.after(
+                max(verify_delay_ms + 80, 260),
+                lambda current_reason=reason: self._log_usage_header_geometry(current_reason),
+            )
+        except tk.TclError:
+            pass
+
+    def _log_usage_header_geometry(self, reason):
+        try:
+            if not self.frame.winfo_exists():
+                return
+            self.frame.update_idletasks()
+        except tk.TclError:
+            return
+
+        period_items = []
+        for key, payload in self.usage_period_buttons.items():
+            state = self._read_usage_period_button_state(payload)
+            if state.get('error') or not state.get('exists'):
+                continue
+            item = {
+                'key': key,
+                'mapped': bool(state.get('mapped')),
+                'text': state.get('text', ''),
+            }
+            if state.get('mode') in {'single', 'canvas'}:
+                item['size'] = f'{state.get("width", 0)}x{state.get("height", 0)}'
+                item['style'] = state.get('style', '')
+            else:
+                item['shell'] = f'{state.get("shell_width", 0)}x{state.get("shell_height", 0)}'
+                item['label'] = f'{state.get("label_width", 0)}x{state.get("label_height", 0)}'
+            period_items.append(item)
+
+        pricing_desc = {}
+        if self.pricing_desc_label and self.pricing_desc_label.winfo_exists():
+            try:
+                pricing_desc = {
+                    'mapped': bool(self.pricing_desc_label.winfo_ismapped()),
+                    'size': f'{self.pricing_desc_label.winfo_width()}x{self.pricing_desc_label.winfo_height()}',
+                    'text': str(self.pricing_desc_label.cget('text') or ''),
+                }
+            except tk.TclError:
+                pricing_desc = {}
+
+        self._write_home_render_log(
+            f'[home_header_geometry] reason={reason} '
+            f'periods={period_items} pricing_desc={pricing_desc}'
+        )
 
     def _schedule_hero_relayout(self, _event=None, delay_ms=24):
         self._schedule_scheduled_job('_hero_relayout_job', self._run_hero_relayout, delay_ms)
@@ -247,6 +342,922 @@ class HomePage:
         self.dashboard_shell_buttons.append((shell, button))
         return shell, button
 
+    def _iter_home_widgets(self, root=None):
+        root = root or self.frame
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            yield current
+            try:
+                children = list(current.winfo_children())
+            except tk.TclError:
+                children = []
+            stack.extend(reversed(children))
+
+    def _repaint_home_widget_tree(self):
+        for widget in self._iter_home_widgets(self.notice_card):
+            try:
+                if isinstance(widget, tk.Label):
+                    widget.configure(
+                        text=widget.cget('text'),
+                        font=widget.cget('font'),
+                        fg=widget.cget('fg'),
+                        bg=widget.cget('bg'),
+                    )
+                elif isinstance(widget, tk.Button) and hasattr(widget, 'set_style'):
+                    widget.set_style(widget.style_name)
+                elif isinstance(widget, tk.Canvas):
+                    widget.configure(
+                        bg=widget.cget('bg'),
+                        highlightbackground=widget.cget('highlightbackground'),
+                        highlightthickness=widget.cget('highlightthickness'),
+                    )
+                    for item_id in widget.find_all():
+                        if widget.type(item_id) != 'text':
+                            continue
+                        widget.itemconfigure(
+                            item_id,
+                            text=widget.itemcget(item_id, 'text'),
+                            fill=widget.itemcget(item_id, 'fill'),
+                            font=widget.itemcget(item_id, 'font'),
+                            width=widget.itemcget(item_id, 'width'),
+                        )
+                elif isinstance(widget, tk.Frame):
+                    widget.configure(bg=widget.cget('bg'))
+            except tk.TclError:
+                continue
+
+    def _capture_usage_card_state(self):
+        notebook_index = 0
+        if self.usage_notebook and self.usage_notebook.winfo_exists():
+            try:
+                notebook_index = int(self.usage_notebook.index('current'))
+            except tk.TclError:
+                notebook_index = 0
+        return {
+            'period_key': self.usage_period_key,
+            'page_label': self.usage_log_page_var.get() if self.usage_log_page_var else '全部应用',
+            'status_label': self.usage_log_status_var.get() if self.usage_log_status_var else '全部状态',
+            'provider_keyword': self.usage_log_provider_var.get() if self.usage_log_provider_var else '',
+            'model_keyword': self.usage_log_model_var.get() if self.usage_log_model_var else '',
+            'start_text': self.usage_log_start_var.get() if self.usage_log_start_var else '',
+            'end_text': self.usage_log_end_var.get() if self.usage_log_end_var else '',
+            'pricing_expanded': bool(self.pricing_expanded),
+            'notebook_index': notebook_index,
+        }
+
+    def _restore_usage_card_state(self, state):
+        state = dict(state or {})
+        self.usage_period_key = str(state.get('period_key') or self.usage_period_key or DEFAULT_USAGE_PERIOD_KEY).strip() or DEFAULT_USAGE_PERIOD_KEY
+        if self.usage_log_page_var:
+            self.usage_log_page_var.set(state.get('page_label', '全部应用'))
+        if self.usage_log_status_var:
+            self.usage_log_status_var.set(state.get('status_label', '全部状态'))
+        if self.usage_log_provider_var:
+            self.usage_log_provider_var.set(state.get('provider_keyword', ''))
+        if self.usage_log_model_var:
+            self.usage_log_model_var.set(state.get('model_keyword', ''))
+        if self.usage_log_start_var:
+            self.usage_log_start_var.set(state.get('start_text', self.usage_log_start_var.get()))
+        if self.usage_log_end_var:
+            self.usage_log_end_var.set(state.get('end_text', self.usage_log_end_var.get()))
+
+        self.pricing_expanded = bool(state.get('pricing_expanded', False))
+        if self.pricing_panel_body and self.pricing_toggle_button:
+            if self.pricing_expanded:
+                self.pricing_panel_body.pack(fill=tk.X, pady=(12, 0))
+                self.pricing_toggle_button.configure(text='收起')
+            else:
+                self.pricing_panel_body.pack_forget()
+                self.pricing_toggle_button.configure(text='展开')
+
+        if self.usage_notebook and self.usage_notebook.winfo_exists():
+            try:
+                tab_count = int(self.usage_notebook.index('end'))
+            except tk.TclError:
+                tab_count = 0
+            target_index = int(state.get('notebook_index', 0) or 0)
+            if tab_count > 0:
+                target_index = max(0, min(target_index, tab_count - 1))
+                try:
+                    self.usage_notebook.select(target_index)
+                except tk.TclError:
+                    pass
+
+    def _rebuild_usage_card_after_map(self, reason, issues=None):
+        if not self.dashboard_usage_row or not self.dashboard_usage_row.winfo_exists():
+            return
+
+        snapshot = self._capture_usage_card_state()
+        self._write_home_render_log(f'[usage_card_rebuild] reason={reason} issues={issues or []}')
+
+        if self.notice_card and self.notice_card.winfo_exists():
+            try:
+                self.notice_card.destroy()
+            except tk.TclError:
+                pass
+
+        self.notice_card = None
+        self.usage_card = None
+        self.usage_card_title_label = None
+        self.usage_period_bar = None
+        self.usage_period_hover_key = ''
+        self.usage_period_buttons = {}
+        self.usage_summary_labels = {}
+        self.usage_summary_row = None
+        self.usage_summary_cards = []
+        self._usage_summary_cards_ready = False
+        self.usage_chart_canvas = None
+        self.usage_chart_caption_label = None
+        self.usage_notebook = None
+        self.usage_log_page_var = None
+        self.usage_log_status_var = None
+        self.usage_log_provider_var = None
+        self.usage_log_model_var = None
+        self.usage_log_start_var = None
+        self.usage_log_end_var = None
+        self.usage_log_tree = None
+        self.usage_log_row_map = {}
+        self.usage_provider_tree = None
+        self.usage_model_tree = None
+        self.pricing_panel_body = None
+        self.pricing_title_label = None
+        self.pricing_desc_label = None
+        self.pricing_info_shell = None
+        self.pricing_toggle_shell = None
+        self.pricing_toggle_button = None
+        self.pricing_rule_tree = None
+
+        self.dashboard_shell_buttons = [
+            (shell, button)
+            for shell, button in self.dashboard_shell_buttons
+            if shell and button and shell.winfo_exists() and button.winfo_exists()
+        ]
+
+        self._build_notice_card()
+        self._restore_usage_card_state(snapshot)
+        self._refresh_usage_card_button_styles()
+        self._refresh_pricing_rules()
+        self._ensure_usage_summary_cards(force_rebuild=True)
+        self._refresh_usage_panel()
+        self._schedule_home_render_watchdogs(
+            f'rebuild:{reason}',
+            repair_delay_ms=160,
+            verify_delay_ms=220,
+            log_event=False,
+        )
+        self._usage_card_post_map_rebuilt = True
+
+    def _stabilize_usage_card_render_once(self, reason):
+        if not self.notice_card or not self.notice_card.winfo_exists():
+            return False
+        try:
+            self.frame.update_idletasks()
+            if not self.notice_card.winfo_viewable():
+                return False
+        except tk.TclError:
+            return False
+
+        issues = self._collect_home_render_issues()
+        if not issues:
+            self._usage_card_post_map_rebuilt = True
+            return True
+
+        self._write_home_render_log(f'[home_usage_render_probe] reason={reason} issues={issues}')
+        self._rebuild_usage_card_after_map(reason, issues)
+        try:
+            self.frame.update_idletasks()
+        except tk.TclError:
+            return False
+
+        remaining_issues = self._collect_home_render_issues()
+        if remaining_issues:
+            self._write_home_render_log(
+                f'[usage_card_stabilize] reason={reason} remaining_issues={remaining_issues}'
+            )
+            return False
+        return True
+
+    def stabilize_startup_render(self, reason='startup_hidden_prelayout'):
+        if not self.notice_card or not self.notice_card.winfo_exists():
+            return False
+        self._refresh_primary_action_button_styles()
+        self._refresh_usage_card_button_styles()
+        self._repaint_home_widget_tree()
+        self._relayout_hero(force=True)
+        self._relayout_dashboard(force=True)
+        stabilized = self._stabilize_usage_card_render_once(reason)
+        self._schedule_home_render_watchdogs(
+            f'stabilize:{reason}',
+            repair_delay_ms=160,
+            verify_delay_ms=220,
+            log_event=False,
+        )
+        return stabilized
+
+    def _collect_home_render_issues(self):
+        if not self.notice_card or not self.notice_card.winfo_exists():
+            return ['notice_card_missing']
+        try:
+            if not self.notice_card.winfo_viewable():
+                return []
+        except tk.TclError:
+            return ['notice_card_state_read_failed']
+
+        issues = []
+
+        for key, payload in self.usage_period_buttons.items():
+            state = self._read_usage_period_button_state(payload)
+            if not state.get('exists'):
+                issues.append(f'usage_period_missing:{key}')
+                continue
+            if state.get('error'):
+                issues.append(f'usage_period_read_failed:{key}')
+                continue
+
+            if not state.get('mapped'):
+                issues.append(f'usage_period_not_mapped:{key}')
+            elif state.get('mode') in {'single', 'canvas'}:
+                width = int(state.get('width', 0))
+                height = int(state.get('height', 0))
+                bg = str(state.get('bg') or '').lower()
+                fg = str(state.get('fg') or '').lower()
+                text = str(state.get('text') or '').strip()
+                if min(width, height) < 20:
+                    issues.append(f'usage_period_too_small:{key}:{width}x{height}')
+                elif not text:
+                    issues.append(f'usage_period_empty:{key}')
+                elif bg == fg:
+                    issues.append(f'usage_period_fg_collision:{key}:{bg}')
+            else:
+                shell_width = int(state.get('shell_width', 0))
+                shell_height = int(state.get('shell_height', 0))
+                label_width = int(state.get('label_width', 0))
+                label_height = int(state.get('label_height', 0))
+                shell_bg = str(state.get('shell_bg') or '').lower()
+                label_bg = str(state.get('label_bg') or '').lower()
+                label_fg = str(state.get('label_fg') or '').lower()
+                if min(shell_width, shell_height, label_width, label_height) < 20:
+                    issues.append(f'usage_period_too_small:{key}:{shell_width}x{shell_height}/{label_width}x{label_height}')
+                elif shell_bg == label_bg:
+                    issues.append(f'usage_period_bg_collision:{key}:{label_bg}')
+                elif label_bg == label_fg:
+                    issues.append(f'usage_period_fg_collision:{key}:{label_bg}')
+
+        label_checks = (
+            ('usage_card_title', self.usage_card_title_label, COLORS['card_bg']),
+            ('pricing_title', self.pricing_title_label, COLORS['card_bg']),
+            ('pricing_desc', self.pricing_desc_label, COLORS['card_bg']),
+        )
+        for name, label, expected_bg in label_checks:
+            if not label or not label.winfo_exists():
+                issues.append(f'label_missing:{name}')
+                continue
+            try:
+                mapped = bool(label.winfo_ismapped())
+                width = label.winfo_width()
+                height = label.winfo_height()
+                fg = str(label.cget('fg') or '').lower()
+                bg = str(label.cget('bg') or '').lower()
+                text = str(label.cget('text') or '')
+            except tk.TclError:
+                issues.append(f'label_read_failed:{name}')
+                continue
+            if not mapped:
+                issues.append(f'label_not_mapped:{name}')
+            elif not text.strip():
+                issues.append(f'label_empty:{name}')
+            elif min(width, height) < 10:
+                issues.append(f'label_too_small:{name}:{width}x{height}')
+            elif fg == bg:
+                issues.append(f'label_fg_collision:{name}:{fg}')
+            elif bg != str(expected_bg).lower():
+                issues.append(f'label_bg_unexpected:{name}:{bg}')
+
+        toggle_shell = self.pricing_toggle_shell
+        toggle_button = self.pricing_toggle_button
+        if not toggle_shell or not toggle_button or not toggle_shell.winfo_exists() or not toggle_button.winfo_exists():
+            issues.append('pricing_toggle_missing')
+        else:
+            try:
+                mapped = bool(toggle_shell.winfo_ismapped() and toggle_button.winfo_ismapped())
+                shell_width = toggle_shell.winfo_width()
+                shell_height = toggle_shell.winfo_height()
+                button_width = toggle_button.winfo_width()
+                button_height = toggle_button.winfo_height()
+                shell_bg = str(toggle_shell.cget('bg') or '').lower()
+                button_bg = str(toggle_button.cget('bg') or '').lower()
+                button_fg = str(toggle_button.cget('fg') or '').lower()
+            except tk.TclError:
+                issues.append('pricing_toggle_read_failed')
+            else:
+                if not mapped:
+                    issues.append('pricing_toggle_not_mapped')
+                elif min(shell_width, shell_height, button_width, button_height) < 20:
+                    issues.append(f'pricing_toggle_too_small:{shell_width}x{shell_height}/{button_width}x{button_height}')
+                elif shell_bg == button_bg:
+                    issues.append(f'pricing_toggle_bg_collision:{button_bg}')
+                elif button_bg == button_fg:
+                    issues.append(f'pricing_toggle_fg_collision:{button_bg}')
+
+        return issues
+
+    def _schedule_home_render_repair(self, delay_ms=120, attempt=0):
+        if self._home_render_repair_after_id is not None:
+            try:
+                self.frame.after_cancel(self._home_render_repair_after_id)
+            except tk.TclError:
+                pass
+            self._home_render_repair_after_id = None
+        try:
+            self._home_render_repair_after_id = self.frame.after(
+                delay_ms,
+                lambda current_attempt=attempt: self._repair_home_render_state(current_attempt),
+            )
+        except tk.TclError:
+            self._home_render_repair_after_id = None
+
+    def _repair_home_render_state(self, attempt=0):
+        self._home_render_repair_after_id = None
+        if not self.notice_card or not self.notice_card.winfo_exists():
+            if attempt < 5:
+                self._schedule_home_render_repair(delay_ms=120, attempt=attempt + 1)
+            return
+        try:
+            self.frame.update_idletasks()
+            if not self.notice_card.winfo_viewable():
+                if attempt < 5:
+                    self._schedule_home_render_repair(delay_ms=120, attempt=attempt + 1)
+                return
+        except tk.TclError:
+            return
+
+        if not self._usage_card_post_map_rebuilt:
+            self._rebuild_usage_card_after_map('first_visible_show')
+            if attempt < 3:
+                self._schedule_home_render_repair(delay_ms=160, attempt=attempt + 1)
+            return
+
+        self._refresh_usage_card_button_styles()
+        self._repaint_home_widget_tree()
+
+        issues = self._collect_home_render_issues()
+        if not issues:
+            return
+
+        transient_usage_issues = (
+            'usage_period_not_mapped:',
+            'usage_period_too_small:',
+        )
+        if all(str(item).startswith(transient_usage_issues) for item in issues):
+            self._write_home_render_log(f'[home_render_repair] relayout_only attempt={attempt} issues={issues}')
+            self._relayout_usage_period_buttons()
+            self._refresh_usage_period_styles()
+            try:
+                self.frame.update_idletasks()
+            except tk.TclError:
+                return
+            if attempt < 5:
+                self._schedule_home_render_repair(delay_ms=180, attempt=attempt + 1)
+            return
+
+        self._write_home_render_log(f'[home_render_repair] attempt={attempt} issues={issues}')
+        self._rebuild_usage_card_after_map('usage_render_issues', issues)
+        if attempt < 5:
+            self._schedule_home_render_repair(delay_ms=180, attempt=attempt + 1)
+
+    def _read_usage_period_button_state(self, payload):
+        payload = dict(payload or {})
+        canvas = payload.get('canvas')
+        if canvas is not None:
+            try:
+                if not canvas.winfo_exists():
+                    return {'exists': False, 'mode': 'canvas'}
+                x1, y1, x2, y2 = payload.get('bounds') or (0, 0, 0, 0)
+                return {
+                    'exists': True,
+                    'mode': 'canvas',
+                    'mapped': bool(canvas.winfo_ismapped()),
+                    'width': max(int(x2) - int(x1), 0),
+                    'height': max(int(y2) - int(y1), 0),
+                    'bg': str(COLORS['accent'] if payload.get('key') == self.usage_period_key else COLORS['surface_alt']).lower(),
+                    'fg': str(COLORS['text_main']).lower(),
+                    'text': str(payload.get('text') or ''),
+                    'style': 'primary' if payload.get('key') == self.usage_period_key else 'ghost',
+                }
+            except tk.TclError:
+                return {'exists': True, 'mode': 'canvas', 'error': 'read_failed'}
+
+        widget = payload.get('widget')
+        if widget is not None:
+            try:
+                if not widget.winfo_exists():
+                    return {'exists': False, 'mode': 'single'}
+                shell = payload.get('shell')
+                shell_exists = bool(shell and shell.winfo_exists())
+                return {
+                    'exists': True,
+                    'mode': 'single',
+                    'mapped': bool(widget.winfo_ismapped() and (not shell_exists or shell.winfo_ismapped())),
+                    'width': int(shell.winfo_width()) if shell_exists else int(widget.winfo_width()),
+                    'height': int(shell.winfo_height()) if shell_exists else int(widget.winfo_height()),
+                    'bg': str(widget.cget('bg') or '').lower(),
+                    'fg': str(widget.cget('fg') or '').lower(),
+                    'text': str(widget.cget('text') or ''),
+                    'style': getattr(widget, 'style_name', ''),
+                }
+            except tk.TclError:
+                return {'exists': True, 'mode': 'single', 'error': 'read_failed'}
+
+        shell = payload.get('shell')
+        label = payload.get('label')
+        if shell is None or label is None:
+            return {'exists': False, 'mode': 'legacy'}
+        try:
+            if not shell.winfo_exists() or not label.winfo_exists():
+                return {'exists': False, 'mode': 'legacy'}
+            return {
+                'exists': True,
+                'mode': 'legacy',
+                'mapped': bool(shell.winfo_ismapped() and label.winfo_ismapped()),
+                'shell_width': int(shell.winfo_width()),
+                'shell_height': int(shell.winfo_height()),
+                'label_width': int(label.winfo_width()),
+                'label_height': int(label.winfo_height()),
+                'shell_bg': str(shell.cget('bg') or '').lower(),
+                'label_bg': str(label.cget('bg') or '').lower(),
+                'label_fg': str(label.cget('fg') or '').lower(),
+                'text': str(label.cget('text') or ''),
+            }
+        except tk.TclError:
+            return {'exists': True, 'mode': 'legacy', 'error': 'read_failed'}
+
+    def _layout_usage_shell_label(self, shell, label, padding=4):
+        pad = max(int(padding or 0), 0)
+        try:
+            label.place(
+                x=pad,
+                y=pad,
+                relwidth=1.0,
+                relheight=1.0,
+                width=-(pad * 2),
+                height=-(pad * 2),
+            )
+            label.lift()
+        except tk.TclError:
+            return
+
+    def _layout_usage_inline_button(self, shell, label):
+        self._layout_usage_shell_label(shell, label, padding=1)
+
+    def _build_usage_period_bar(self, parent):
+        self.usage_period_hover_key = ''
+        self.usage_period_bar = tk.Canvas(
+            parent,
+            bg=COLORS['card_bg'],
+            bd=0,
+            highlightthickness=0,
+            height=52,
+            width=360,
+            cursor='hand2',
+        )
+        self.usage_period_bar.pack(side=tk.RIGHT, anchor='e')
+        self.usage_period_bar.bind('<Configure>', lambda _event: self._draw_usage_period_buttons(), add='+')
+        self.usage_period_bar.bind('<Motion>', self._on_usage_period_canvas_motion, add='+')
+        self.usage_period_bar.bind('<Leave>', self._on_usage_period_canvas_leave, add='+')
+        self.usage_period_bar.bind('<Button-1>', self._on_usage_period_canvas_click, add='+')
+
+        self.usage_period_buttons = {}
+        for key, label in USAGE_PERIOD_OPTIONS:
+            self.usage_period_buttons[key] = {
+                'key': key,
+                'text': label,
+                'canvas': self.usage_period_bar,
+                'bounds': (0, 0, 0, 0),
+            }
+        self.frame.after_idle(self._draw_usage_period_buttons)
+
+    def _find_usage_period_key_at(self, x, y):
+        for key, _label in USAGE_PERIOD_OPTIONS:
+            payload = self.usage_period_buttons.get(key) or {}
+            x1, y1, x2, y2 = payload.get('bounds') or (0, 0, 0, 0)
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                return key
+        return ''
+
+    def _on_usage_period_canvas_motion(self, event):
+        key = self._find_usage_period_key_at(event.x, event.y)
+        if key == self.usage_period_hover_key:
+            return
+        self.usage_period_hover_key = key
+        self._draw_usage_period_buttons()
+
+    def _on_usage_period_canvas_leave(self, _event=None):
+        if not self.usage_period_hover_key:
+            return
+        self.usage_period_hover_key = ''
+        self._draw_usage_period_buttons()
+
+    def _on_usage_period_canvas_click(self, event):
+        key = self._find_usage_period_key_at(event.x, event.y)
+        if key:
+            self._set_usage_period(key)
+        return 'break'
+
+    def _draw_usage_period_buttons(self):
+        canvas = self.usage_period_bar
+        if not canvas or not isinstance(canvas, tk.Canvas):
+            return
+        try:
+            if not canvas.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        font_obj = tkfont.Font(font=FONTS['body_bold'])
+        outer_height = 49
+        inner_gap = 4
+        horizontal_gap = 8
+        outer_x = 0
+        canvas.delete('usage_period')
+
+        for index, (key, label) in enumerate(USAGE_PERIOD_OPTIONS):
+            text = str(label or '')
+            outer_width = max(font_obj.measure(text) + 38, 74)
+            inner_x1 = outer_x + inner_gap
+            inner_y1 = inner_gap
+            inner_x2 = outer_x + outer_width - inner_gap
+            inner_y2 = outer_height - inner_gap
+
+            is_active = key == self.usage_period_key
+            is_hovered = key == self.usage_period_hover_key
+            fill_color = COLORS['accent'] if is_active else (COLORS['accent_light'] if is_hovered else COLORS['surface_alt'])
+
+            canvas.create_rectangle(
+                outer_x,
+                0,
+                outer_x + outer_width,
+                outer_height,
+                fill=COLORS['card_border'],
+                outline=COLORS['card_border'],
+                width=1,
+                tags=('usage_period',),
+            )
+            canvas.create_rectangle(
+                inner_x1,
+                inner_y1,
+                inner_x2,
+                inner_y2,
+                fill=fill_color,
+                outline=fill_color,
+                width=1,
+                tags=('usage_period',),
+            )
+            canvas.create_text(
+                (inner_x1 + inner_x2) / 2,
+                (inner_y1 + inner_y2) / 2,
+                text=text,
+                fill=COLORS['text_main'],
+                font=FONTS['body_bold'],
+                anchor='center',
+                tags=('usage_period',),
+            )
+
+            payload = self.usage_period_buttons.get(key)
+            if payload is not None:
+                payload['bounds'] = (outer_x, 0, outer_x + outer_width, outer_height)
+
+            outer_x += outer_width
+            if index < len(USAGE_PERIOD_OPTIONS) - 1:
+                outer_x += horizontal_gap
+
+        total_width = max(outer_x, 1)
+        try:
+            canvas.configure(width=total_width, height=outer_height, scrollregion=(0, 0, total_width, outer_height))
+        except tk.TclError:
+            return
+
+    def _create_usage_period_button(self, parent, key, text):
+        shell, button = create_home_shell_button(
+            parent,
+            text,
+            command=lambda current_key=key: self._set_usage_period(current_key),
+            style='ghost',
+            padx=14,
+            pady=8,
+            font=FONTS['body_bold'],
+        )
+        button.configure(takefocus=0)
+
+        payload = {
+            'key': key,
+            'text': text,
+            'shell': shell,
+            'widget': button,
+            'hovered': False,
+        }
+
+        def _set_hover(hovered):
+            payload['hovered'] = bool(hovered)
+            self._apply_usage_period_button_style(payload)
+
+        for current in (shell, button):
+            current.bind('<Enter>', lambda _event, state=True: _set_hover(state), add='+')
+            current.bind('<Leave>', lambda _event, state=False: _set_hover(state), add='+')
+
+        self.usage_period_buttons[key] = payload
+        self._apply_usage_period_button_style(payload)
+        return shell
+
+    def _relayout_usage_period_buttons(self):
+        if not self.usage_period_bar or not self.usage_period_bar.winfo_exists():
+            return
+        if isinstance(self.usage_period_bar, tk.Canvas):
+            self._draw_usage_period_buttons()
+            return
+
+        ordered_hosts = []
+        for key, _label in USAGE_PERIOD_OPTIONS:
+            payload = self.usage_period_buttons.get(key) or {}
+            host = payload.get('shell') or payload.get('widget')
+            if not host:
+                continue
+            try:
+                if not host.winfo_exists():
+                    continue
+                manager_name = str(host.winfo_manager() or '').strip().lower()
+                if manager_name == 'grid':
+                    host.grid_forget()
+                elif manager_name == 'pack':
+                    host.pack_forget()
+                else:
+                    try:
+                        host.grid_forget()
+                    except tk.TclError:
+                        pass
+                    try:
+                        host.pack_forget()
+                    except tk.TclError:
+                        pass
+            except tk.TclError:
+                continue
+            ordered_hosts.append(host)
+
+        total_hosts = len(ordered_hosts)
+        for index, host in enumerate(ordered_hosts):
+            try:
+                host.pack(
+                    side=tk.LEFT,
+                    padx=(0, 8 if index < total_hosts - 1 else 0),
+                    pady=0,
+                    anchor='w',
+                )
+            except tk.TclError:
+                continue
+
+    def _create_usage_card_shell_button(self, parent, text, command, *, font=None, min_width=84):
+        font_spec = font or FONTS['body_bold']
+        font_obj = tkfont.Font(font=font_spec)
+        shell_width = max(font_obj.measure(text) + 52, min_width)
+        shell_height = max(font_obj.metrics('linespace') + 24, 46)
+
+        shell = tk.Frame(
+            parent,
+            bg=COLORS['card_border'],
+            bd=0,
+            highlightthickness=0,
+            width=shell_width,
+            height=shell_height,
+        )
+        shell.pack_propagate(False)
+        shell.grid_propagate(False)
+
+        label = tk.Label(
+            shell,
+            text=text,
+            font=font_spec,
+            fg=COLORS['text_main'],
+            bg=COLORS['card_bg'],
+            bd=0,
+            highlightthickness=0,
+            cursor='hand2',
+            anchor='center',
+            justify='center',
+        )
+        self._layout_usage_shell_label(shell, label, padding=5)
+
+        payload = {
+            'shell': shell,
+            'label': label,
+            'hovered': False,
+        }
+        shell._usage_card_button_payload = payload
+
+        def _apply(hovered=False):
+            payload['hovered'] = bool(hovered)
+            try:
+                shell.configure(bg=COLORS['card_border'])
+                label.configure(
+                    bg=COLORS['accent_light'] if payload['hovered'] else COLORS['card_bg'],
+                    fg=COLORS['text_main'],
+                )
+            except tk.TclError:
+                return
+
+        def _invoke(_event=None):
+            command()
+            return 'break'
+
+        for widget in (shell, label):
+            widget.bind('<Enter>', lambda _event, state=True: _apply(state), add='+')
+            widget.bind('<Leave>', lambda _event, state=False: _apply(state), add='+')
+            widget.bind('<Button-1>', _invoke, add='+')
+        shell.bind(
+            '<Configure>',
+            lambda _event, current_shell=shell, current_label=label: self._layout_usage_shell_label(
+                current_shell,
+                current_label,
+                padding=5,
+            ),
+            add='+',
+        )
+
+        shell._usage_card_button_apply = _apply
+        _apply(False)
+        return shell, label
+
+    def _apply_usage_period_button_style(self, payload):
+        if payload.get('canvas') is not None:
+            self._draw_usage_period_buttons()
+            return
+
+        widget = payload.get('widget')
+        shell = payload.get('shell')
+        is_active = payload.get('key') == self.usage_period_key
+        hovered = bool(payload.get('hovered'))
+        if widget is not None:
+            style_name = 'primary' if is_active else 'ghost'
+            try:
+                widget.set_style(style_name)
+                if shell is not None:
+                    refresh_home_shell_button(shell, widget)
+            except tk.TclError:
+                return
+            return
+
+        shell = payload.get('shell')
+        label = payload.get('label')
+        if not shell or not label:
+            return
+        if is_active:
+            shell_bg = COLORS['card_border']
+            label_bg = COLORS['accent']
+            label_fg = COLORS['text_main']
+        else:
+            shell_bg = COLORS['card_border']
+            label_bg = COLORS['accent_light'] if hovered else COLORS['card_bg']
+            label_fg = COLORS['text_main']
+
+        try:
+            shell.configure(bg=shell_bg)
+            label.configure(bg=label_bg, fg=label_fg)
+        except tk.TclError:
+            return
+
+    def _refresh_pricing_toggle_style(self):
+        shell = self.pricing_toggle_shell
+        label = self.pricing_toggle_button
+        if not shell or not label:
+            return
+        payload = getattr(shell, '_usage_card_button_payload', None)
+        if not isinstance(payload, dict):
+            return
+        apply_fn = getattr(shell, '_usage_card_button_apply', None)
+        if callable(apply_fn):
+            apply_fn(bool(payload.get('hovered')))
+
+    def _refresh_usage_card_button_styles(self):
+        self._refresh_usage_period_styles()
+        self._refresh_pricing_toggle_style()
+        self._relayout_usage_period_buttons()
+
+    def _schedule_usage_period_button_verify(self, delay_ms=80, attempt=0):
+        if self._usage_period_verify_after_id is not None:
+            try:
+                self.frame.after_cancel(self._usage_period_verify_after_id)
+            except tk.TclError:
+                pass
+            self._usage_period_verify_after_id = None
+        try:
+            self._usage_period_verify_after_id = self.frame.after(
+                delay_ms,
+                lambda current_attempt=attempt: self._verify_usage_period_buttons(current_attempt),
+            )
+        except tk.TclError:
+            self._usage_period_verify_after_id = None
+
+    def _verify_usage_period_buttons(self, attempt=0):
+        self._usage_period_verify_after_id = None
+        if not self.notice_card or not self.notice_card.winfo_exists():
+            if attempt < 5:
+                self._schedule_usage_period_button_verify(delay_ms=120, attempt=attempt + 1)
+            return
+        try:
+            if not self.notice_card.winfo_viewable():
+                if attempt < 5:
+                    self._schedule_usage_period_button_verify(delay_ms=120, attempt=attempt + 1)
+                return
+        except tk.TclError:
+            return
+
+        issues = []
+
+        for key, payload in self.usage_period_buttons.items():
+            state = self._read_usage_period_button_state(payload)
+            if not state.get('exists'):
+                issues.append((key, 'missing_widget'))
+                continue
+            if state.get('error'):
+                issues.append((key, 'geometry_read_failed'))
+                continue
+
+            if not state.get('mapped'):
+                issues.append((key, 'not_mapped'))
+            elif state.get('mode') in {'single', 'canvas'}:
+                width = int(state.get('width', 0))
+                height = int(state.get('height', 0))
+                text = str(state.get('text') or '').strip()
+                bg = str(state.get('bg') or '').lower()
+                fg = str(state.get('fg') or '').lower()
+                if min(width, height) < 20:
+                    issues.append((key, f'size={width}x{height}'))
+                elif not text:
+                    issues.append((key, 'empty_text'))
+                elif fg == bg:
+                    issues.append((key, f'fg_collision={fg}'))
+            else:
+                shell_width = int(state.get('shell_width', 0))
+                shell_height = int(state.get('shell_height', 0))
+                label_width = int(state.get('label_width', 0))
+                label_height = int(state.get('label_height', 0))
+                shell_bg = str(state.get('shell_bg') or '').lower()
+                label_bg = str(state.get('label_bg') or '').lower()
+                label_fg = str(state.get('label_fg') or '').lower()
+                if min(shell_width, shell_height, label_width, label_height) < 20:
+                    issues.append((key, f'size={shell_width}x{shell_height}/{label_width}x{label_height}'))
+                elif shell_bg == label_bg:
+                    issues.append((key, f'bg_collision={label_bg}'))
+                elif label_fg == label_bg:
+                    issues.append((key, f'fg_collision={label_fg}'))
+
+        if not issues:
+            return
+
+        transient_issue_tokens = ('not_mapped', 'size=')
+        if all(any(token in str(detail) for token in transient_issue_tokens) for _key, detail in issues):
+            self._write_home_render_log(f'[usage_period_buttons] relayout_only attempt={attempt} issues={issues}')
+            self._relayout_usage_period_buttons()
+            self._refresh_usage_period_styles()
+            try:
+                self.frame.update_idletasks()
+            except tk.TclError:
+                return
+            remaining_issues = []
+            for key, payload in self.usage_period_buttons.items():
+                state = self._read_usage_period_button_state(payload)
+                if not state.get('exists'):
+                    remaining_issues.append((key, 'missing_widget'))
+                    continue
+                if state.get('error'):
+                    remaining_issues.append((key, 'geometry_read_failed'))
+                    continue
+                width = int(state.get('width', 0))
+                height = int(state.get('height', 0))
+                if not state.get('mapped'):
+                    remaining_issues.append((key, 'not_mapped'))
+                elif min(width, height) < 20:
+                    remaining_issues.append((key, f'size={width}x{height}'))
+            if not remaining_issues:
+                return
+            if attempt >= 2:
+                self._write_home_render_log(
+                    f'[usage_period_buttons] rebuild_after_relayout attempt={attempt} '
+                    f'issues={remaining_issues}'
+                )
+                self._rebuild_usage_card_after_map('usage_period_visibility_guard', remaining_issues)
+                if attempt < 5:
+                    self._schedule_usage_period_button_verify(delay_ms=160, attempt=attempt + 1)
+                return
+            if attempt < 5:
+                self._schedule_usage_period_button_verify(delay_ms=140, attempt=attempt + 1)
+            return
+
+        self._write_home_render_log(f'[usage_period_buttons] repair attempt={attempt} issues={issues}')
+        self._rebuild_usage_card_after_map('usage_period_buttons', issues)
+
+        if attempt < 5:
+            self._schedule_usage_period_button_verify(delay_ms=140, attempt=attempt + 1)
+
     def _fix_hero_button_sizes(self):
         """在窗口可见、布局稳定后统一固定 hero 按钮的最小尺寸。"""
         for shell, _button in self.hero_button_shells:
@@ -269,8 +1280,18 @@ class HomePage:
         for shell, button in self.hero_button_shells:
             refresh_home_shell_button(shell, button)
 
+        alive_dashboard_buttons = []
         for shell, button in self.dashboard_shell_buttons:
+            if not shell or not button:
+                continue
+            try:
+                if not shell.winfo_exists() or not button.winfo_exists():
+                    continue
+            except tk.TclError:
+                continue
             refresh_home_shell_button(shell, button)
+            alive_dashboard_buttons.append((shell, button))
+        self.dashboard_shell_buttons = alive_dashboard_buttons
 
     def _build_hero(self):
         self.hero_panel = tk.Frame(self.frame, bg=COLORS['shadow'])
@@ -703,29 +1724,15 @@ class HomePage:
 
         title_row = tk.Frame(header, bg=COLORS['card_bg'])
         title_row.pack(fill=tk.X)
-        title_row.grid_columnconfigure(1, weight=1)
-        tk.Label(
+        self._build_usage_period_bar(title_row)
+        self.usage_card_title_label = tk.Label(
             title_row,
             text='使用统计',
             font=(FONTS['title'][0], DASHBOARD_SECTION_TITLE_FONT_SIZE, 'bold'),
             fg=COLORS['text_main'],
             bg=COLORS['card_bg'],
-        ).grid(row=0, column=0, sticky='w')
-
-        period_shell = tk.Frame(title_row, bg=COLORS['card_bg'])
-        period_shell.grid(row=0, column=2, sticky='e')
-        for key, label in USAGE_PERIOD_OPTIONS:
-            shell, button = self._create_dashboard_shell_button(
-                period_shell,
-                label,
-                style='secondary',
-                command=lambda current=key: self._set_usage_period(current),
-                padx=12,
-                pady=6,
-                font=FONTS['body_bold'],
-            )
-            shell.pack(side=tk.LEFT, padx=(8, 0))
-            self.usage_period_buttons[key] = button
+        )
+        self.usage_card_title_label.pack(side=tk.LEFT, anchor='w')
 
         self.usage_summary_row = tk.Frame(self.notice_card.inner, bg=COLORS['card_bg'])
         self.usage_summary_row.pack(fill=tk.X, pady=(18, 18))
@@ -897,13 +1904,6 @@ class HomePage:
         clear_button.pack(side=tk.LEFT)
         refresh_button.pack(side=tk.LEFT, padx=(8, 0))
         query_button.pack(side=tk.LEFT, padx=(8, 0))
-        time_row.after_idle(
-            lambda row=time_row,
-            fields=fields_row,
-            card=filter_card.inner,
-            parent_tab=parent: self._debug_usage_log_time_row_layout(row, fields, card, parent_tab)
-        )
-
         table_card = CardFrame(parent, padding=12)
         table_card.pack(fill=tk.BOTH, expand=True)
         columns = (
@@ -1313,6 +2313,7 @@ class HomePage:
             return
         if self.frame.winfo_viewable():
             self._ensure_usage_summary_cards()
+        self._relayout_usage_period_buttons()
         self._relayout_usage_summary()
         self._refresh_usage_panel()
 
@@ -1322,34 +2323,39 @@ class HomePage:
 
         header = tk.Frame(shell.inner, bg=COLORS['card_bg'])
         header.pack(fill=tk.X)
-        header.grid_columnconfigure(0, weight=1)
-        title_shell = tk.Frame(header, bg=COLORS['card_bg'])
-        title_shell.grid(row=0, column=0, sticky='ew')
-        tk.Label(
-            title_shell,
+        top_row = tk.Frame(header, bg=COLORS['card_bg'])
+        top_row.pack(fill=tk.X)
+        self.pricing_title_label = tk.Label(
+            top_row,
             text='成本定价',
             font=FONTS['body_bold'],
             fg=COLORS['text_main'],
             bg=COLORS['card_bg'],
-        ).pack(anchor='w')
-        tk.Label(
-            title_shell,
+        )
+        self.pricing_title_label.pack(side=tk.LEFT, anchor='w')
+
+        self.pricing_toggle_shell, self.pricing_toggle_button = self._create_usage_card_shell_button(
+            top_row,
+            '展开',
+            self._toggle_pricing_panel,
+            font=FONTS['body_bold'],
+            min_width=108,
+        )
+        self.pricing_toggle_shell.pack(side=tk.RIGHT, anchor='ne', padx=(12, 0))
+
+        self.pricing_info_shell = tk.Frame(header, bg=COLORS['card_bg'])
+        self.pricing_info_shell.pack(fill=tk.X, pady=(6, 0))
+        self.pricing_desc_label = tk.Label(
+            self.pricing_info_shell,
             text='按供应商 + 模型精确匹配，价格单位为每百万 Token。',
             font=FONTS['small'],
             fg=COLORS['text_sub'],
             bg=COLORS['card_bg'],
-        ).pack(anchor='w', pady=(6, 0))
-
-        pricing_toggle_shell, self.pricing_toggle_button = self._create_dashboard_shell_button(
-            header,
-            '展开',
-            style='secondary',
-            command=self._toggle_pricing_panel,
-            padx=14,
-            pady=8,
-            font=FONTS['body_bold'],
+            justify='left',
+            anchor='w',
         )
-        pricing_toggle_shell.grid(row=0, column=1, sticky='ne', padx=(12, 0))
+        self.pricing_desc_label.pack(anchor='w', fill=tk.X, pady=(6, 0))
+        bind_adaptive_wrap(self.pricing_desc_label, self.pricing_info_shell, padding=0, min_width=260)
 
         self.pricing_panel_body = tk.Frame(shell.inner, bg=COLORS['card_bg'])
 
@@ -1455,11 +2461,11 @@ class HomePage:
         self._refresh_usage_panel()
 
     def _refresh_usage_period_styles(self):
-        for key, button in self.usage_period_buttons.items():
-            if key == self.usage_period_key:
-                button.set_style('primary')
-            else:
-                button.set_style('secondary')
+        if isinstance(self.usage_period_bar, tk.Canvas):
+            self._draw_usage_period_buttons()
+            return
+        for payload in self.usage_period_buttons.values():
+            self._apply_usage_period_button_style(payload)
 
     def _get_usage_store(self):
         return getattr(self.api, 'usage_store', None)
@@ -1700,6 +2706,13 @@ class HomePage:
         self._refresh_provider_stats(rows=provider_rows)
         self._refresh_model_stats(rows=model_rows)
         self._refresh_pricing_rules()
+        self._refresh_usage_card_button_styles()
+        self._schedule_home_render_watchdogs(
+            'usage_panel_data_applied',
+            repair_delay_ms=120,
+            verify_delay_ms=180,
+            log_event=False,
+        )
 
     def _handle_usage_refresh_error(self, exc, refresh_token):
         if refresh_token != self._usage_refresh_token:
@@ -2876,14 +3889,18 @@ class HomePage:
 
         self._render_system_status_items(view_model.get('system_status_items', []))
         self._refresh_usage_panel()
+        self._refresh_usage_card_button_styles()
 
         self._relayout_hero(force=True)
         self._relayout_dashboard(force=True)
 
     def on_show(self):
         self._refresh_primary_action_button_styles()
+        self._refresh_usage_card_button_styles()
         self._relayout_hero(force=True)
         self._relayout_dashboard(force=True)
+        if not self._usage_card_post_map_rebuilt:
+            self._stabilize_usage_card_render_once('first_on_show')
         self.refresh_dashboard()
         try:
             is_viewable = bool(self.frame.winfo_viewable())
@@ -2892,3 +3909,9 @@ class HomePage:
         if is_viewable:
             self._ensure_usage_summary_cards()
             self._schedule_usage_layout_stabilize(80)
+        self._schedule_home_render_watchdogs(
+            'on_show',
+            repair_delay_ms=140,
+            verify_delay_ms=220,
+            log_event=False,
+        )

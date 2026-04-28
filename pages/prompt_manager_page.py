@@ -373,13 +373,6 @@ class PromptManagerPanel:
         content_frame, content_text = create_scrolled_text(parent, height=18)
         content_frame.pack(fill=tk.BOTH, expand=False, pady=(8, 0))
 
-        actions = ResponsiveButtonBar(parent, min_item_width=140, gap_x=8, gap_y=8, bg=COLORS['card_bg'])
-        actions.pack(fill=tk.X, pady=(14, 0))
-        save_shell, _button = self._create_prompt_button(actions, '保存提示词', style='primary', command=self._save_current)
-        cancel_shell, _button = self._create_prompt_button(actions, '取消编辑', style='ghost', command=self._reset_editor)
-        actions.add(save_shell)
-        actions.add(cancel_shell)
-
         self._editor_dialog_title_label = title_label
         self._editor_dialog_variable_tip_label = variable_tip_label
         self._editor_dialog_content_text = content_text
@@ -416,6 +409,23 @@ class PromptManagerPanel:
         content = tk.Frame(content_view.inner, bg=COLORS['card_bg'])
         content.pack(fill=tk.BOTH, expand=True, padx=28, pady=28)
         self._build_dialog_editor(content)
+
+        footer = tk.Frame(body, bg=COLORS['card_bg'])
+        footer.pack(side=tk.BOTTOM, fill=tk.X, padx=28, pady=(0, 22))
+        save_shell, _button = self._create_prompt_button(
+            footer,
+            '保存提示词',
+            style='primary',
+            command=self._save_current,
+            padx=14,
+            pady=6,
+            font=FONTS['body_bold'],
+        )
+        save_shell.pack(side=tk.RIGHT)
+
+        footer_divider = tk.Frame(body, bg=COLORS['card_border'], height=1, bd=0, highlightthickness=0)
+        footer_divider.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 12))
+
         self._editor_window = window
         self._editor_dialog_scroll_view = content_view
         window.protocol('WM_DELETE_WINDOW', self._close_editor_dialog)
