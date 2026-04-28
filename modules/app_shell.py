@@ -563,6 +563,13 @@ class SmartPaperTool:
         self._set_window_icon()
         self.root.after_idle(lambda: self._apply_dwm_titlebar_color(resolve_theme_mode(theme_mode)))
 
+    def _set_root_alpha_safe(self, alpha):
+        try:
+            self.root.attributes('-alpha', float(alpha))
+            return True
+        except (tk.TclError, ValueError, TypeError):
+            return False
+
     def _build_ui_shell(self):
         _tb0 = time.perf_counter()
         self._build_top_nav()
@@ -611,12 +618,16 @@ class SmartPaperTool:
         if restore_geometry:
             self._window_restore_geometry = dict(restore_geometry)
         self._window_is_maximized = False
+        startup_page = self.pages.get(self._startup_page_id)
+        if startup_page and hasattr(startup_page, 'begin_startup_prelayout'):
+            startup_page.begin_startup_prelayout()
         # 把主窗口移到屏幕外，让 Tkinter 在不可见位置完成真实布局计算
         if restore_geometry:
             size_part = f'{restore_geometry["width"]}x{restore_geometry["height"]}'
         else:
             size_part = f'{self.min_window_width}x{self.min_window_height}'
         self.root.geometry(f'{size_part}+99999+99999')
+        alpha_hidden = self._set_root_alpha_safe(0.0)
         self._loading_running = False
         self.root.deiconify()
         self.root.update_idletasks()
@@ -628,7 +639,6 @@ class SmartPaperTool:
                 canvas.itemconfigure(self.content_view.window_id, width=w)
         self.root.update_idletasks()
         # 用真实尺寸执行首页全部自适应布局
-        startup_page = self.pages.get(self._startup_page_id)
         if startup_page:
             if hasattr(startup_page, '_fix_hero_button_sizes'):
                 startup_page._fix_hero_button_sizes()
@@ -638,7 +648,14 @@ class SmartPaperTool:
                 startup_page._relayout_dashboard()
         self.root.update_idletasks()
         self.root.update()
+        startup_page_prepared = False
+        if startup_page and hasattr(startup_page, 'prepare_startup_display'):
+            startup_page_prepared = bool(startup_page.prepare_startup_display())
+            self.root.update_idletasks()
+            self.root.update()
         pre_stabilized = False
+        original_close_loading_screen = self._close_loading_screen
+        self._close_loading_screen = lambda: None
         if startup_page and hasattr(startup_page, 'stabilize_startup_render'):
             pre_stabilized = bool(startup_page.stabilize_startup_render('startup_pre_maximize'))
             self.root.update_idletasks()
@@ -658,7 +675,10 @@ class SmartPaperTool:
             startup_page.on_show()
             prepared_on_show = True
             if hasattr(startup_page, '_stabilize_usage_layout'):
-                startup_page._stabilize_usage_layout()
+                try:
+                    startup_page._stabilize_usage_layout(refresh_usage=False)
+                except TypeError:
+                    startup_page._stabilize_usage_layout()
             self.root.update_idletasks()
             self.root.update()
         post_stabilized = False
@@ -668,9 +688,9 @@ class SmartPaperTool:
             self.root.update()
         self._write_app_log(
             f'[startup_page_stabilize] page={self._startup_page_id} '
+            f'prepared={startup_page_prepared} '
             f'pre={pre_stabilized} post={post_stabilized} on_show={prepared_on_show}'
         )
-        self._close_loading_screen()
         self.root.update_idletasks()
         self._rebuild_window_chrome_after_show()
         # 顶部导航在离屏预布局后，部分子控件的屏幕坐标不会自动修正。
@@ -681,11 +701,20 @@ class SmartPaperTool:
             w = canvas.winfo_width()
             if w > 1:
                 canvas.itemconfigure(self.content_view.window_id, width=w)
+        self._repair_shell_after_map()
+        self.root.update_idletasks()
+        self.root.update()
+        if alpha_hidden:
+            self._set_root_alpha_safe(1.0)
+            self.root.update_idletasks()
+        self._close_loading_screen = original_close_loading_screen
+        self._close_loading_screen()
         self.root.update_idletasks()
         self._startup_complete = True
+        if startup_page and hasattr(startup_page, 'finish_startup_prelayout'):
+            startup_page.finish_startup_prelayout()
         if startup_page and hasattr(startup_page, 'on_show') and not prepared_on_show:
             self.root.after(40, lambda page_id=self._startup_page_id: self._invoke_page_on_show(page_id))
-        self.root.after(120, self._repair_shell_after_map)
         self._startup_metrics['show'] = time.perf_counter() - started_at
         self._write_app_log(
             f'[startup] fonts={self._startup_metrics.get("fonts", 0.0):.3f}s '

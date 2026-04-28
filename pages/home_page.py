@@ -4,6 +4,7 @@
 """
 
 import json
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox, ttk
@@ -157,6 +158,10 @@ class HomePage:
         self.usage_task_runner = TaskRunner(self.frame, set_status=self.set_status)
         self.model_test_task_runner = TaskRunner(self.frame, set_status=self.set_status)
         self._usage_refresh_token = 0
+        self._usage_last_payload = None
+        self._usage_last_applied_signature = None
+        self._skip_next_on_show_usage_refresh = False
+        self._startup_prelayout_active = False
         self._usage_trend_cache = None
         self._hero_last_width = None
         self._dashboard_layout_mode = None
@@ -192,7 +197,12 @@ class HomePage:
                 log_event=False,
             )
         )
-        self.refresh_dashboard()
+
+    def begin_startup_prelayout(self):
+        self._startup_prelayout_active = True
+
+    def finish_startup_prelayout(self):
+        self._startup_prelayout_active = False
 
     def _cancel_scheduled_job(self, attr_name):
         job_id = getattr(self, attr_name, None)
@@ -499,7 +509,11 @@ class HomePage:
         self._refresh_usage_card_button_styles()
         self._refresh_pricing_rules()
         self._ensure_usage_summary_cards(force_rebuild=True)
-        self._refresh_usage_panel()
+        cached_payload = self._clone_usage_panel_payload(self._usage_last_payload)
+        if cached_payload:
+            self._apply_usage_panel_data(cached_payload, self._usage_refresh_token)
+        elif not self._startup_prelayout_active:
+            self._refresh_usage_panel()
         self._schedule_home_render_watchdogs(
             f'rebuild:{reason}',
             repair_delay_ms=160,
@@ -2303,7 +2317,7 @@ class HomePage:
         except tk.TclError:
             self._usage_layout_after_id = None
 
-    def _stabilize_usage_layout(self):
+    def _stabilize_usage_layout(self, refresh_usage=True):
         self._usage_layout_after_id = None
         try:
             if not self.frame.winfo_exists():
@@ -2315,7 +2329,8 @@ class HomePage:
             self._ensure_usage_summary_cards()
         self._relayout_usage_period_buttons()
         self._relayout_usage_summary()
-        self._refresh_usage_panel()
+        if refresh_usage:
+            self._refresh_usage_panel()
 
     def _build_usage_pricing_panel(self):
         shell = CardFrame(self.notice_card.inner, padding=14)
@@ -2466,6 +2481,58 @@ class HomePage:
             return
         for payload in self.usage_period_buttons.values():
             self._apply_usage_period_button_style(payload)
+
+    def _build_usage_query_signature(self, snapshot=None):
+        source = dict(snapshot or self._build_usage_query_snapshot())
+        return (
+            str(source.get('period_key') or ''),
+            str(source.get('page_id') or ''),
+            str(source.get('status') or ''),
+            str(source.get('provider_keyword') or '').strip(),
+            str(source.get('model_keyword') or '').strip(),
+            str(source.get('start_text') or '').strip(),
+            str(source.get('end_text') or '').strip(),
+        )
+
+    def _has_fresh_usage_panel_data(self):
+        return self._usage_last_applied_signature == self._build_usage_query_signature()
+
+    def _collect_usage_panel_payload(self, store, snapshot):
+        payload = dict(self._collect_usage_panel_data(store, snapshot) or {})
+        payload['snapshot_signature'] = self._build_usage_query_signature(snapshot)
+        return payload
+
+    @staticmethod
+    def _clone_usage_panel_payload(payload):
+        if not isinstance(payload, dict) or not payload:
+            return None
+        source = dict(payload or {})
+        if not any(key in source for key in ('summary', 'trend', 'request_rows', 'provider_rows', 'model_rows')):
+            return None
+        return {
+            'summary': dict(source.get('summary') or {}),
+            'trend': dict(source.get('trend') or {}),
+            'request_rows': [dict(item) for item in list(source.get('request_rows') or [])],
+            'provider_rows': [dict(item) for item in list(source.get('provider_rows') or [])],
+            'model_rows': [dict(item) for item in list(source.get('model_rows') or [])],
+            'snapshot_signature': source.get('snapshot_signature'),
+        }
+
+    def prepare_startup_display(self):
+        started_at = time.perf_counter()
+        self._write_home_render_log('[home_startup_prepare] start')
+        self._refresh_primary_action_button_styles()
+        self._refresh_usage_card_button_styles()
+        self._ensure_usage_summary_cards(force_rebuild=True)
+        self.refresh_dashboard(usage_mode='sync')
+        self._repaint_home_widget_tree()
+        self._stabilize_usage_layout(refresh_usage=False)
+        ready = self._has_fresh_usage_panel_data()
+        self._skip_next_on_show_usage_refresh = ready
+        self._write_home_render_log(
+            f'[home_startup_prepare] ready={ready} elapsed={time.perf_counter() - started_at:.3f}s'
+        )
+        return ready
 
     def _get_usage_store(self):
         return getattr(self.api, 'usage_store', None)
@@ -2620,24 +2687,45 @@ class HomePage:
         if self.usage_chart_caption_label is not None:
             self.usage_chart_caption_label.configure(text=trend.get('caption', ''))
 
-    def _refresh_usage_panel(self):
+    def _refresh_usage_panel(self, *, sync=False, allow_hidden=False, reason='interactive'):
         store = self._get_usage_store()
         if store is None:
-            return
+            return False
         if not self.usage_summary_cards:
-            if not self.frame.winfo_viewable():
-                return
-            self._ensure_usage_summary_cards()
+            if allow_hidden:
+                self._ensure_usage_summary_cards(force_rebuild=True)
+            else:
+                if not self.frame.winfo_viewable():
+                    return False
+                self._ensure_usage_summary_cards()
 
         snapshot = self._build_usage_query_snapshot()
         self._usage_refresh_token += 1
         refresh_token = self._usage_refresh_token
 
+        if sync:
+            started_at = time.perf_counter()
+            try:
+                payload = self._collect_usage_panel_payload(store, snapshot)
+            except Exception as exc:
+                self._write_home_render_log(
+                    f'[usage_panel_sync_error] reason={reason} error={exc}',
+                    level='ERROR',
+                )
+                self._handle_usage_refresh_error(exc, refresh_token)
+                return False
+            self._apply_usage_panel_data(payload, refresh_token)
+            self._write_home_render_log(
+                f'[usage_panel_sync] reason={reason} elapsed={time.perf_counter() - started_at:.3f}s'
+            )
+            return True
+
         self.usage_task_runner.run(
-            work=lambda: self._collect_usage_panel_data(store, snapshot),
+            work=lambda: self._collect_usage_panel_payload(store, snapshot),
             on_success=lambda payload, token=refresh_token: self._apply_usage_panel_data(payload, token),
             on_error=lambda exc, token=refresh_token: self._handle_usage_refresh_error(exc, token),
         )
+        return True
 
     def _build_usage_query_snapshot(self):
         return {
@@ -2681,6 +2769,8 @@ class HomePage:
         request_rows = list(payload.get('request_rows') or [])
         provider_rows = list(payload.get('provider_rows') or [])
         model_rows = list(payload.get('model_rows') or [])
+        self._usage_last_applied_signature = payload.get('snapshot_signature')
+        self._usage_last_payload = self._clone_usage_panel_payload(payload)
 
         self.usage_summary_labels['total_requests']['value'].configure(text=str(summary['total_requests']))
         self.usage_summary_labels['total_cost']['value'].configure(text=format_currency(summary['total_cost']))
@@ -3858,7 +3948,7 @@ class HomePage:
             self._trigger_action('show_api_config')
             self.set_status('请先完成模型配置，再开始写作', COLORS['warning'])
 
-    def refresh_dashboard(self):
+    def refresh_dashboard(self, *, usage_mode='async'):
         show_home_stats = self.config.get_setting('show_home_stats', True)
         view_model = build_dashboard_view_model(
             show_home_stats,
@@ -3888,27 +3978,36 @@ class HomePage:
                 label.configure(text=str(value))
 
         self._render_system_status_items(view_model.get('system_status_items', []))
-        self._refresh_usage_panel()
+        if usage_mode == 'sync':
+            self._refresh_usage_panel(sync=True, allow_hidden=True, reason='refresh_dashboard')
+        elif usage_mode != 'skip':
+            self._refresh_usage_panel()
         self._refresh_usage_card_button_styles()
 
         self._relayout_hero(force=True)
         self._relayout_dashboard(force=True)
 
     def on_show(self):
+        skip_usage_refresh = self._skip_next_on_show_usage_refresh and self._has_fresh_usage_panel_data()
+        self._skip_next_on_show_usage_refresh = False
+        self._startup_prelayout_active = False
         self._refresh_primary_action_button_styles()
         self._refresh_usage_card_button_styles()
         self._relayout_hero(force=True)
         self._relayout_dashboard(force=True)
         if not self._usage_card_post_map_rebuilt:
             self._stabilize_usage_card_render_once('first_on_show')
-        self.refresh_dashboard()
+        self.refresh_dashboard(usage_mode='skip' if skip_usage_refresh else 'async')
         try:
             is_viewable = bool(self.frame.winfo_viewable())
         except tk.TclError:
             is_viewable = False
         if is_viewable:
             self._ensure_usage_summary_cards()
-            self._schedule_usage_layout_stabilize(80)
+            if skip_usage_refresh:
+                self._stabilize_usage_layout(refresh_usage=False)
+            else:
+                self._schedule_usage_layout_stabilize(80)
         self._schedule_home_render_watchdogs(
             'on_show',
             repair_delay_ms=140,
