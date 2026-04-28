@@ -2029,7 +2029,14 @@ class SmartPaperTool:
 
         self.top_nav_frame = tk.Frame(self.root, bg=COLORS['nav_bg'])
         top_pad = 12 if self.window_chrome else 18
-        self.top_nav_frame.pack(fill=tk.X, padx=18, pady=(top_pad, 0))
+        pack_kwargs = {
+            'fill': tk.X,
+            'padx': 18,
+            'pady': (top_pad, 0),
+        }
+        if hasattr(self, 'content_view') and self.content_view and self.content_view.winfo_exists():
+            pack_kwargs['before'] = self.content_view
+        self.top_nav_frame.pack(**pack_kwargs)
 
         self.top_nav_inner = tk.Frame(self.top_nav_frame, bg=COLORS['nav_bg'])
         self.top_nav_inner.pack(fill=tk.X)
