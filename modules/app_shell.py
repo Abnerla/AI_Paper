@@ -50,7 +50,7 @@ APP_DIR = RUNTIME_PATHS.app_root
 BASE_DATA_DIR = RUNTIME_PATHS.base_data_root
 
 APP_NAME = '纸研社'
-APP_VERSION = 'v1.3.0'
+APP_VERSION = 'v1.3.2'
 REPO_RAW_BASE_URL = 'https://raw.githubusercontent.com/Abnerla/AI_paper/main'
 STARTUP_REG_PATH = r'Software\Microsoft\Windows\CurrentVersion\Run'
 STARTUP_VALUE_NAME = APP_NAME
