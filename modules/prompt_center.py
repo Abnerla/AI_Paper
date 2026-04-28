@@ -480,6 +480,64 @@ class PromptCenter:
         self._persist()
         return self.get_scene_state(scene_id)
 
+    @staticmethod
+    def _build_copy_name(source_name, existing_names):
+        base_name = (source_name or '').strip() or '未命名提示词'
+        existing = {str(name or '').strip() for name in (existing_names or ()) if str(name or '').strip()}
+
+        candidate = f'{base_name}（副本）'
+        if candidate not in existing:
+            return candidate
+
+        index = 2
+        while True:
+            candidate = f'{base_name}（副本 {index}）'
+            if candidate not in existing:
+                return candidate
+            index += 1
+
+    def duplicate_prompt(self, scene_id, prompt_id):
+        self.ensure_seeded()
+        scene = self.get_scene_state(scene_id)
+        prompts = list(scene.get('prompts', []))
+        source_prompt = None
+        source_index = -1
+        for index, prompt in enumerate(prompts):
+            if prompt.get('id') == prompt_id:
+                source_prompt = prompt
+                source_index = index
+                break
+
+        if source_prompt is None:
+            raise PromptCenterError('要复制的提示词不存在')
+
+        now_ts = int(time.time())
+        duplicated_prompt = copy.deepcopy(source_prompt)
+        duplicated_prompt.update(
+            {
+                'id': self._generate_prompt_id(),
+                'name': self._build_copy_name(
+                    source_prompt.get('name', ''),
+                    [item.get('name', '') for item in prompts],
+                ),
+                'source': PROMPT_SOURCE_USER,
+                'created_at': now_ts,
+                'updated_at': now_ts,
+            }
+        )
+
+        insert_at = source_index + 1 if source_index >= 0 else len(prompts)
+        prompts.insert(insert_at, duplicated_prompt)
+        self._set_scene_state(
+            scene_id,
+            {
+                'active_prompt_id': scene.get('active_prompt_id', ''),
+                'prompts': prompts,
+            },
+        )
+        self._persist()
+        return copy.deepcopy(duplicated_prompt)
+
     def activate_prompt(self, scene_id, prompt_id):
         self.ensure_seeded()
         if self._has_config_storage():

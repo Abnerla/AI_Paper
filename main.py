@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Thin desktop entrypoint for 纸研社.
+纸研社 启动程序
 """
 
 from modules.report_importer_worker import maybe_run_from_argv
