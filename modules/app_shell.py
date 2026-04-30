@@ -49,11 +49,9 @@ BASE_DIR = RUNTIME_PATHS.resource_root
 APP_DIR = RUNTIME_PATHS.app_root
 BASE_DATA_DIR = RUNTIME_PATHS.base_data_root
 
-APP_NAME = '纸研社'
-APP_VERSION = 'v1.3.2'
 REPO_RAW_BASE_URL = 'https://raw.githubusercontent.com/Abnerla/AI_paper/main'
 STARTUP_REG_PATH = r'Software\Microsoft\Windows\CurrentVersion\Run'
-STARTUP_VALUE_NAME = APP_NAME
+STARTUP_VALUE_NAME = "APP_NAME"
 TOP_NAV_ITEMS = (
     ('home', '首页'),
     ('paper_write', '论文写作'),
@@ -82,12 +80,14 @@ WINDOW_WORKAREA_MARGIN_Y = 80
 
 sys.path.insert(0, BASE_DIR)
 
+from modules.app_metadata import APP_NAME, APP_VERSION
 from modules.config import ConfigManager, resolve_model_display_name
 from modules.api_client import APIClient
 from modules.app_bridge import AppBridge
 from modules.history import HistoryManager
 from modules.remote_content import RemoteContentManager, compare_versions, normalize_version
 from modules.runtime_logging import RuntimeLogStream, format_exception_trace
+from modules.skills_runtime import SkillManager
 from modules.task_runner import TaskRunner
 from modules.ui_components import (
     apply_adaptive_window_geometry,
@@ -411,7 +411,10 @@ class SmartPaperTool:
         self._prompt_manager_panel = None
         self._prompt_compact_window = None
         self._prompt_compact_panel = None
+        self._skills_center_window = None
+        self._skills_center_panel = None
         self._remote_content = None
+        self.skill_manager = None
         self._version_check_anim_job = None
         self._version_check_button = None
         self._version_check_busy = False
@@ -538,6 +541,8 @@ class SmartPaperTool:
         self._reset_runtime_log_file()
         self._install_runtime_log_hooks()
         self.api_client = APIClient(self.config_mgr, log_callback=self._write_app_log)
+        self.skill_manager = SkillManager(self.config_mgr, api_client=self.api_client, log_callback=self._write_app_log)
+        self.api_client.set_skills_runtime(self.skill_manager)
         self._remote_content = RemoteContentManager(self.root, log_callback=self._write_app_log)
         self._write_app_log(
             '[session_start] '
@@ -2932,6 +2937,7 @@ class SmartPaperTool:
             show_about=self._show_about_dialog,
             show_api_config=self._show_api_config_dialog,
             show_prompt_manager=self._show_prompt_manager,
+            show_skills_center=self._show_skills_center,
             show_model_routing=self._show_model_routing,
             switch_api_provider_direct=self._switch_api_provider_in_dialog,
             add_new_provider=self._add_new_provider_in_dialog,
@@ -3260,6 +3266,9 @@ class SmartPaperTool:
         if window is self._prompt_compact_window:
             self._prompt_compact_window = None
             self._prompt_compact_panel = None
+        if window is self._skills_center_window:
+            self._skills_center_window = None
+            self._skills_center_panel = None
         window.destroy()
 
     def _get_active_model_label(self):
@@ -4111,6 +4120,35 @@ class SmartPaperTool:
         )
         panel.frame.pack(fill=tk.BOTH, expand=True, padx=padding, pady=padding)
         setattr(self, panel_attr, panel)
+        return panel
+
+    def _show_skills_center(self):
+        from pages.skills_center_page import SkillsCenterPanel
+
+        existing_window = self._skills_center_window
+        existing_panel = self._skills_center_panel
+        if existing_window and existing_window.winfo_exists() and existing_panel:
+            existing_window.lift()
+            existing_window.focus_force()
+            if hasattr(existing_panel, 'refresh_all'):
+                existing_panel.refresh_all(force_registry=False)
+            return existing_panel
+
+        window, body = self._create_dialog_shell('Skills 管理', '1600x1200')
+        window.resizable(True, True)
+        apply_adaptive_window_geometry(window, '1600x1200', min_width=1360, min_height=960)
+        self._skills_center_window = window
+
+        panel = SkillsCenterPanel(
+            body,
+            self.config_mgr,
+            self.skill_manager,
+            self._remote_content,
+            set_status=self._set_status,
+            close_panel=lambda win=window: self._close_dialog(win),
+        )
+        panel.frame.pack(fill=tk.BOTH, expand=True, padx=28, pady=28)
+        self._skills_center_panel = panel
         return panel
 
     def _collect_runtime_backup_zip_bytes(self):

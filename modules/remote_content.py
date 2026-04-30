@@ -4,10 +4,13 @@
 """
 
 import json
+import os
 import threading
 import time
 import urllib.request
 import urllib.error
+
+from modules.runtime_paths import resolve_resource_path
 
 BASE_URL = 'https://raw.githubusercontent.com/Abnerla/AI_paper/main/Management'
 
@@ -16,6 +19,10 @@ ENDPOINTS = {
     'about': f'{BASE_URL}/about.json',
     'push': f'{BASE_URL}/push.json',
     'version': f'{BASE_URL}/version.json',
+    'skills_index': f'{BASE_URL}/skills_index.json',
+}
+LOCAL_FALLBACK_FILES = {
+    'skills_index': resolve_resource_path('Management', 'skills_index.json'),
 }
 
 CACHE_TTL = 300  # 5 分钟
@@ -90,7 +97,7 @@ class RemoteContentManager:
     def fetch(self, content_key, on_success, on_error=None, force=False):
         """异步获取远程内容，通过回调返回结果到 UI 线程。
 
-        content_key: "announcement" | "about" | "version"
+        content_key: "announcement" | "about" | "version" | "skills_index"
         on_success(data: dict): 成功回调
         on_error(exc: Exception): 失败回调（可选）
         force: 是否忽略缓存强制拉取
@@ -143,6 +150,13 @@ class RemoteContentManager:
         with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
             raw = resp.read()
             return json.loads(raw.decode('utf-8'))
+
+    def _load_local_fallback(self, content_key):
+        fallback_path = LOCAL_FALLBACK_FILES.get(content_key, '')
+        if not fallback_path or not os.path.isfile(fallback_path):
+            return None
+        with open(fallback_path, 'r', encoding='utf-8') as handle:
+            return json.load(handle)
 
     def _worker(self, content_key, url, on_success, on_error):
         """后台线程：拉取数据并回调 UI 线程"""

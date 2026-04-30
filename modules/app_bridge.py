@@ -39,6 +39,9 @@ class AppBridge:
             scene_id=scene_id,
         )
 
+    def show_skills_center(self):
+        return self._call('show_skills_center')
+
     def show_model_routing(self):
         return self._call('show_model_routing')
 

@@ -89,11 +89,15 @@ class APIClient:
     def __init__(self, config_mgr, log_callback=None):
         self.config = config_mgr
         self.log_callback = log_callback
+        self.skills_runtime = None
         data_dir = getattr(config_mgr, 'data_dir', '') or getattr(config_mgr, 'app_dir', '') or '.'
         self.usage_store = UsageStatsStore(data_dir, config_mgr=config_mgr)
 
     def set_log_callback(self, log_callback):
         self.log_callback = log_callback
+
+    def set_skills_runtime(self, skills_runtime):
+        self.skills_runtime = skills_runtime
 
     def _get_active(self):
         return self.config.active_api
@@ -1576,6 +1580,7 @@ class APIClient:
         max_tokens: Optional[int] = None,
         cfg: dict = None,
         usage_context: dict = None,
+        disable_skills: bool = False,
     ):
         """Call the AI API asynchronously and return the result by callback."""
         if api_name is None:
@@ -1591,6 +1596,7 @@ class APIClient:
                     max_tokens,
                     cfg=cfg,
                     usage_context=usage_context,
+                    disable_skills=disable_skills,
                 )
                 if on_complete:
                     on_complete(call_result)
@@ -1613,6 +1619,7 @@ class APIClient:
         model_override: str = None,
         cfg: dict = None,
         usage_context: dict = None,
+        disable_skills: bool = False,
     ) -> str:
         """同步调用 AI API"""
         if api_name is None:
@@ -1627,6 +1634,7 @@ class APIClient:
             model_override=model_override,
             cfg=cfg,
             usage_context=usage_context,
+            disable_skills=disable_skills,
         )
 
     def call_json_sync(
@@ -1641,6 +1649,7 @@ class APIClient:
         cfg: dict = None,
         schema_name: str = '',
         usage_context: dict = None,
+        disable_skills: bool = False,
     ):
         """Call the AI API and force JSON parsing."""
         schema_hint = f' (schema={schema_name})' if schema_name else ''
@@ -1658,6 +1667,7 @@ class APIClient:
             model_override=model_override,
             cfg=cfg,
             usage_context=usage_context,
+            disable_skills=disable_skills,
         )
         payload = self._extract_json_payload(raw)
         try:
@@ -1678,6 +1688,7 @@ class APIClient:
         usage_context=None,
         return_payload=False,
         allow_empty_response=False,
+        disable_skills=False,
     ):
         handlers = {
             HANDLER_OPENAI: self._call_openai_compat,
@@ -1700,6 +1711,29 @@ class APIClient:
         model_name = self._resolve_request_model_name(handler_name, cfg)
         temperature_value = self._resolve_request_temperature(cfg, temperature)
         max_tokens_value = self._resolve_request_max_tokens(cfg, max_tokens)
+        request_state = {
+            'prompt': prompt,
+            'system': system,
+            'temperature': temperature_value,
+            'max_tokens': max_tokens_value,
+            'metadata': {},
+            'applied_skills': [],
+        }
+        if not disable_skills and getattr(self, 'skills_runtime', None):
+            try:
+                request_state = self.skills_runtime.prepare_request(
+                    prompt,
+                    system,
+                    temperature=temperature_value,
+                    max_tokens=max_tokens_value,
+                    usage_context=usage_context,
+                )
+                prompt = request_state.get('prompt', prompt)
+                system = request_state.get('system', system)
+                temperature_value = request_state.get('temperature', temperature_value)
+                max_tokens_value = request_state.get('max_tokens', max_tokens_value)
+            except Exception as exc:
+                self._log(f'[skills_hook_error] stage=prepare_request error={exc}', level='WARN')
         timeout_value = self._resolve_request_timeout(
             cfg,
             request_timeout,
@@ -1778,6 +1812,19 @@ class APIClient:
             )
             raise
         result_text = str(response_payload.get('text', '') or '')
+        if not disable_skills and getattr(self, 'skills_runtime', None):
+            try:
+                finalized = self.skills_runtime.finalize_response(
+                    result_text,
+                    request_state=request_state,
+                    usage_context=usage_context,
+                )
+                result_text = str(finalized.get('text', result_text) or '')
+                response_payload = dict(response_payload or {})
+                response_payload['text'] = result_text
+                response_payload['skill_metadata'] = finalized.get('metadata', {})
+            except Exception as exc:
+                self._log(f'[skills_hook_error] stage=finalize_response error={exc}', level='WARN')
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         result_preview = result_text.strip().replace('\n', ' ')[:80]
         success_detail = self._build_usage_request_detail(

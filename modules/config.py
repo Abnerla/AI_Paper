@@ -128,6 +128,9 @@ class ConfigManager:
                 'seeded': False,
                 'scenes': {},
             },
+            'skills_center': {
+                'installed': {},
+            },
             'workspace_state': {},
             'settings': {
                 'auto_save_history': True,
@@ -403,6 +406,82 @@ class ConfigManager:
                 cleaned[key] = copy.deepcopy(state)
         return cleaned
 
+    def _sanitize_skills_center_record(self, skill_id, record):
+        key = str(skill_id or '').strip()
+        if not key or not isinstance(record, dict):
+            return None
+
+        available_scene_bindings = []
+        for scene_id in list(record.get('scene_bindings', []) or []):
+            value = str(scene_id or '').strip()
+            if value and value not in available_scene_bindings:
+                available_scene_bindings.append(value)
+
+        bound_scene_ids = []
+        for scene_id in list(record.get('bound_scene_ids', []) or []):
+            value = str(scene_id or '').strip()
+            if value and value in available_scene_bindings and value not in bound_scene_ids:
+                bound_scene_ids.append(value)
+
+        try:
+            installed_at = int(record.get('installed_at', 0) or 0)
+        except Exception:
+            installed_at = 0
+        try:
+            updated_at = int(record.get('updated_at', installed_at) or installed_at)
+        except Exception:
+            updated_at = installed_at
+        try:
+            last_checked_at = int(record.get('last_checked_at', 0) or 0)
+        except Exception:
+            last_checked_at = 0
+        try:
+            priority = int(record.get('priority', 0) or 0)
+        except Exception:
+            priority = 0
+        try:
+            actions_count = int(record.get('actions_count', 0) or 0)
+        except Exception:
+            actions_count = 0
+
+        return {
+            'id': key,
+            'name': str(record.get('name', '') or '').strip() or key,
+            'version': str(record.get('version', '') or '').strip(),
+            'description': str(record.get('description', '') or '').strip(),
+            'min_app_version': str(record.get('min_app_version', '') or '').strip(),
+            'priority': priority,
+            'source_type': str(record.get('source_type', '') or '').strip(),
+            'source_label': str(record.get('source_label', '') or '').strip(),
+            'installed_at': installed_at,
+            'updated_at': updated_at,
+            'last_checked_at': last_checked_at,
+            'enabled': bool(record.get('enabled', False)),
+            'global_enabled': bool(record.get('global_enabled', False)),
+            'global_hook': bool(record.get('global_hook', False)),
+            'scene_bindings': available_scene_bindings,
+            'bound_scene_ids': bound_scene_ids,
+            'actions_count': max(actions_count, 0),
+            'entry_module': str(record.get('entry_module', '') or '').strip(),
+            'entry_class': str(record.get('entry_class', '') or '').strip(),
+            'publisher': str(record.get('publisher', '') or '').strip(),
+            'homepage': str(record.get('homepage', '') or '').strip(),
+        }
+
+    def _sanitize_skills_center(self, skills_center):
+        if not isinstance(skills_center, dict):
+            skills_center = {}
+        installed = {}
+        raw_installed = skills_center.get('installed', {})
+        if isinstance(raw_installed, dict):
+            for skill_id, record in raw_installed.items():
+                sanitized = self._sanitize_skills_center_record(skill_id, record)
+                if sanitized:
+                    installed[sanitized['id']] = sanitized
+        return {
+            'installed': installed,
+        }
+
     def _sanitize_loaded_data(self, data):
         apis = data.get('apis', {})
         cleaned_apis = {}
@@ -420,6 +499,7 @@ class ConfigManager:
         if active_api not in cleaned_apis:
             data['active_api'] = next(iter(cleaned_apis), '')
         data['prompt_center'] = self._sanitize_prompt_center(data.get('prompt_center', {}))
+        data['skills_center'] = self._sanitize_skills_center(data.get('skills_center', {}))
         data['workspace_state'] = self._sanitize_workspace_state(data.get('workspace_state', {}))
         self._sanitize_routing_settings(data, cleaned_apis)
         return data
@@ -946,3 +1026,25 @@ class ConfigManager:
                 'prompts': prompts,
             },
         )
+
+    def get_skills_center_records(self):
+        skills_center = self._sanitize_skills_center(self._data.get('skills_center', {}))
+        self._data['skills_center'] = skills_center
+        return copy.deepcopy(skills_center.get('installed', {}))
+
+    def get_skills_center_record(self, skill_id):
+        records = self.get_skills_center_records()
+        return copy.deepcopy(records.get(str(skill_id or '').strip(), {}))
+
+    def set_skills_center_record(self, skill_id, record):
+        skills_center = self._sanitize_skills_center(self._data.get('skills_center', {}))
+        sanitized = self._sanitize_skills_center_record(skill_id, record)
+        if not sanitized:
+            return
+        skills_center.setdefault('installed', {})[sanitized['id']] = sanitized
+        self._data['skills_center'] = skills_center
+
+    def delete_skills_center_record(self, skill_id):
+        skills_center = self._sanitize_skills_center(self._data.get('skills_center', {}))
+        skills_center.setdefault('installed', {}).pop(str(skill_id or '').strip(), None)
+        self._data['skills_center'] = skills_center
