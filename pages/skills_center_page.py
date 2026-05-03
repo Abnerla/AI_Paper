@@ -586,14 +586,15 @@ class SkillsCenterPanel:
             ).pack(side=tk.RIGHT)
 
         meta_text = f'版本：{item.get("version", "未知")}  来源：{item.get("source_type", "registry") or "registry"}'
-        tk.Label(
+        meta_label = tk.Label(
             body,
             text=meta_text,
             font=FONTS['small'],
             fg=COLORS['text_sub'],
             bg=body.cget('bg'),
             anchor='w',
-        ).pack(fill=tk.X, padx=16, pady=(6, 0))
+        )
+        meta_label.pack(fill=tk.X, padx=16, pady=(6, 0))
 
         desc_label = tk.Label(
             body,
@@ -613,7 +614,7 @@ class SkillsCenterPanel:
             self._render_skill_list()
             self._render_skill_detail()
 
-        for widget in (shell, body, title_row, desc_label):
+        for widget in (shell, body, title_row, meta_label, desc_label):
             widget.bind('<Button-1>', _select, add='+')
 
     def _ensure_selection(self, *, preferred_skill_id=None):
@@ -690,10 +691,12 @@ class SkillsCenterPanel:
         for child in self.scene_checks_frame.winfo_children():
             child.destroy()
         self.scene_vars = {}
+        # selected=None 表示从未保存过，此时用 scene_bindings 作为默认勾选；
+        # selected=[] 表示用户显式清空了所有场景，应保留空选择。
+        has_saved = selected is not None
         selected_set = set(selected or [])
-        # 默认勾选：scene_bindings 中声明的场景（推荐绑定）
         default_set = set(scene_bindings or [])
-        if not selected:
+        if not has_saved:
             selected_set = default_set
         # 展示所有可用场景（来自 SCENE_DEFS）
         all_scene_ids = list(SCENE_DEFS.keys())
@@ -738,17 +741,8 @@ class SkillsCenterPanel:
             )
             switch.pack(side=tk.LEFT, padx=(10, 0))
 
-            # 标记推荐绑定（manifest 声明的场景）
-            if scene_id in default_set and scene_id not in selected_set:
-                var.set(True)
-
     def _render_action_tabs(self, actions):
-        for child in self.action_tabs_bar.winfo_children():
-            child.destroy()
-        self.action_tabs_bar.widgets = []
-        # 清空布局签名缓存，强制重新布局（否则当新按钮的尺寸与旧按钮相同时，
-        # ResponsiveButtonBar._relayout 会因签名一致而直接 return，导致按钮“消失”）
-        self.action_tabs_bar._last_layout_signature = None
+        self.action_tabs_bar.clear()
         if not actions:
             self.selected_action_id = ''
             return
@@ -851,14 +845,14 @@ class SkillsCenterPanel:
         if field_type == 'textarea':
             frame, text = create_scrolled_text(wrapper, height=6, show_scrollbar=True)
             frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
-            default_text = field.get('default', '')
-            if default_text not in (None, ''):
+            default_text = field.get('default', None)
+            if default_text is not None and default_text != '':
                 text.insert('1.0', str(default_text))
             elif placeholder_text:
                 self._attach_text_placeholder(text, placeholder_text)
             self._action_widgets[field_id] = {'type': field_type, 'widget': text}
         elif field_type == 'select':
-            var = tk.StringVar(value=str(field.get('default', '') or ''))
+            var = tk.StringVar(value='' if field.get('default', None) is None else str(field.get('default')))
             values = [item.get('value', '') for item in field.get('options', [])]
             combo = ttk.Combobox(
                 wrapper,

@@ -951,11 +951,12 @@ class APIConfigPage:
             ('enable_tool_search', '启用 tool search'),
             ('high_intensity_thinking', '高强度思考'),
         ]
-        for key, label in check_defs:
+        # 使用 grid 两列排列，避免 ToggleSwitch 宽度增加后水平溢出
+        for idx, (key, label) in enumerate(check_defs):
             var = tk.BooleanVar(value=bool(cfg.get(key, False)))
             self._entries[form_key][key] = var
             row = tk.Frame(checks_frame, bg=COLORS['card_bg'])
-            row.pack(side=tk.LEFT, padx=(0, 18))
+            row.grid(row=idx // 2, column=idx % 2, sticky='w', padx=(0, 24), pady=2)
             tk.Label(
                 row,
                 text=label,

@@ -1363,6 +1363,13 @@ class ResponsiveButtonBar(tk.Frame):
         self.widgets.append(widget)
         self.after_idle(self._schedule_relayout)
 
+    def clear(self):
+        """清空所有子组件并重置布局签名。"""
+        for child in self.winfo_children():
+            child.destroy()
+        self.widgets.clear()
+        self._last_layout_signature = None
+
     def _schedule_relayout(self, _event=None, delay_ms=16):
         _schedule_resize_batch(
             self,
@@ -1628,6 +1635,9 @@ class ToggleSwitch(tk.Frame):
         self._animating = False
         self._animation_step = 0
         self._animation_steps = 8
+        self._after_id = None
+        self._trace_name = None
+        self._canvas_bg = bg
 
         self.canvas = tk.Canvas(
             self,
@@ -1640,12 +1650,30 @@ class ToggleSwitch(tk.Frame):
         )
         self.canvas.pack()
 
-        self.track_id = None
-        self.knob_id = None
-
         self._draw()
         self.canvas.bind('<Button-1>', self._on_click)
-        self.variable.trace_add('write', self._on_variable_changed)
+        self._trace_name = self.variable.trace_add('write', self._on_variable_changed)
+
+    def _remove_trace(self):
+        """移除变量上的 trace 回调，防止组件销毁后仍被触发。"""
+        if self._trace_name and self.variable:
+            try:
+                self.variable.trace_remove('write', self._trace_name)
+            except Exception:
+                pass
+            self._trace_name = None
+
+    def destroy(self):
+        """销毁组件时清理 trace 和动画回调。"""
+        self._remove_trace()
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+        self._animating = False
+        super().destroy()
 
     def _draw(self):
         """绘制开关的轨道和滑块。"""
@@ -1656,7 +1684,7 @@ class ToggleSwitch(tk.Frame):
         knob_color = '#FFFFFF'
 
         track_radius = self.height // 2
-        self.track_id = self._draw_rounded_rect(
+        self._draw_rounded_rect(
             0, 0, self.width, self.height, track_radius, fill=track_color, outline=''
         )
 
@@ -1674,7 +1702,7 @@ class ToggleSwitch(tk.Frame):
                 knob_x = self.knob_padding + self.knob_radius
 
         knob_y = self.height // 2
-        self.knob_id = self.canvas.create_oval(
+        self.canvas.create_oval(
             knob_x - self.knob_radius,
             knob_y - self.knob_radius,
             knob_x + self.knob_radius,
@@ -1699,7 +1727,7 @@ class ToggleSwitch(tk.Frame):
             x1, y1 + radius,
             x1, y1,
         ]
-        return self.canvas.create_polygon(points, smooth=True, **kwargs)
+        self.canvas.create_polygon(points, smooth=True, **kwargs)
 
     def _on_click(self, event=None):
         """点击切换状态。"""
@@ -1733,27 +1761,26 @@ class ToggleSwitch(tk.Frame):
         self._draw()
 
         if self._animation_step < self._animation_steps:
-            self.after(20, self._animate)
+            self._after_id = self.after(20, self._animate)
         else:
             self._animating = False
-            self._draw()
+            self._after_id = None
 
     def configure(self, **kwargs):
         """配置开关属性。"""
         if 'variable' in kwargs:
+            self._remove_trace()
             self.variable = kwargs.pop('variable')
-            self.variable.trace_add('write', self._on_variable_changed)
+            self._trace_name = self.variable.trace_add('write', self._on_variable_changed)
             self._draw()
         if 'command' in kwargs:
             self.command = kwargs.pop('command')
         if 'state' in kwargs:
             state = kwargs.pop('state')
             if state == 'disabled':
-                self.canvas.configure(cursor='')
-                self.canvas.unbind('<Button-1>')
+                self.canvas.configure(cursor='', state='disabled')
             else:
-                self.canvas.configure(cursor='hand2')
-                self.canvas.bind('<Button-1>', self._on_click)
+                self.canvas.configure(cursor='hand2', state='normal')
         super().configure(**kwargs)
 
 
