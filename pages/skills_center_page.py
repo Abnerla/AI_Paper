@@ -22,6 +22,7 @@ from modules.ui_components import (
     COLORS,
     create_home_shell_button,
     create_scrolled_text,
+    create_tooltip_icon_label,
     FONTS,
     ResponsiveButtonBar,
     ScrollablePage,
@@ -295,8 +296,23 @@ class SkillsCenterPanel:
             )[0]
         )
 
-        action_card = CardFrame(self.detail_inner, title='独立动作', padding=16)
+        action_card = CardFrame(self.detail_inner, title='技能测试', padding=16)
         action_card.pack(fill=tk.BOTH, expand=True, pady=(14, 0))
+        if action_card.title_frame is not None:
+            action_card_tip = create_tooltip_icon_label(
+                action_card.title_frame,
+                tooltip_text=(
+                    '技能测试：提供的可手动调用的功能模块。\n'
+                    '1.不依赖场景钩子，需手动填写参数后执行；\n'
+                    '2.切换上方标签可查看不同动作；\n'
+                    '3.填写参数后点击「执行动作」开始；\n'
+                    '4.结果会显示在下方文本框中。'
+                ),
+                bg=COLORS['card_bg'],
+                padx=4,
+                pady=0,
+            )
+            action_card_tip.grid(row=0, column=1, sticky='w', padx=(8, 0))
         self.action_tabs_bar = ResponsiveButtonBar(action_card.inner, min_item_width=130, gap_x=8, gap_y=8, bg=COLORS['card_bg'])
         self.action_tabs_bar.pack(fill=tk.X)
         self.action_form_frame = tk.Frame(action_card.inner, bg=COLORS['card_bg'])
@@ -730,6 +746,9 @@ class SkillsCenterPanel:
         for child in self.action_tabs_bar.winfo_children():
             child.destroy()
         self.action_tabs_bar.widgets = []
+        # 清空布局签名缓存，强制重新布局（否则当新按钮的尺寸与旧按钮相同时，
+        # ResponsiveButtonBar._relayout 会因签名一致而直接 return，导致按钮“消失”）
+        self.action_tabs_bar._last_layout_signature = None
         if not actions:
             self.selected_action_id = ''
             return
@@ -793,14 +812,41 @@ class SkillsCenterPanel:
         field_id = field.get('id', '')
         wrapper = tk.Frame(self.action_form_frame, bg=COLORS['card_bg'])
         wrapper.pack(fill=tk.X, pady=(0, 10))
+
+        help_text = str(field.get('help', '') or '').strip()
+        required = bool(field.get('required', False))
+        label_text = field.get('label', field_id)
+        if required:
+            label_text = f'{label_text} *'
+
+        label_row = tk.Frame(wrapper, bg=COLORS['card_bg'])
+        label_row.pack(anchor='w', fill=tk.X)
         tk.Label(
-            wrapper,
-            text=field.get('label', field_id),
+            label_row,
+            text=label_text,
             font=FONTS['body_bold'],
             fg=COLORS['text_main'],
             bg=COLORS['card_bg'],
             anchor='w',
-        ).pack(anchor='w')
+        ).pack(side=tk.LEFT)
+        # 标题型说明：用 tip 图标承载帮助文本（仅对非 checkbox 字段，
+        # checkbox 的 help 已经作为 ToggleSwitch 的标签使用）
+        if help_text and field_type != 'checkbox':
+            tip_label = create_tooltip_icon_label(
+                label_row,
+                tooltip_text=help_text,
+                bg=COLORS['card_bg'],
+                padx=4,
+                pady=0,
+            )
+            tip_label.pack(side=tk.LEFT, padx=(6, 0))
+
+        # 输入控件占位符的提示文案（精简后给 placeholder 用）
+        placeholder_text = ''
+        if help_text and field_type != 'checkbox':
+            # 限制单行 placeholder 长度，避免占位过长
+            first_line = help_text.splitlines()[0]
+            placeholder_text = first_line[:40] + ('...' if len(first_line) > 40 else '')
 
         if field_type == 'textarea':
             frame, text = create_scrolled_text(wrapper, height=6, show_scrollbar=True)
@@ -808,6 +854,8 @@ class SkillsCenterPanel:
             default_text = field.get('default', '')
             if default_text not in (None, ''):
                 text.insert('1.0', str(default_text))
+            elif placeholder_text:
+                self._attach_text_placeholder(text, placeholder_text)
             self._action_widgets[field_id] = {'type': field_type, 'widget': text}
         elif field_type == 'select':
             var = tk.StringVar(value=str(field.get('default', '') or ''))
@@ -840,7 +888,8 @@ class SkillsCenterPanel:
             ).pack(side=tk.LEFT, padx=(10, 0))
             self._action_widgets[field_id] = {'type': field_type, 'variable': var}
         else:
-            var = tk.StringVar(value='' if field.get('default', None) is None else str(field.get('default')))
+            default_value = '' if field.get('default', None) is None else str(field.get('default'))
+            var = tk.StringVar(value=default_value)
             entry = tk.Entry(
                 wrapper,
                 textvariable=var,
@@ -853,28 +902,82 @@ class SkillsCenterPanel:
                 insertbackground=COLORS['text_main'],
             )
             entry.pack(fill=tk.X, pady=(6, 0), ipady=4)
-            self._action_widgets[field_id] = {'type': field_type, 'variable': var}
+            if not default_value and placeholder_text:
+                self._attach_entry_placeholder(entry, var, placeholder_text)
+            self._action_widgets[field_id] = {'type': field_type, 'variable': var, 'owner_entry': entry}
 
-        help_text = str(field.get('help', '') or '').strip()
-        if help_text and field_type != 'checkbox':
-            tk.Label(
-                wrapper,
-                text=help_text,
-                font=FONTS['small'],
-                fg=COLORS['text_sub'],
-                bg=COLORS['card_bg'],
-                anchor='w',
-                justify='left',
-            ).pack(fill=tk.X, pady=(4, 0))
+    def _attach_entry_placeholder(self, entry, variable, placeholder):
+        """为单行输入框添加占位符（聚焦时清空，失焦时若为空则恢复）。"""
+        state = {'active': False}
+
+        def show_placeholder():
+            if not variable.get():
+                state['active'] = True
+                entry.configure(fg=COLORS['text_muted'])
+                variable.set(placeholder)
+
+        def on_focus_in(_event=None):
+            if state['active']:
+                state['active'] = False
+                variable.set('')
+                entry.configure(fg=COLORS['text_main'])
+
+        def on_focus_out(_event=None):
+            if not variable.get():
+                show_placeholder()
+
+        entry.bind('<FocusIn>', on_focus_in)
+        entry.bind('<FocusOut>', on_focus_out)
+        show_placeholder()
+        # 标记占位符状态，便于 _collect_action_inputs 跳过
+        entry._placeholder_state = state
+
+    def _attach_text_placeholder(self, text_widget, placeholder):
+        """为多行文本框添加占位符。"""
+        state = {'active': False}
+
+        def show_placeholder():
+            if not text_widget.get('1.0', tk.END).strip():
+                state['active'] = True
+                text_widget.configure(fg=COLORS['text_muted'])
+                text_widget.delete('1.0', tk.END)
+                text_widget.insert('1.0', placeholder)
+
+        def on_focus_in(_event=None):
+            if state['active']:
+                state['active'] = False
+                text_widget.delete('1.0', tk.END)
+                text_widget.configure(fg=COLORS['text_main'])
+
+        def on_focus_out(_event=None):
+            if not text_widget.get('1.0', tk.END).strip():
+                show_placeholder()
+
+        text_widget.bind('<FocusIn>', on_focus_in)
+        text_widget.bind('<FocusOut>', on_focus_out)
+        show_placeholder()
+        text_widget._placeholder_state = state
 
     def _collect_action_inputs(self):
         payload = {}
         for field_id, spec in self._action_widgets.items():
             field_type = spec.get('type', 'text')
             if field_type == 'textarea':
-                payload[field_id] = spec['widget'].get('1.0', tk.END).strip()
+                widget = spec['widget']
+                placeholder_state = getattr(widget, '_placeholder_state', None)
+                if placeholder_state and placeholder_state.get('active'):
+                    payload[field_id] = ''
+                else:
+                    payload[field_id] = widget.get('1.0', tk.END).strip()
             else:
-                payload[field_id] = spec['variable'].get()
+                value = spec['variable'].get()
+                # 单行输入框占位符模式下 variable 实际存的是占位文本
+                widget_owner = spec.get('owner_entry')
+                if widget_owner is not None:
+                    placeholder_state = getattr(widget_owner, '_placeholder_state', None)
+                    if placeholder_state and placeholder_state.get('active'):
+                        value = ''
+                payload[field_id] = value
         return payload
 
     def _run_selected_action(self):
