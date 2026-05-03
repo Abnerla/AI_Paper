@@ -311,6 +311,7 @@ class AIReducePage(TextTransformPageBase):
         dialog = self._import_dialog
         if dialog is None:
             return
+        self._import_dialog = None
         try:
             dialog.grab_release()
         except tk.TclError:
@@ -319,7 +320,7 @@ class AIReducePage(TextTransformPageBase):
             if dialog.winfo_exists():
                 dialog.withdraw()
         except tk.TclError:
-            self._import_dialog = None
+            pass
 
     def _center_import_dialog(self, dialog):
         root = self.frame.winfo_toplevel()

@@ -161,20 +161,16 @@ class AcademicPolisher:
 
     def translate_polish(self, text: str, target_lang: str = '英文') -> str:
         """翻译润色。"""
-        system = '你是一位专业的学术翻译专家，精通中英文等多语种学术写作。'
-        prompt = f'''请将以下学术文本翻译为{target_lang}，并进行学术润色：
-{text}
-
-要求：
-1. 准确传达原文学术含义。
-2. 使用目标语言的学术写作规范。
-3. 专业术语翻译准确。
-4. 语言流畅自然。
-
-请直接输出翻译后的文本。'''
+        rendered = self.prompt_center.render_scene(
+            'polish.translate',
+            {
+                'text': text,
+                'target_lang': target_lang,
+            },
+        )
         return self.api.call_sync(
-            prompt,
-            system,
+            rendered['prompt'],
+            rendered['system'],
             temperature=0.4,
             usage_context=self._usage_context('translate_polish', scene_id='polish.translate'),
         )

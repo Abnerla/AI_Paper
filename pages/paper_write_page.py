@@ -1685,7 +1685,6 @@ class PaperWritePage(WorkspaceStateMixin):
     def _normalize_level_font_style(self, level_key, style):
         # 恢复工作区状态时只接受四组层级配置，其余字段回退到默认值。
         defaults = dict(self.LEVEL_STYLE_DEFAULTS.get(level_key, {}))
-        defaults = dict(self.LEVEL_STYLE_DEFAULTS.get(level_key, {}))
         if not isinstance(style, dict):
             return defaults
 

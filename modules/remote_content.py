@@ -162,7 +162,8 @@ class RemoteContentManager:
 
     def _do_fetch(self, url):
         """发起 HTTP GET 请求并解析 JSON（附加时间戳绕过 CDN 缓存）"""
-        bust = f'{"&" if "?" in url else "?"}t={int(time.time())}'
+        sep = "&" if "?" in url else "?"
+        bust = f'{sep}t={int(time.time())}'
         req = urllib.request.Request(url + bust, method='GET')
         req.add_header('User-Agent', 'PaperLab/1.0')
         req.add_header('Cache-Control', 'no-cache')
@@ -179,6 +180,7 @@ class RemoteContentManager:
 
     def _worker(self, content_key, url, on_success, on_error):
         """后台线程：拉取数据并回调 UI 线程"""
+        last_error = None
         try:
             data = self._do_fetch(url)
             with self._lock:
@@ -186,11 +188,30 @@ class RemoteContentManager:
                 self._cache_ts[content_key] = time.time()
             self._write_log(f'远程内容拉取成功: {content_key}')
             self._scheduler.after(0, lambda d=data: on_success(d))
+            return
         except Exception as exc:
+            last_error = exc
             self._write_log(f'远程内容拉取失败: {content_key} - {exc}', level='WARN')
-            if on_error:
-                self._scheduler.after(0, lambda e=exc: on_error(e))
-            else:
-                cached = self.get_cached(content_key)
-                if cached:
-                    self._scheduler.after(0, lambda d=cached: on_success(d))
+
+        # 远程失败，尝试本地回退
+        try:
+            local_data = self._load_local_fallback(content_key)
+            if local_data is not None:
+                with self._lock:
+                    self._cache[content_key] = local_data
+                    self._cache_ts[content_key] = time.time()
+                self._write_log(f'远程拉取失败，使用本地回退: {content_key}')
+                self._scheduler.after(0, lambda d=local_data: on_success(d))
+                return
+        except Exception as exc:
+            self._write_log(f'本地回退加载失败: {content_key} - {exc}', level='WARN')
+
+        # 本地也没有，尝试内存缓存
+        cached = self.get_cached(content_key)
+        if cached:
+            self._scheduler.after(0, lambda d=cached: on_success(d))
+            return
+
+        # 完全失败
+        if on_error:
+            self._scheduler.after(0, lambda e=last_error: on_error(e))

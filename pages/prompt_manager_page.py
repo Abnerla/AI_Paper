@@ -471,7 +471,7 @@ class PromptManagerPanel:
             self._editor_window.focus_force()
             if self._editor_dialog_scroll_view:
                 self._editor_dialog_scroll_view.scroll_to_top()
-            target = self._editor_dialog_name_entry if focus_name else self._editor_dialog_name_entry
+            target = self._editor_dialog_name_entry if focus_name else self._editor_dialog_content_text
             if target:
                 target.focus_set()
             return

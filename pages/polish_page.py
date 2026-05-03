@@ -78,7 +78,7 @@ class PolishPage(WorkspaceStateMixin):
         self.navigate_page = navigate_page
         self.app_bridge = app_bridge
         self.prompt_center = PromptCenter(config_mgr)
-        self.polisher = AcademicPolisher(api_client)
+        self.polisher = AcademicPolisher(api_client, prompt_center=self.prompt_center)
         self.frame = tk.Frame(parent, bg=COLORS['bg_main'])
         self.loading = LoadingOverlay(self.frame, config_mgr, text='正在执行学术润色...')
         self.task_runner = TaskRunner(self.frame, loading=self.loading, set_status=self.set_status)
@@ -436,11 +436,11 @@ class PolishPage(WorkspaceStateMixin):
         self.output_text.configure(state=tk.DISABLED)
 
     def _bind_task_state(self):
-        self.task_type_var.trace('w', lambda *args: self._refresh_task_summary())
-        self.execution_mode_var.trace('w', lambda *args: self._refresh_task_summary())
-        self.polish_var.trace('w', lambda *args: self._refresh_task_summary())
+        self.task_type_var.trace_add('write', lambda *args: self._refresh_task_summary())
+        self.execution_mode_var.trace_add('write', lambda *args: self._refresh_task_summary())
+        self.polish_var.trace_add('write', lambda *args: self._refresh_task_summary())
         self.polish_var.trace_add('write', lambda *_args: self._refresh_polish_option_cards())
-        self.topic_var.trace('w', lambda *args: self._refresh_task_summary())
+        self.topic_var.trace_add('write', lambda *args: self._refresh_task_summary())
 
     def _refresh_polish_option_cards(self):
         selected = self.polish_var.get()
@@ -874,24 +874,25 @@ class PolishPage(WorkspaceStateMixin):
         ttk.Combobox(win, textvariable=lang_var, values=['英文', '中文', '日文', '法文', '德文'], state='readonly', width=15, style='Modern.TCombobox').pack()
 
         def do_translate():
+            target_lang = lang_var.get()
             win.destroy()
 
             def on_success(result):
                 self.last_task_config = dict(self._collect_task_config())
-                summary = f'翻译润色完成 | 目标语言：{lang_var.get()}'
+                summary = f'翻译润色完成 | 目标语言：{target_lang}'
                 if self._get_writeback_task_type() == '论文大纲':
-                    detail = '翻译结果已进入预览区。当前为论文大纲任务，本页不提供写回大纲；如需导出，请前往“历史记录”页面。'
+                    detail = '翻译结果已进入预览区。当前为论文大纲任务，本页不提供写回大纲；如需导出，请前往”历史记录”页面。'
                 else:
-                    detail = '翻译结果已进入预览区，可回填到原文；如需导出，请前往“历史记录”页面。'
+                    detail = '翻译结果已进入预览区，可回填到原文；如需导出，请前往”历史记录”页面。'
                 self._set_result(result, summary, detail)
-                self._set_info_text('翻译润色完成；如需导出，请前往“历史记录”页面。', fg=COLORS['text_sub'])
+                self._set_info_text('翻译润色完成；如需导出，请前往”历史记录”页面。', fg=COLORS['text_sub'])
                 self._add_history_version(
-                    f'翻译润色({lang_var.get()})',
+                    f'翻译润色({target_lang})',
                     text,
                     result,
                     extra={
                         'tool_name': '翻译润色',
-                        'target_lang': lang_var.get(),
+                        'target_lang': target_lang,
                         'source_kind': self.SOURCE_KIND_LABELS.get(self.current_source_kind, self.current_source_kind),
                     },
                 )
@@ -903,7 +904,7 @@ class PolishPage(WorkspaceStateMixin):
                 self.set_status(f'翻译失败: {exc}', COLORS['error'])
 
             self.task_runner.run(
-                work=lambda: self.polisher.translate_polish(text, lang_var.get()),
+                work=lambda: self.polisher.translate_polish(text, target_lang),
                 on_success=on_success,
                 on_error=on_error,
                 loading_text='正在执行翻译润色...',

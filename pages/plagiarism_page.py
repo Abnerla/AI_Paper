@@ -322,6 +322,7 @@ class PlagiarismPage(TextTransformPageBase):
         dialog = self._compare_dialog
         if dialog is None:
             return
+        self._compare_dialog = None
         try:
             dialog.grab_release()
         except tk.TclError:
@@ -330,7 +331,7 @@ class PlagiarismPage(TextTransformPageBase):
             if dialog.winfo_exists():
                 dialog.withdraw()
         except tk.TclError:
-            self._compare_dialog = None
+            pass
 
     def _center_compare_dialog(self, dialog):
         root = self.frame.winfo_toplevel()

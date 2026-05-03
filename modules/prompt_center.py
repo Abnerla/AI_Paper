@@ -105,7 +105,7 @@ SCENE_DEFS = {
             ('mode', '模式值'),
             ('mode_label', '处理模式'),
         ),
-        'required_variables': ('text', 'mode_label'),
+        'required_variables': ('text', 'mode', 'mode_label'),
     },
     'plagiarism.transform': {
         'page_id': 'plagiarism',
@@ -117,7 +117,7 @@ SCENE_DEFS = {
             ('mode', '模式值'),
             ('mode_label', '处理模式'),
         ),
-        'required_variables': ('text', 'mode_label'),
+        'required_variables': ('text', 'mode', 'mode_label'),
     },
     'correction.ai_review': {
         'page_id': 'correction',
@@ -234,10 +234,15 @@ class _SafeFormatDict(dict):
         return ''
 
 
+_cached_defaults = None
+
 def load_prompt_defaults():
+    global _cached_defaults
+    if _cached_defaults is not None:
+        return _cached_defaults
     with open(DEFAULTS_PATH, 'r', encoding='utf-8') as handle:
-        payload = json.load(handle)
-    return payload
+        _cached_defaults = json.load(handle)
+    return _cached_defaults
 
 
 def list_template_fields(content):

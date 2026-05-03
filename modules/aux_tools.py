@@ -5,6 +5,7 @@
 
 import os
 import re
+import sys
 import difflib
 import tempfile
 
@@ -331,12 +332,37 @@ class AuxTools:
             raise RuntimeError(f'导出TXT失败: {e}')
 
     def export_pdf(self, text: str, filepath: str, title: str = '') -> bool:
-        """导出为PDF（通过Word转换）"""
+        """导出为PDF（通过Word或LibreOffice转换）"""
         # 先导出为docx，再尝试转PDF
-        tmp_docx = filepath.replace('.pdf', '_tmp.docx')
+        base = os.path.splitext(filepath)[0]
+        tmp_docx = base + '_tmp.docx'
         try:
             self.export_docx(text, tmp_docx, title)
-            # 尝试使用系统Word转换
+            # Windows 优先使用 Word COM 自动化
+            if sys.platform == 'win32':
+                word = None
+                doc = None
+                try:
+                    import comtypes.client
+                    word = comtypes.client.CreateObject('Word.Application')
+                    word.Visible = False
+                    doc = word.Documents.Open(os.path.abspath(tmp_docx))
+                    doc.SaveAs(os.path.abspath(filepath), FileFormat=17)  # wdFormatPDF = 17
+                    return True
+                except Exception:
+                    pass
+                finally:
+                    if doc is not None:
+                        try:
+                            doc.Close(False)
+                        except Exception:
+                            pass
+                    if word is not None:
+                        try:
+                            word.Quit()
+                        except Exception:
+                            pass
+            # 回退到 LibreOffice
             import subprocess
             result = subprocess.run(
                 ['soffice', '--headless', '--convert-to', 'pdf', '--outdir',
@@ -345,9 +371,9 @@ class AuxTools:
             )
             if result.returncode == 0:
                 return True
-            raise RuntimeError('LibreOffice不可用，请手动从Word另存为PDF')
+            raise RuntimeError('PDF 转换工具不可用，请手动从 Word 另存为 PDF')
         except FileNotFoundError:
-            raise RuntimeError('未找到PDF转换工具，请从Word文件另存为PDF')
+            raise RuntimeError('未找到 PDF 转换工具，请从 Word 文件另存为 PDF')
         finally:
             if os.path.exists(tmp_docx):
                 os.remove(tmp_docx)
@@ -384,14 +410,14 @@ class AuxTools:
         cn_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
         en_words = len(re.findall(r'\b[a-zA-Z]+\b', text))
         numbers = len(re.findall(r'\b\d+\b', text))
-        sentences = len(re.split(r'[。！？.!?]', text))
+        sentences = len(re.findall(r'[。！？.!?]+', text))
         paragraphs = len([p for p in text.split('\n') if p.strip()])
         return {
             'total': len(text),
             'chinese': cn_chars,
             'english_words': en_words,
             'numbers': numbers,
-            'sentences': max(0, sentences - 1),
+            'sentences': sentences,
             'paragraphs': paragraphs,
         }
 

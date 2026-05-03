@@ -486,8 +486,8 @@ class SmartPaperTool:
 
     def _start_startup_sequence(self):
         self._startup_steps = [
-            ('fonts', lambda: configure_fonts(self.root)),
             ('scaling', self._configure_scaling),
+            ('fonts', lambda: configure_fonts(self.root)),
             ('services', self._initialize_runtime_services),
             ('theme', self._initialize_window_theme),
             ('shell_chrome', self._build_window_chrome),
@@ -740,22 +740,6 @@ class SmartPaperTool:
             f'total={time.perf_counter() - self._startup_started_at:.3f}s'
         )
         self._write_app_log('应用启动')
-        nav_order = [page_id for page_id, _label in TOP_NAV_ITEMS]
-        self._page_warmup_queue = [
-            page_id for page_id in nav_order
-            if page_id in self._page_specs and page_id not in {self._startup_page_id, 'api_config'}
-        ]
-        if self._page_warmup_queue:
-            self.root.after(180, self._warmup_remaining_pages)
-        if self.launch_silently:
-            self.root.after(180, self._apply_silent_launch)
-        self.root.after(500, self._prefetch_announcement)
-        self.root.after(650, self._prefetch_push)
-        self.root.after(900, self._check_version_update_on_startup)
-
-    def _finish_startup_render(self):
-        """已不再使用，保留以防其他引用。"""
-        pass
 
         self._write_app_log(
             f'[startup] fonts={self._startup_metrics.get("fonts", 0.0):.3f}s '
@@ -767,7 +751,6 @@ class SmartPaperTool:
             f'show={self._startup_metrics.get("show", 0.0):.3f}s '
             f'total={time.perf_counter() - self._startup_started_at:.3f}s'
         )
-        self._write_app_log('应用启动')
 
         self._page_warmup_queue = [
             page_id for page_id in self._page_specs
@@ -779,8 +762,12 @@ class SmartPaperTool:
         if self.launch_silently:
             self.root.after(180, self._apply_silent_launch)
 
+        self.root.after(500, self._prefetch_announcement)
+        self.root.after(650, self._prefetch_push)
+        self.root.after(900, self._check_version_update_on_startup)
+
     def _warmup_remaining_pages(self):
-        if not self._page_warmup_queue:
+        if self._is_shutting_down or not self._page_warmup_queue:
             return
 
         page_id = self._page_warmup_queue.pop(0)
@@ -1532,6 +1519,8 @@ class SmartPaperTool:
         self._show_version_update_dialog(data)
 
     def _check_version_update_on_startup(self):
+        if self._is_shutting_down:
+            return
         if self._version_check_busy:
             self.root.after(600, self._check_version_update_on_startup)
             return
@@ -1768,7 +1757,7 @@ class SmartPaperTool:
             )
             self._custom_window_chrome_enabled = True
         except Exception as exc:
-            self._write_app_log(f'鑷粯鏍囬鏍忓惎鐢ㄥけ璐? {exc}', level='WARN')
+            self._write_app_log(f'自定义标题栏启用失败: {exc}', level='WARN')
 
     def _build_window_chrome(self):
         if sys.platform != 'win32':
@@ -1982,6 +1971,20 @@ class SmartPaperTool:
                 thread.join(timeout=1.2)
             except Exception:
                 pass
+
+    def _cancel_pending_after_jobs(self):
+        """取消所有已跟踪的 after 定时器，避免 destroy 后回调报错。"""
+        for attr in (
+            '_shell_repair_job', '_top_nav_layout_job',
+            '_webdav_auto_sync_job', '_version_check_anim_job',
+        ):
+            job_id = getattr(self, attr, None)
+            if job_id is not None:
+                try:
+                    self.root.after_cancel(job_id)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
 
     def _minimize_to_tray(self, reason=''):
         self._stop_window_drag()
@@ -3006,7 +3009,7 @@ class SmartPaperTool:
     def _send_paper_write_content(self, page_id, payload):
         page = self._ensure_page(page_id)
         if not page or not hasattr(page, 'receive_paper_write_content'):
-            return {'ok': False, 'message': f'鐩爣椤甸潰涓嶆敮鎸佹帴鏀跺唴瀹癸細{page_id}'}
+            return {'ok': False, 'message': f'目标页面不支持接收内容：{page_id}'}
         try:
             outcome = page.receive_paper_write_content(payload or {})
             if outcome.get('ok'):
@@ -3021,7 +3024,7 @@ class SmartPaperTool:
     def _navigate_to_page(self, page_id):
         page = self._ensure_page(page_id)
         if not page:
-            return {'ok': False, 'message': f'鏈壘鍒伴〉闈? {page_id}'}
+            return {'ok': False, 'message': f'未找到页面: {page_id}'}
         self._show_page(page_id)
         return {'ok': True, 'page_id': page_id}
 
@@ -3290,11 +3293,13 @@ class SmartPaperTool:
 
     def _prefetch_announcement(self):
         """启动后预拉取公告，用于红点提示"""
-        if not self._remote_content:
+        if self._is_shutting_down or not self._remote_content:
             return
         self._remote_content.fetch('announcement', on_success=self._on_announcement_prefetch)
 
     def _on_announcement_prefetch(self, data):
+        if self._is_shutting_down:
+            return
         last_seen = self.config_mgr.get_setting('last_seen_announcement_id', '')
         current_id = data.get('id', '')
         if current_id and current_id != last_seen:
@@ -3303,11 +3308,13 @@ class SmartPaperTool:
             self._clear_bell_badge()
 
     def _prefetch_push(self):
-        if not self._remote_content or self.launch_silently:
+        if self._is_shutting_down or not self._remote_content or self.launch_silently:
             return
         self._remote_content.fetch('push', on_success=self._on_push_prefetch)
 
     def _on_push_prefetch(self, data):
+        if self._is_shutting_down:
+            return
         push_id = str((data or {}).get('id', '') or '').strip()
         if not push_id:
             return
@@ -4219,6 +4226,11 @@ class SmartPaperTool:
 
     def _show_repo_manage(self):
         """关闭发现技能弹窗，打开仓库管理弹窗；关闭仓库管理弹窗后自动重新打开发现技能弹窗。"""
+        # 复用已有窗口
+        if self._repo_manage_window and self._repo_manage_window.winfo_exists():
+            self._repo_manage_window.lift()
+            self._repo_manage_window.focus_force()
+            return
         from pages.discover_skills_page import RepoManagePanel
         # 先关闭发现技能弹窗
         if self._discover_skills_window and self._discover_skills_window.winfo_exists():
@@ -5785,12 +5797,15 @@ class SmartPaperTool:
             try:
                 self._flush_page_workspace_states()
                 state = self.root.state()
-                if self._window_is_maximized and self._window_restore_geometry:
+                # 如果窗口处于最小化状态，先恢复以获取正确位置
+                if state == 'iconic' and self._window_restore_geometry:
+                    geometry = self._window_restore_geometry
+                elif self._window_is_maximized and self._window_restore_geometry:
                     geometry = self._window_restore_geometry
                 elif state == 'normal':
                     geometry = self._capture_window_geometry()
                 else:
-                    geometry = None
+                    geometry = self._window_restore_geometry or self._capture_window_geometry()
                 if geometry:
                     self.config_mgr.set_setting('window_x', geometry['x'])
                     self.config_mgr.set_setting('window_y', geometry['y'])
@@ -5800,6 +5815,7 @@ class SmartPaperTool:
                 pass
             self.config_mgr.save()
         self._stop_tray_icon()
+        self._cancel_pending_after_jobs()
         self._restore_runtime_log_hooks()
         self._clear_runtime_log_file()
         self.root.destroy()

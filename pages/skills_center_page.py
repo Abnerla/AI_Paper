@@ -42,6 +42,19 @@ def _format_timestamp(ts):
     return _datetime.datetime.fromtimestamp(number).strftime('%Y-%m-%d %H:%M:%S')
 
 
+_SOURCE_TYPE_LABELS = {
+    'registry': '仓库',
+    'zip': 'ZIP 导入',
+    'directory': '目录导入',
+    'marketplace': '技能市场',
+    'local': '本地',
+}
+
+
+def _source_type_label(source_type):
+    return _SOURCE_TYPE_LABELS.get(str(source_type or '').strip(), str(source_type or '未知'))
+
+
 class SkillsCenterPanel:
     def __init__(self, parent, config_mgr, skill_manager, remote_content_manager, *, set_status, close_panel=None, app_bridge=None):
         self.config = config_mgr
@@ -244,11 +257,13 @@ class SkillsCenterPanel:
             fg=COLORS['text_main'],
             bg=COLORS['card_bg'],
         ).pack(side=tk.LEFT)
-        ToggleSwitch(
+        global_switch = ToggleSwitch(
             global_row,
             variable=self.global_var,
             bg=COLORS['card_bg'],
-        ).pack(side=tk.LEFT, padx=(10, 0))
+        )
+        global_switch.pack(side=tk.LEFT, padx=(10, 0))
+        self._global_switch = global_switch
 
         self.scene_checks_frame = tk.Frame(toggle_card.inner, bg=COLORS['card_bg'])
         self.scene_checks_frame.pack(fill=tk.X, pady=(10, 0))
@@ -585,7 +600,7 @@ class SkillsCenterPanel:
                 anchor='e',
             ).pack(side=tk.RIGHT)
 
-        meta_text = f'版本：{item.get("version", "未知")}  来源：{item.get("source_type", "registry") or "registry"}'
+        meta_text = f'版本：{item.get("version", "未知")}  来源：{_source_type_label(item.get("source_type", "registry") or "registry")}'
         meta_label = tk.Label(
             body,
             text=meta_text,
@@ -651,6 +666,7 @@ class SkillsCenterPanel:
             self.status_label.configure(text='')
             self.enabled_var.set(False)
             self.global_var.set(False)
+            self._global_switch.configure(state='disabled')
             self._render_scene_checks([])
             self._render_action_tabs([])
             self._clear_action_form()
@@ -662,7 +678,7 @@ class SkillsCenterPanel:
             text=(
                 f'ID：{item.get("id", "")}\n'
                 f'版本：{item.get("version", "未知")}  最新：{item.get("latest_version", item.get("version", "未知"))}\n'
-                f'来源：{item.get("source_type", "registry") or "registry"}  安装时间：{_format_timestamp(item.get("installed_at", 0))}\n'
+                f'来源：{_source_type_label(item.get("source_type", "registry") or "registry")}  安装时间：{_format_timestamp(item.get("installed_at", 0))}\n'
                 f'上次检查：{_format_timestamp(item.get("last_checked_at", 0))}'
             )
         )
@@ -681,6 +697,12 @@ class SkillsCenterPanel:
 
         self.enabled_var.set(bool(item.get('enabled', False)))
         self.global_var.set(bool(item.get('global_enabled', False)))
+        # 当 global_hook=False 时禁用全局生效开关，避免用户困惑
+        if not item.get('global_hook', False):
+            self._global_switch.configure(state='disabled')
+            self.global_var.set(False)
+        else:
+            self._global_switch.configure(state='normal')
         self._render_scene_checks(item.get('scene_bindings', []), selected=item.get('bound_scene_ids', []))
         manifest = item.get('manifest')
         actions = list((manifest or {}).get('actions', []) or [])
@@ -698,19 +720,20 @@ class SkillsCenterPanel:
         default_set = set(scene_bindings or [])
         if not has_saved:
             selected_set = default_set
-        # 展示所有可用场景（来自 SCENE_DEFS）
-        all_scene_ids = list(SCENE_DEFS.keys())
-        if not all_scene_ids:
+        # 仅展示技能声明的场景绑定（scene_bindings），而非 SCENE_DEFS 全部场景
+        # 用户只能勾选技能支持的场景，避免保存时被运行时静默过滤
+        supported_scenes = [s for s in (scene_bindings or []) if s in SCENE_DEFS]
+        if not supported_scenes:
             tk.Label(
                 self.scene_checks_frame,
-                text='当前没有可绑定的场景。',
+                text='该技能未声明任何场景绑定。',
                 font=FONTS['small'],
                 fg=COLORS['text_sub'],
                 bg=COLORS['card_bg'],
                 anchor='w',
             ).pack(fill=tk.X)
             return
-        for scene_id in all_scene_ids:
+        for scene_id in supported_scenes:
             scene_def = SCENE_DEFS.get(scene_id, {})
             page_label = scene_def.get('page_label', '')
             scene_label = scene_def.get('label', '')
@@ -835,12 +858,13 @@ class SkillsCenterPanel:
             )
             tip_label.pack(side=tk.LEFT, padx=(6, 0))
 
-        # 输入控件占位符的提示文案（精简后给 placeholder 用）
+        # 输入控件占位符的提示文案（优先使用 skill.json 中的 placeholder 字段）
         placeholder_text = ''
-        if help_text and field_type != 'checkbox':
-            # 限制单行 placeholder 长度，避免占位过长
-            first_line = help_text.splitlines()[0]
-            placeholder_text = first_line[:40] + ('...' if len(first_line) > 40 else '')
+        if field_type != 'checkbox':
+            placeholder_text = str(field.get('placeholder', '') or '').strip()
+            if not placeholder_text and help_text:
+                first_line = help_text.splitlines()[0]
+                placeholder_text = first_line[:40] + ('...' if len(first_line) > 40 else '')
 
         if field_type == 'textarea':
             frame, text = create_scrolled_text(wrapper, height=6, show_scrollbar=True)
@@ -852,18 +876,30 @@ class SkillsCenterPanel:
                 self._attach_text_placeholder(text, placeholder_text)
             self._action_widgets[field_id] = {'type': field_type, 'widget': text}
         elif field_type == 'select':
-            var = tk.StringVar(value='' if field.get('default', None) is None else str(field.get('default')))
-            values = [item.get('value', '') for item in field.get('options', [])]
+            options = field.get('options', [])
+            # 显示 label 给用户看，内部存储 value 用于提交
+            display_values = [item.get('label', item.get('value', '')) for item in options]
+            label_to_value = {item.get('label', item.get('value', '')): item.get('value', '') for item in options}
+            default_raw = field.get('default', None)
+            default_label = ''
+            if default_raw is not None:
+                for item in options:
+                    if item.get('value') == default_raw:
+                        default_label = item.get('label', default_raw)
+                        break
+                if not default_label:
+                    default_label = str(default_raw)
+            var = tk.StringVar(value=default_label)
             combo = ttk.Combobox(
                 wrapper,
                 textvariable=var,
-                values=values,
+                values=display_values,
                 state='readonly',
                 style='Modern.TCombobox',
             )
             combo.pack(fill=tk.X, pady=(6, 0), ipady=4)
             bind_combobox_dropdown_mousewheel(combo)
-            self._action_widgets[field_id] = {'type': field_type, 'variable': var}
+            self._action_widgets[field_id] = {'type': field_type, 'variable': var, 'label_to_value': label_to_value}
         elif field_type == 'checkbox':
             var = tk.BooleanVar(value=bool(field.get('default', False)))
             row = tk.Frame(wrapper, bg=COLORS['card_bg'])
@@ -963,6 +999,11 @@ class SkillsCenterPanel:
                     payload[field_id] = ''
                 else:
                     payload[field_id] = widget.get('1.0', tk.END).strip()
+            elif field_type == 'select':
+                # 用户看到的是 label，提交时需要转换为 value
+                label = spec['variable'].get()
+                label_to_value = spec.get('label_to_value', {})
+                payload[field_id] = label_to_value.get(label, label)
             else:
                 value = spec['variable'].get()
                 # 单行输入框占位符模式下 variable 实际存的是占位文本

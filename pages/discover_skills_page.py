@@ -57,6 +57,7 @@ class DiscoverSkillsPanel:
         self._card_grid = None
         self._count_label = None
         self._search_entry = None
+        self._search_placeholder_on = True
 
         self._build()
         self._load_source_data('registry')
@@ -213,20 +214,19 @@ class DiscoverSkillsPanel:
     _SEARCH_PLACEHOLDER = '搜索技能名称/描述...'
 
     def _is_placeholder_active(self):
-        try:
-            return self._search_entry and self._search_entry.cget('fg') == COLORS['text_muted']
-        except tk.TclError:
-            return False
+        return getattr(self, '_search_placeholder_on', True)
 
     def _on_search_focus_in(self, _event=None):
         entry = _event.widget
-        if entry.get() == self._SEARCH_PLACEHOLDER:
+        if self._search_placeholder_on:
+            self._search_placeholder_on = False
             entry.delete(0, tk.END)
             entry.configure(fg=COLORS['text_main'])
 
     def _on_search_focus_out(self, _event=None):
         entry = _event.widget
         if not entry.get().strip():
+            self._search_placeholder_on = True
             entry.delete(0, tk.END)
             entry.insert(0, self._SEARCH_PLACEHOLDER)
             entry.configure(fg=COLORS['text_muted'])
@@ -237,12 +237,23 @@ class DiscoverSkillsPanel:
                 self.frame.after_cancel(self._search_debounce_job)
             except Exception:
                 pass
-        self._search_debounce_job = self.frame.after(300, self._apply_filters)
+        self._search_debounce_job = self.frame.after(300, self._debounced_apply_filters)
+
+    def _debounced_apply_filters(self):
+        self._search_debounce_job = None
+        self._apply_filters()
 
     # ------------------------------------------------------------------ 数据源切换
     def _switch_source(self, source_key):
         if source_key == self._current_source:
             return
+        # 取消待执行的防抖搜索
+        if self._search_debounce_job:
+            try:
+                self.frame.after_cancel(self._search_debounce_job)
+            except Exception:
+                pass
+            self._search_debounce_job = None
         self._current_source = source_key
         for key, btn in self._source_buttons.items():
             btn.set_style('primary' if key == source_key else 'ghost')
@@ -253,6 +264,15 @@ class DiscoverSkillsPanel:
         else:
             self._source_filter_combo.configure(state='readonly')
         # 重置搜索（正确清空，避免占位符冲突）
+        # 如果搜索框仍有焦点，先移除焦点，防止占位符与用户输入冲突
+        if self._search_entry is not None:
+            try:
+                focus_widget = self.frame.winfo_toplevel().focus_get()
+                if focus_widget is self._search_entry:
+                    self.frame.focus_set()
+            except Exception:
+                pass
+        self._search_placeholder_on = True
         self._search_entry.delete(0, tk.END)
         self._search_entry.insert(0, self._SEARCH_PLACEHOLDER)
         self._search_entry.configure(fg=COLORS['text_muted'])
@@ -288,76 +308,78 @@ class DiscoverSkillsPanel:
         # 直接远程拉取，避免缓存渲染后再刷新导致的闪烁
         self._fetch_all_repos(enabled_repos)
 
-    def _merge_registry_to_skills(self):
-        installed = self.skill_manager.list_installed_skills(self._registry_payload)
-        installed_map = {s.get('id'): s for s in installed}
-        registry = self.skill_manager.list_registry_skills(self._registry_payload)
-        all_skills = []
-        for item in registry:
-            skill_id = item.get('id', '')
-            if skill_id in installed_map:
-                all_skills.append(installed_map[skill_id])
-            else:
-                all_skills.append(item)
-        # 已安装但不在注册表中的本地技能也加入
-        for item in installed:
-            if item.get('id') not in {s.get('id') for s in all_skills}:
-                all_skills.append(item)
-        self._all_skills = all_skills
-
     def _fetch_all_repos(self, repos):
         remaining = len(repos)
-        merged_skills = []
+        merged_skills = []  # 每项为 (repo_name, skill_data)
 
-        def on_repo_loaded(data):
+        def on_repo_loaded(data, repo_name='官方仓库'):
             nonlocal remaining
             remaining -= 1
             try:
                 sanitized = self.skill_manager.sanitize_registry_payload(data)
-                merged_skills.extend(sanitized.get('skills', []))
+                for skill in sanitized.get('skills', []):
+                    merged_skills.append((repo_name, skill))
             except Exception:
                 pass
             if remaining <= 0:
-                self._on_all_repos_fetched(merged_skills)
+                if self._current_source == 'registry':
+                    self._on_all_repos_fetched(merged_skills)
 
-        def on_repo_error(exc):
+        def on_repo_error(exc, repo_name=''):
             nonlocal remaining
             remaining -= 1
             if remaining <= 0:
-                self._on_all_repos_fetched(merged_skills)
+                if self._current_source == 'registry':
+                    self._on_all_repos_fetched(merged_skills)
 
         for repo in repos:
             url = str(repo.get('url', '') or '').strip()
+            repo_name = str(repo.get('name', repo.get('id', '')) or '').strip() or '未命名仓库'
             if not url:
                 remaining -= 1
                 continue
             if repo.get('id') == 'official':
-                self.remote_content.fetch('skills_index', on_success=on_repo_loaded, on_error=on_repo_error, force=True)
+                self.remote_content.fetch('skills_index',
+                    on_success=lambda data, rn=repo_name: on_repo_loaded(data, repo_name=rn),
+                    on_error=lambda exc, rn=repo_name: on_repo_error(exc, repo_name=rn),
+                    force=True)
             else:
-                self.remote_content.fetch_custom(url, on_success=on_repo_loaded, on_error=on_repo_error, force=True)
+                self.remote_content.fetch_custom(url,
+                    on_success=lambda data, rn=repo_name: on_repo_loaded(data, repo_name=rn),
+                    on_error=lambda exc, rn=repo_name: on_repo_error(exc, repo_name=rn),
+                    force=True)
 
         if remaining <= 0:
             self._on_all_repos_fetched(merged_skills)
 
-    def _on_all_repos_fetched(self, raw_skills):
+    def _on_all_repos_fetched(self, repo_skills):
         installed = self.skill_manager.list_installed_skills(self._registry_payload)
         installed_map = {s.get('id'): s for s in installed}
 
         all_skills = []
         seen_ids = set()
 
+        # 构建 repo_name → skill 的映射，为每个 skill 标注来源仓库名
+        repo_skill_map = {}
+        for repo_name, raw in repo_skills:
+            skill_id = str(raw.get('id', '') or '').strip()
+            if skill_id:
+                repo_skill_map[skill_id] = repo_name
+
         # 如果远程拉取有数据，使用远程数据
-        if raw_skills:
+        if repo_skills:
             for item in self.skill_manager.list_registry_skills(self._registry_payload):
                 skill_id = item.get('id', '')
                 if skill_id in installed_map:
-                    merged = installed_map[skill_id]
+                    merged = dict(installed_map[skill_id])
+                    merged['is_installed'] = True
                 else:
-                    merged = item
+                    merged = dict(item)
+                merged['repo_name'] = repo_skill_map.get(skill_id, '官方仓库')
                 if skill_id not in seen_ids:
                     seen_ids.add(skill_id)
                     all_skills.append(merged)
-            for raw in raw_skills:
+            for repo_name, raw in repo_skills:
                 skill_id = str(raw.get('id', '') or '').strip()
                 if skill_id and skill_id not in seen_ids:
                     seen_ids.add(skill_id)
@@ -365,24 +387,30 @@ class DiscoverSkillsPanel:
                         installed_map.get(skill_id, {}),
                         registry_entry=raw,
                     )
+                    view['repo_name'] = repo_name
                     all_skills.append(view)
         else:
             # 远程拉取全部失败，回退到本地缓存
             for item in self.skill_manager.list_registry_skills(self._registry_payload):
                 skill_id = item.get('id', '')
                 if skill_id in installed_map:
-                    all_skills.append(installed_map[skill_id])
+                    entry = dict(installed_map[skill_id])
+                    entry['is_installed'] = True
                 else:
-                    all_skills.append(item)
+                    entry = dict(item)
+                entry.setdefault('repo_name', '官方仓库')
+                all_skills.append(entry)
                 seen_ids.add(skill_id)
 
         for item in installed:
             if item.get('id') not in seen_ids:
-                all_skills.append(item)
+                entry = dict(item)
+                entry.setdefault('repo_name', '本地')
+                all_skills.append(entry)
 
         self._all_skills = all_skills
         self._apply_filters()
-        if raw_skills:
+        if repo_skills:
             self.set_status(f'技能索引已刷新，共 {len(self._all_skills)} 个技能', COLORS['success'])
         else:
             self.set_status(f'使用缓存索引，共 {len(self._all_skills)} 个技能', COLORS['text_sub'])
@@ -391,6 +419,8 @@ class DiscoverSkillsPanel:
         self.set_status('正在加载 skill.sh 技能市场...', COLORS['warning'])
 
         def on_loaded(data):
+            if self._current_source != 'marketplace':
+                return
             self._marketplace_payload = data
             self._merge_marketplace_to_skills(data)
             self._apply_filters()
@@ -401,6 +431,8 @@ class DiscoverSkillsPanel:
                 self.set_status('skill.sh 已加载，但没有可用技能', COLORS['warning'])
 
         def on_error(exc):
+            if self._current_source != 'marketplace':
+                return
             self._all_skills = []
             self._marketplace_error = str(exc)
             self._apply_filters()
@@ -423,6 +455,7 @@ class DiscoverSkillsPanel:
             if skill_id in installed_map:
                 view = dict(installed_map[skill_id])
                 view['source_label'] = 'skill.sh'
+                view['is_installed'] = True
                 if view.get('registry_entry'):
                     view['registry_entry'] = dict(view['registry_entry'], source='marketplace')
                 all_skills.append(view)
@@ -480,8 +513,8 @@ class DiscoverSkillsPanel:
                 continue
             # 来源筛选（仅仓库模式）
             if self._current_source == 'registry' and source_filter and source_filter != '全部来源':
-                source_label = str(view.get('source_type', 'registry') or 'registry')
-                if source_filter != source_label and source_filter != view.get('source_label', ''):
+                repo_name = view.get('repo_name', '')
+                if repo_name != source_filter:
                     continue
             filtered.append(view)
 
@@ -705,7 +738,7 @@ class DiscoverSkillsPanel:
                 item['is_installed'] = True
                 item['has_update'] = False
                 if result:
-                    item.update({k: v for k, v in result.items() if k in item})
+                    item.update({k: v for k, v in result.items() if k != 'id'})
                 break
         self._apply_filters()
         if callable(self.on_skill_installed):
@@ -946,6 +979,7 @@ class RepoManagePanel:
                         'added_at': int(_time.time()),
                         'enabled': True,
                     })
+                    self.config.save()
                     self.set_status('仓库添加成功', COLORS['success'])
                     self._refresh_repo_list()
                 except Exception as exc:
@@ -1024,6 +1058,7 @@ class RepoManagePanel:
 
         def on_toggle(rid=repo_id, var=enabled_var):
             self.config.update_skills_repository(rid, {'enabled': var.get()})
+            self.config.save()
 
         enable_label = tk.Label(
             header,
@@ -1053,6 +1088,7 @@ class RepoManagePanel:
                                            parent=self.frame.winfo_toplevel()):
                     return
                 self.config.remove_skills_repository(rid)
+                self.config.save()
                 self._refresh_repo_list()
 
             ModernButton(del_row, '删除', style='danger', padx=10, pady=3, command=do_delete).pack(side=tk.RIGHT)

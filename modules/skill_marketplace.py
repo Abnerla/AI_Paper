@@ -5,6 +5,7 @@ skill.sh 第三方技能市场 API 客户端。
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import threading
@@ -96,7 +97,7 @@ class SkillMarketplaceClient:
                 'publisher': str(item.get('author', '') or item.get('publisher', '') or '').strip(),
                 'homepage': str(item.get('homepage', '') or '').strip(),
                 'global_hook': bool(item.get('global_hook', False)),
-                'scene_bindings': list(item.get('scene_bindings', []) or []),
+                'scene_bindings': [str(s).strip() for s in (item.get('scene_bindings', []) or []) if str(s).strip()],
                 'source': 'marketplace',
             })
         return {
@@ -109,8 +110,8 @@ class SkillMarketplaceClient:
         """后台线程：拉取 skill.sh 数据并回调 UI 线程。"""
         last_error = None
 
-        # 优先尝试本地文件
-        if self._project_root:
+        # 优先尝试本地文件（force=True 时跳过本地文件，优先远程）
+        if self._project_root and not force:
             local_path = os.path.join(self._project_root, 'Management', 'marketplace_skills.json')
             if os.path.isfile(local_path):
                 try:
@@ -160,7 +161,8 @@ class SkillMarketplaceClient:
 
     def _do_http_get(self, url):
         """发起 HTTP GET 请求并解析 JSON。"""
-        bust = f'{"&" if "?" in url else "?"}t={int(time.time())}'
+        sep = "&" if "?" in url else "?"
+        bust = f'{sep}t={int(time.time())}'
         req = urllib.request.Request(url + bust, method='GET')
         req.add_header('User-Agent', 'PaperLab/1.0')
         req.add_header('Cache-Control', 'no-cache')
@@ -176,7 +178,7 @@ class SkillMarketplaceClient:
             path = self._cache_path()
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with self._lock:
-                data = self._cache
+                data = copy.deepcopy(self._cache)
             if data:
                 with open(path, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)

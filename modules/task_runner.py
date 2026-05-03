@@ -15,6 +15,7 @@ class TaskRunner:
         self.set_status = set_status
         self.thread_factory = thread_factory or threading.Thread
         self.log_callback = log_callback or self._resolve_log_callback(set_status)
+        self._active_count = 0
 
     def run(
         self,
@@ -30,12 +31,12 @@ class TaskRunner:
         task_label = self._build_task_label(work, status_text=status_text, loading_text=loading_text)
         if callable(on_start):
             on_start()
-        
+
+        self._active_count += 1
+
         # 确保在启动线程前显示加载动画
         if self.loading and loading_text:
             self.loading.show(loading_text)
-            # 在某些情况下 Tkinter 可能需要一点时间来渲染 place 出来的组件
-            # 特别是如果后续紧跟着 CPU 密集型操作
             self.scheduler.update_idletasks()
             
         if self.set_status and status_text:
@@ -58,14 +59,16 @@ class TaskRunner:
         return thread
 
     def _finish_success(self, result, callback, task_label):
-        if self.loading:
+        self._active_count = max(0, self._active_count - 1)
+        if self.loading and self._active_count <= 0:
             self.loading.hide()
         self._log(f'[task_success] {task_label}')
         if callable(callback):
             callback(result)
 
     def _finish_error(self, exc, callback, task_label):
-        if self.loading:
+        self._active_count = max(0, self._active_count - 1)
+        if self.loading and self._active_count <= 0:
             self.loading.hide()
         self._log(f'[task_error] {task_label} | {exc}', level='ERROR')
         if callable(callback):

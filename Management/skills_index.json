@@ -70,9 +70,7 @@
       "publisher": "PaperLab",
       "homepage": "https://github.com/Abnerla/AI_paper",
       "global_hook": false,
-      "scene_bindings": [
-        "paper_write.references"
-      ]
+      "scene_bindings": []
     },
     {
       "id": "data-table-generator",

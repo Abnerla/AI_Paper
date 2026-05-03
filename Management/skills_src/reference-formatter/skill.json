@@ -75,8 +75,6 @@
       }
     }
   ],
-  "scene_bindings": [
-    "paper_write.references"
-  ],
+  "scene_bindings": [],
   "global_hook": false
 }

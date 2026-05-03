@@ -61,9 +61,12 @@ class WorkspaceStateMixin:
         if not isinstance(state, dict):
             state = {}
 
-        self.config.set_workspace_state(self.PAGE_STATE_ID, state)
-        if save_to_disk:
-            return bool(self.config.save())
+        try:
+            self.config.set_workspace_state(self.PAGE_STATE_ID, state)
+            if save_to_disk:
+                return bool(self.config.save())
+        except Exception:
+            return False
         return True
 
     def capture_workspace_state_snapshot(self, save_to_disk=False):
@@ -77,9 +80,12 @@ class WorkspaceStateMixin:
             state = {}
 
         if getattr(self, 'config', None) and getattr(self, 'PAGE_STATE_ID', ''):
-            self.config.set_workspace_state(self.PAGE_STATE_ID, state)
-            if save_to_disk:
-                self.config.save()
+            try:
+                self.config.set_workspace_state(self.PAGE_STATE_ID, state)
+                if save_to_disk:
+                    self.config.save()
+            except Exception:
+                pass
         return copy.deepcopy(state)
 
     def apply_workspace_state_snapshot(self, state, save_to_disk=True):
@@ -98,9 +104,12 @@ class WorkspaceStateMixin:
             self._workspace_state_restoring = False
 
         self._workspace_state_restored = True
-        self.config.set_workspace_state(self.PAGE_STATE_ID, state)
-        if save_to_disk:
-            return bool(self.config.save())
+        try:
+            self.config.set_workspace_state(self.PAGE_STATE_ID, state)
+            if save_to_disk:
+                return bool(self.config.save())
+        except Exception:
+            return False
         return True
 
     def restore_saved_workspace_state(self):

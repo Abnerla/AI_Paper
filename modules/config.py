@@ -416,6 +416,13 @@ class ConfigManager:
                 cleaned[key] = copy.deepcopy(state)
         return cleaned
 
+    @staticmethod
+    def _safe_int_val(value, default=0):
+        try:
+            return max(int(value or 0), 0)
+        except (ValueError, TypeError):
+            return default
+
     def _sanitize_skills_center_record(self, skill_id, record):
         key = str(skill_id or '').strip()
         if not key or not isinstance(record, dict):
@@ -503,7 +510,7 @@ class ConfigManager:
                 'name': str(repo.get('name', '') or '').strip() or repo_id,
                 'url': str(repo.get('url', '') or '').strip(),
                 'type': str(repo.get('type', 'github_raw') or 'github_raw').strip(),
-                'added_at': max(int(repo.get('added_at', 0) or 0), 0),
+                'added_at': self._safe_int_val(repo.get('added_at', 0)),
                 'enabled': bool(repo.get('enabled', True)),
             })
         official_exists = any(r.get('id') == 'official' for r in repositories)
@@ -628,7 +635,7 @@ class ConfigManager:
         """设置配置值"""
         d = self._data
         for k in keys[:-1]:
-            if k not in d:
+            if k not in d or not isinstance(d.get(k), dict):
                 d[k] = {}
             d = d[k]
         d[keys[-1]] = value
@@ -1103,13 +1110,12 @@ class ConfigManager:
             import time as _time
             import random as _random
             repo_id = f'repo_{int(_time.time())}_{_random.randint(1000, 9999)}'
-        repo_dict['id'] = repo_id
         sanitized = {
             'id': repo_id,
             'name': str(repo_dict.get('name', '') or '').strip() or repo_id,
             'url': str(repo_dict.get('url', '') or '').strip(),
             'type': str(repo_dict.get('type', 'github_raw') or 'github_raw').strip(),
-            'added_at': max(int(repo_dict.get('added_at', 0) or 0), 0),
+            'added_at': self._safe_int_val(repo_dict.get('added_at', 0)) or int(__import__('time').time()),
             'enabled': bool(repo_dict.get('enabled', True)),
         }
         repositories = list(skills_center.get('repositories', []))
@@ -1122,8 +1128,10 @@ class ConfigManager:
         self._data['skills_center'] = skills_center
 
     def remove_skills_repository(self, repo_id):
-        skills_center = self._sanitize_skills_center(self._data.get('skills_center', {}))
         repo_id = str(repo_id or '').strip()
+        if repo_id == 'official':
+            return  # 不允许删除官方仓库（sanitize 会自动补回）
+        skills_center = self._sanitize_skills_center(self._data.get('skills_center', {}))
         repositories = [r for r in skills_center.get('repositories', []) if r.get('id') != repo_id]
         skills_center['repositories'] = repositories
         self._data['skills_center'] = skills_center
@@ -1132,10 +1140,13 @@ class ConfigManager:
         skills_center = self._sanitize_skills_center(self._data.get('skills_center', {}))
         repo_id = str(repo_id or '').strip()
         repositories = list(skills_center.get('repositories', []))
+        allowed_keys = {'name', 'url', 'type', 'enabled'}
         for i, r in enumerate(repositories):
             if r.get('id') == repo_id:
                 if isinstance(updates, dict):
-                    r.update(updates)
+                    for k, v in updates.items():
+                        if k in allowed_keys:
+                            r[k] = v
                     r['id'] = repo_id
                 repositories[i] = r
                 break

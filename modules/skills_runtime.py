@@ -922,7 +922,7 @@ class OpenSkillsAdapterSkill:
         previous_record = dict(previous_record or {})
         available_scenes = list(manifest.get('scene_bindings', []))
         bound_scene_ids = previous_record.get('bound_scene_ids', previous_record.get('scene_bindings', []))
-        bound_scene_ids = _unique_text_list(bound_scene_ids)
+        bound_scene_ids = _unique_text_list(bound_scene_ids, allowed=available_scenes)
         if not bound_scene_ids:
             bound_scene_ids = list(available_scenes)
 
@@ -939,7 +939,7 @@ class OpenSkillsAdapterSkill:
             'installed_at': installed_at,
             'updated_at': _now_ts(),
             'last_checked_at': _coerce_int(previous_record.get('last_checked_at', 0), 0),
-            'enabled': bool(previous_record.get('enabled', False)),
+            'enabled': bool(previous_record.get('enabled', True)) if previous_record else True,
             'global_enabled': bool(previous_record.get('global_enabled', False)) and bool(manifest.get('global_hook', False)),
             'global_hook': bool(manifest.get('global_hook', False)),
             'scene_bindings': available_scenes,
@@ -1001,15 +1001,15 @@ class OpenSkillsAdapterSkill:
         )
         return self.build_skill_view(record, manifest=manifest)
 
-    def install_skill_from_zip(self, zip_path):
+    def install_skill_from_zip(self, zip_path, *, source_type='zip', source_label=None):
         temp_dir = self._create_managed_temp_dir('zip_')
         try:
             self._safe_extract_zip(zip_path, temp_dir)
             self._adapt_openskills_package(temp_dir)
             return self.install_skill_from_directory(
                 temp_dir,
-                source_type='zip',
-                source_label=os.path.abspath(zip_path),
+                source_type=source_type,
+                source_label=source_label or os.path.abspath(zip_path),
             )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -1049,12 +1049,15 @@ class OpenSkillsAdapterSkill:
         if global_enabled is not None:
             record['global_enabled'] = bool(global_enabled) and bool(record.get('global_hook', False))
         if bound_scene_ids is not None:
-            record['bound_scene_ids'] = _unique_text_list(bound_scene_ids)
+            allowed_scenes = record.get('scene_bindings', [])
+            record['bound_scene_ids'] = _unique_text_list(bound_scene_ids, allowed=allowed_scenes)
         if last_checked_at is not None:
             record['last_checked_at'] = _coerce_int(last_checked_at, 0)
         record['updated_at'] = _now_ts()
         self._set_installed_skill_record(skill_id, record)
         self._save_config()
+        # 状态变更后清除实例缓存，确保下次使用时重新加载
+        self.clear_skill_cache(skill_id)
         return record
 
     def get_skill_manifest(self, skill_id):
@@ -1088,6 +1091,9 @@ class OpenSkillsAdapterSkill:
                     'actions_count': len(list(manifest.get('actions', []) or [])),
                 }
             )
+        # 若 global_hook 为 False，强制关闭 global_enabled，保持数据一致
+        if not record.get('global_hook', False):
+            record['global_enabled'] = False
         skill_id = str(record.get('id', '') or '').strip()
         registry_entry = dict(registry_entry or {})
         installed_version = normalize_version(record.get('version', 'v0.0.0'))
@@ -1150,7 +1156,7 @@ class OpenSkillsAdapterSkill:
                         'global_enabled': False,
                         'bound_scene_ids': [],
                         'source_type': 'registry',
-                        'source_label': item.get('download_url', ''),
+                        'source_label': item.get('name', skill_id),
                         'actions_count': 0,
                     }
                 )
@@ -1430,6 +1436,10 @@ class OpenSkillsAdapterSkill:
             request.add_header('User-Agent', f'PaperLab/{APP_VERSION}')
             with urllib.request.urlopen(request, timeout=30) as response, open(zip_path, 'wb') as handle:
                 shutil.copyfileobj(response, handle)
-            return self.install_skill_from_zip(zip_path)
+            return self.install_skill_from_zip(
+                zip_path,
+                source_type='registry',
+                source_label=registry_entry.get('name', registry_entry.get('id', '')),
+            )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
