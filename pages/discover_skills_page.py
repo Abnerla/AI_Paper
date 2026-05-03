@@ -380,7 +380,11 @@ class DiscoverSkillsPanel:
             self._marketplace_payload = data
             self._merge_marketplace_to_skills(data)
             self._apply_filters()
-            self.set_status(f'skill.sh 已加载，共 {len(self._all_skills)} 个技能', COLORS['success'])
+            skill_count = len(self._all_skills)
+            if skill_count > 0:
+                self.set_status(f'skill.sh 已加载，共 {skill_count} 个技能', COLORS['success'])
+            else:
+                self.set_status('skill.sh 已加载，但没有可用技能', COLORS['warning'])
 
         def on_error(exc):
             self._all_skills = []

@@ -15,7 +15,10 @@ import urllib.error
 from modules.remote_content import normalize_version
 
 
-SKILLSH_API_URL = 'https://skill.sh/api/skills.json'
+# 技能市场API端点（优先使用本地文件，然后尝试远程端点）
+SKILLSH_API_URLS = [
+    'https://raw.githubusercontent.com/Abnerla/AI_paper/main/Management/marketplace_skills.json',
+]
 CACHE_FILE_NAME = 'marketplace_cache.json'
 CACHE_TTL = 300  # 5 分钟
 FETCH_TIMEOUT = 15
@@ -24,10 +27,11 @@ FETCH_TIMEOUT = 15
 class SkillMarketplaceClient:
     """skill.sh 第三方技能市场客户端，支持异步拉取、缓存和格式转换。"""
 
-    def __init__(self, skills_root, scheduler, log_callback=None):
+    def __init__(self, skills_root, scheduler, log_callback=None, project_root=None):
         self._skills_root = skills_root
         self._scheduler = scheduler
         self._log = log_callback
+        self._project_root = project_root
         self._cache = None
         self._cache_ts = 0
         self._lock = threading.Lock()
@@ -49,7 +53,7 @@ class SkillMarketplaceClient:
 
         t = threading.Thread(
             target=self._worker,
-            args=(SKILLSH_API_URL, on_success, on_error, force),
+            args=(SKILLSH_API_URLS, on_success, on_error, force),
             daemon=True,
         )
         t.start()
@@ -101,27 +105,58 @@ class SkillMarketplaceClient:
             'skills': skills,
         }
 
-    def _worker(self, url, on_success, on_error, force):
+    def _worker(self, urls, on_success, on_error, force):
         """后台线程：拉取 skill.sh 数据并回调 UI 线程。"""
-        try:
-            data = self._do_http_get(url)
-            sanitized = self.sanitize_marketplace_payload(data)
-            with self._lock:
-                self._cache = sanitized
-                self._cache_ts = time.time()
-            self._save_cache()
-            self._write_log('skill.sh 索引拉取成功')
-            self._scheduler.after(0, lambda: on_success(sanitized))
-        except Exception as exc:
-            self._write_log(f'skill.sh 索引拉取失败: {exc}', level='WARN')
-            cached = self._load_cache()
-            if cached:
+        last_error = None
+
+        # 优先尝试本地文件
+        if self._project_root:
+            local_path = os.path.join(self._project_root, 'Management', 'marketplace_skills.json')
+            if os.path.isfile(local_path):
+                try:
+                    self._write_log(f'正在从本地文件加载技能市场索引: {local_path}')
+                    with open(local_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    sanitized = self.sanitize_marketplace_payload(data)
+                    with self._lock:
+                        self._cache = sanitized
+                        self._cache_ts = time.time()
+                    self._save_cache()
+                    self._write_log('技能市场索引从本地文件加载成功')
+                    self._scheduler.after(0, lambda: on_success(sanitized))
+                    return
+                except Exception as exc:
+                    last_error = exc
+                    self._write_log(f'本地文件加载失败: {exc}', level='WARN')
+
+        # 尝试远程API端点
+        for url in urls:
+            try:
+                self._write_log(f'正在尝试拉取技能市场索引: {url}')
+                data = self._do_http_get(url)
+                sanitized = self.sanitize_marketplace_payload(data)
                 with self._lock:
-                    self._cache = cached
+                    self._cache = sanitized
                     self._cache_ts = time.time()
-                self._scheduler.after(0, lambda: on_success(cached))
-            elif on_error:
-                self._scheduler.after(0, lambda e=exc: on_error(e))
+                self._save_cache()
+                self._write_log(f'技能市场索引拉取成功: {url}')
+                self._scheduler.after(0, lambda: on_success(sanitized))
+                return
+            except Exception as exc:
+                last_error = exc
+                self._write_log(f'技能市场索引拉取失败 ({url}): {exc}', level='WARN')
+                continue
+
+        # 所有端点都失败，尝试使用缓存
+        self._write_log('所有技能市场数据源均不可用，尝试使用缓存', level='WARN')
+        cached = self._load_cache()
+        if cached:
+            with self._lock:
+                self._cache = cached
+                self._cache_ts = time.time()
+            self._scheduler.after(0, lambda: on_success(cached))
+        elif on_error:
+            self._scheduler.after(0, lambda e=last_error: on_error(e))
 
     def _do_http_get(self, url):
         """发起 HTTP GET 请求并解析 JSON。"""
@@ -157,3 +192,4 @@ class SkillMarketplaceClient:
                 return self.sanitize_marketplace_payload(json.load(f))
         except Exception:
             return None
+

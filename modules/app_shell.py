@@ -4186,6 +4186,7 @@ class SmartPaperTool:
                 skills_root,
                 self.root,
                 log_callback=self._write_app_log if hasattr(self, '_write_app_log') else None,
+                project_root=os.path.dirname(os.path.abspath(__file__).replace('modules', '')),
             )
 
         # 安装后回调，同步 Skills 管理面板
