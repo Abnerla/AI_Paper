@@ -568,8 +568,21 @@ class SkillManager:
             for file_name in files:
                 abs_path = os.path.join(current_root, file_name)
                 rel_path = os.path.relpath(abs_path, root_dir).replace('\\', '/')
+                if self._is_transient_package_path(rel_path):
+                    continue
                 result.append((abs_path, rel_path))
         return sorted(result, key=lambda item: item[1])
+
+    @staticmethod
+    def _is_transient_package_path(rel_path):
+        normalized = _normalize_rel_path(rel_path)
+        if not normalized:
+            return False
+        parts = [part.lower() for part in normalized.split('/') if part]
+        if '__pycache__' in parts:
+            return True
+        file_name = parts[-1] if parts else ''
+        return file_name.endswith(('.pyc', '.pyo'))
 
     def _find_openskills_root(self, source_dir):
         discovered = []
@@ -924,6 +937,8 @@ class SkillManager:
                 normalized = _normalize_rel_path(member.filename)
                 if not normalized:
                     continue
+                if self._is_transient_package_path(normalized):
+                    continue
                 if (
                     normalized == '..'
                     or normalized.startswith('../')
@@ -943,7 +958,11 @@ class SkillManager:
     def _copy_skill_package(self, source_root, target_root):
         if os.path.exists(target_root):
             shutil.rmtree(target_root)
-        shutil.copytree(source_root, target_root)
+        shutil.copytree(
+            source_root,
+            target_root,
+            ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.pyo'),
+        )
 
     def _build_installed_record(self, manifest, previous_record=None, *, source_type, source_label=''):
         previous_record = dict(previous_record or {})
