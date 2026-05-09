@@ -9,6 +9,13 @@ import sys
 import difflib
 import tempfile
 
+from modules.table_blocks import (
+    TABLE_STYLE_THREE_LINE,
+    normalize_merged_cells,
+    parse_markdown_blocks,
+    sanitize_blocks,
+)
+
 
 class AuxTools:
     """公共文档处理能力集合"""
@@ -113,7 +120,7 @@ class AuxTools:
             raise RuntimeError(f'读取Word文件失败: {e}')
 
     def export_docx(self, text: str, filepath: str, title: str = '', level_font_styles: dict = None, sections_data: dict = None) -> bool:
-        """导出为Word文档。sections_data 可包含 section_order, sections, section_levels 以结构化方式导出。"""
+        """导出为Word文档。sections_data 可包含 section_order, sections, section_levels, section_blocks。"""
         try:
             import docx
             from docx.shared import Pt, Cm
@@ -148,12 +155,58 @@ class AuxTools:
             h3_pt = h3_style.get('size_pt', 12)
 
             from docx.oxml.ns import qn
+            from docx.oxml import OxmlElement
 
             def _set_run_font(run, cn_font, en_font, pt_size):
                 """设置 run 的中英文字体和字号"""
                 run.font.name = en_font
                 run.font.size = Pt(pt_size)
                 run._element.rPr.rFonts.set(qn('w:eastAsia'), cn_font)
+
+            def _set_cell_borders(cell, **borders):
+                tc_pr = cell._tc.get_or_add_tcPr()
+                tc_borders = tc_pr.first_child_found_in('w:tcBorders')
+                if tc_borders is None:
+                    tc_borders = OxmlElement('w:tcBorders')
+                    tc_pr.append(tc_borders)
+
+                for edge in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV'):
+                    if edge not in borders:
+                        continue
+                    tag = f'w:{edge}'
+                    element = tc_borders.find(qn(tag))
+                    if element is None:
+                        element = OxmlElement(tag)
+                        tc_borders.append(element)
+                    config = borders[edge] or {}
+                    if not config:
+                        element.set(qn('w:val'), 'nil')
+                        continue
+                    for key, value in config.items():
+                        element.set(qn(f'w:{key}'), str(value))
+
+            def _apply_three_line_table_style(table):
+                row_count = len(table.rows)
+                col_count = len(table.columns)
+                if row_count <= 0 or col_count <= 0:
+                    return
+                no_border = {'val': 'nil'}
+                strong = {'val': 'single', 'sz': '12', 'space': '0', 'color': '000000'}
+                normal = {'val': 'single', 'sz': '8', 'space': '0', 'color': '000000'}
+                for row_idx in range(row_count):
+                    for col_idx in range(col_count):
+                        borders = {
+                            'top': no_border,
+                            'left': no_border,
+                            'bottom': no_border,
+                            'right': no_border,
+                        }
+                        if row_idx == 0:
+                            borders['top'] = strong
+                            borders['bottom'] = normal
+                        if row_idx == row_count - 1:
+                            borders['bottom'] = strong
+                        _set_cell_borders(table.cell(row_idx, col_idx), **borders)
 
             # 设置默认字体
             style = doc.styles['Normal']
@@ -168,11 +221,86 @@ class AuxTools:
                 for run in heading.runs:
                     _set_run_font(run, h1_font, h1_font_en, h1_pt)
 
+            def _write_body_paragraph(paragraph_text):
+                p = doc.add_paragraph(paragraph_text)
+                p.paragraph_format.first_line_indent = Pt(24)
+                p.paragraph_format.space_after = Pt(6)
+                for run in p.runs:
+                    _set_run_font(run, body_font, body_font_en, body_pt)
+
+            def _write_table_block(block):
+                rows = block.get('rows', [])
+                if not isinstance(rows, list) or not rows:
+                    return
+                normalized_rows = []
+                max_cols = 0
+                for row in rows:
+                    if isinstance(row, (list, tuple)):
+                        normalized_row = [str(cell or '').replace('\r', '').replace('\n', ' ').strip() for cell in row]
+                    else:
+                        normalized_row = [str(row or '').strip()]
+                    max_cols = max(max_cols, len(normalized_row))
+                    normalized_rows.append(normalized_row)
+                if not normalized_rows or max_cols <= 0:
+                    return
+                for row in normalized_rows:
+                    if len(row) < max_cols:
+                        row.extend([''] * (max_cols - len(row)))
+
+                caption = str(block.get('caption', '') or '').strip()
+                if caption:
+                    caption_p = doc.add_paragraph(caption)
+                    caption_p.paragraph_format.space_after = Pt(3)
+                    for run in caption_p.runs:
+                        _set_run_font(run, body_font, body_font_en, body_pt)
+
+                table = doc.add_table(rows=len(normalized_rows), cols=max_cols)
+                if block.get('table_style') == TABLE_STYLE_THREE_LINE:
+                    table.style = 'Normal Table'
+                else:
+                    table.style = 'Table Grid'
+                merged_cells = normalize_merged_cells(
+                    block.get('merged_cells', []),
+                    len(normalized_rows),
+                    max_cols,
+                )
+                covered_cells = set()
+                merge_anchors = {(cell['row'], cell['col']): cell for cell in merged_cells}
+                for merged in merged_cells:
+                    for row_idx in range(merged['row'], merged['row'] + merged['rowspan']):
+                        for col_idx in range(merged['col'], merged['col'] + merged['colspan']):
+                            if row_idx == merged['row'] and col_idx == merged['col']:
+                                continue
+                            covered_cells.add((row_idx, col_idx))
+
+                for row_idx, row in enumerate(normalized_rows):
+                    for col_idx, cell_text in enumerate(row):
+                        if (row_idx, col_idx) in covered_cells:
+                            continue
+                        cell = table.cell(row_idx, col_idx)
+                        merged = merge_anchors.get((row_idx, col_idx))
+                        if merged:
+                            cell = cell.merge(
+                                table.cell(
+                                    row_idx + merged['rowspan'] - 1,
+                                    col_idx + merged['colspan'] - 1,
+                                )
+                            )
+                        cell.text = cell_text
+                        for paragraph in cell.paragraphs:
+                            paragraph.paragraph_format.space_after = Pt(0)
+                            paragraph.paragraph_format.first_line_indent = Pt(0)
+                            for run in paragraph.runs:
+                                _set_run_font(run, body_font, body_font_en, body_pt)
+                if block.get('table_style') == TABLE_STYLE_THREE_LINE:
+                    _apply_three_line_table_style(table)
+
             # 结构化导出（有章节数据时）
             if sections_data and isinstance(sections_data, dict):
                 sd_order = sections_data.get('section_order', [])
                 sd_sections = sections_data.get('sections', {})
                 sd_levels = sections_data.get('section_levels', {})
+                sd_blocks = sections_data.get('section_blocks', {})
                 if sd_order and sd_sections:
                     level_fonts = {
                         1: (h1_font, h1_font_en, h1_pt),
@@ -180,57 +308,86 @@ class AuxTools:
                         3: (h3_font, h3_font_en, h3_pt),
                     }
                     for sec_title in sd_order:
-                        sec_body = str(sd_sections.get(sec_title, '') or '').strip()
                         sec_level = sd_levels.get(sec_title, 2)
-                        # 写入章节标题
                         if sec_title.strip():
                             heading_level = min(max(sec_level, 1), 3)
                             p = doc.add_heading(sec_title.strip(), level=heading_level)
                             cn, en, pt = level_fonts.get(heading_level, (h2_font, h2_font_en, h2_pt))
                             for run in p.runs:
                                 _set_run_font(run, cn, en, pt)
-                        # 写入章节正文
-                        if sec_body:
-                            for para_text in sec_body.split('\n'):
-                                if not para_text.strip():
+
+                        sec_blocks = sd_blocks.get(sec_title, [])
+                        if isinstance(sec_blocks, list) and sec_blocks:
+                            for block in sanitize_blocks(sec_blocks):
+                                if block['type'] == 'paragraph':
+                                    if block['text']:
+                                        _write_body_paragraph(block['text'])
                                     continue
-                                p = doc.add_paragraph(para_text)
-                                p.paragraph_format.first_line_indent = Pt(24)
-                                p.paragraph_format.space_after = Pt(6)
-                                for run in p.runs:
-                                    _set_run_font(run, body_font, body_font_en, body_pt)
+                                if block['type'] == 'table':
+                                    _write_table_block(block)
+                            continue
+
+                        sec_body = str(sd_sections.get(sec_title, '') or '').strip()
+                        if sec_body:
+                            for block in parse_markdown_blocks(sec_body):
+                                if block['type'] == 'table':
+                                    _write_table_block(block)
+                                    continue
+                                for para_text in str(block.get('text', '') or '').split('\n'):
+                                    if para_text.strip():
+                                        _write_body_paragraph(para_text)
                     doc.save(filepath)
                     return True
 
-            # 按段落添加内容（正则匹配模式，向后兼容）
-            paragraphs = text.split('\n')
-            for para_text in paragraphs:
-                if not para_text.strip():
-                    continue
-                # 检测是否为一级标题行
-                if re.match(r'^第[一二三四五六七八九十\d]+[章]', para_text):
-                    p = doc.add_heading(para_text, level=1)
-                    for run in p.runs:
-                        _set_run_font(run, h1_font, h1_font_en, h1_pt)
-                # 检测是否为二级标题行
-                elif re.match(r'^[一二三四五六七八九十\d]+[、.．]', para_text) or \
-                     re.match(r'^第[一二三四五六七八九十\d]+[节]', para_text) or \
-                     re.match(r'^\d+\.\d+\s', para_text):
-                    p = doc.add_heading(para_text, level=2)
-                    for run in p.runs:
-                        _set_run_font(run, h2_font, h2_font_en, h2_pt)
-                # 检测是否为三级标题行
-                elif re.match(r'^\d+\.\d+\.\d+\s', para_text) or \
-                     re.match(r'^（[一二三四五六七八九十\d]+）', para_text):
-                    p = doc.add_heading(para_text, level=3)
-                    for run in p.runs:
-                        _set_run_font(run, h3_font, h3_font_en, h3_pt)
-                else:
-                    p = doc.add_paragraph(para_text)
-                    p.paragraph_format.first_line_indent = Pt(24)
-                    p.paragraph_format.space_after = Pt(6)
-                    for run in p.runs:
-                        _set_run_font(run, body_font, body_font_en, body_pt)
+            # 按块添加内容（正则匹配模式，向后兼容）
+            fallback_blocks = parse_markdown_blocks(text)
+            if fallback_blocks:
+                for block in fallback_blocks:
+                    if block['type'] == 'table':
+                        _write_table_block(block)
+                        continue
+                    for para_text in str(block.get('text', '') or '').split('\n'):
+                        if not para_text.strip():
+                            continue
+                        if re.match(r'^第[一二三四五六七八九十\d]+[章]', para_text):
+                            p = doc.add_heading(para_text, level=1)
+                            for run in p.runs:
+                                _set_run_font(run, h1_font, h1_font_en, h1_pt)
+                        elif re.match(r'^[一二三四五六七八九十\d]+[、.．]', para_text) or \
+                             re.match(r'^第[一二三四五六七八九十\d]+[节]', para_text) or \
+                             re.match(r'^\d+\.\d+\s', para_text):
+                            p = doc.add_heading(para_text, level=2)
+                            for run in p.runs:
+                                _set_run_font(run, h2_font, h2_font_en, h2_pt)
+                        elif re.match(r'^\d+\.\d+\.\d+\s', para_text) or \
+                             re.match(r'^（[一二三四五六七八九十\d]+）', para_text):
+                            p = doc.add_heading(para_text, level=3)
+                            for run in p.runs:
+                                _set_run_font(run, h3_font, h3_font_en, h3_pt)
+                        else:
+                            _write_body_paragraph(para_text)
+            else:
+                paragraphs = text.split('\n')
+                for para_text in paragraphs:
+                    if not para_text.strip():
+                        continue
+                    if re.match(r'^第[一二三四五六七八九十\d]+[章]', para_text):
+                        p = doc.add_heading(para_text, level=1)
+                        for run in p.runs:
+                            _set_run_font(run, h1_font, h1_font_en, h1_pt)
+                    elif re.match(r'^[一二三四五六七八九十\d]+[、.．]', para_text) or \
+                         re.match(r'^第[一二三四五六七八九十\d]+[节]', para_text) or \
+                         re.match(r'^\d+\.\d+\s', para_text):
+                        p = doc.add_heading(para_text, level=2)
+                        for run in p.runs:
+                            _set_run_font(run, h2_font, h2_font_en, h2_pt)
+                    elif re.match(r'^\d+\.\d+\.\d+\s', para_text) or \
+                         re.match(r'^（[一二三四五六七八九十\d]+）', para_text):
+                        p = doc.add_heading(para_text, level=3)
+                        for run in p.runs:
+                            _set_run_font(run, h3_font, h3_font_en, h3_pt)
+                    else:
+                        _write_body_paragraph(para_text)
 
             doc.save(filepath)
             return True

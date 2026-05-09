@@ -19,6 +19,26 @@ except Exception:
 from modules.aux_tools import AuxTools
 from modules.app_metadata import MODULE_PAPER_WRITE
 from modules.paper_writer import PaperWriter
+from modules.table_blocks import (
+    TABLE_STYLE_GRID,
+    TABLE_STYLE_THREE_LINE,
+    blocks_from_plain_text,
+    blocks_to_plain_text,
+    clear_table_cells,
+    deep_copy_blocks,
+    delete_table_columns_with_merges,
+    delete_table_rows_with_merges,
+    expand_selection_range_for_merges,
+    insert_table_columns_with_merges,
+    insert_table_rows_with_merges,
+    merge_table_cells,
+    new_paragraph_block,
+    new_table_block,
+    normalize_merged_cells,
+    normalize_table_style,
+    sanitize_blocks,
+    unmerge_table_cells,
+)
 from pages.home_support import ensure_model_configured
 from modules.prompt_center import PromptCenter
 from modules.task_runner import TaskRunner
@@ -39,6 +59,892 @@ from modules.ui_components import (
     THEMES,
 )
 from modules.workspace_state import WorkspaceStateMixin
+
+
+class _TableBlockWidget:
+    CELL_WIDTH = 14
+    ROW_SELECTOR_WIDTH = 3
+    COL_SELECTOR_HEIGHT = 1
+
+    def __init__(self, parent, block, on_change=None, on_delete=None):
+        self.parent = parent
+        self.on_change = on_change or (lambda: None)
+        self.on_delete = on_delete or (lambda _editor: None)
+        self.block_id = str((block or {}).get('table_id', '') or os.urandom(6).hex())
+        self.has_header = bool((block or {}).get('has_header', True))
+        self.caption_var = tk.StringVar(value=str((block or {}).get('caption', '') or ''))
+        self.rows = self._normalize_rows((block or {}).get('rows', []))
+        self.merged_cells = normalize_merged_cells(
+            (block or {}).get('merged_cells', []),
+            len(self.rows),
+            len(self.rows[0]) if self.rows else 1,
+        )
+        self.table_style = normalize_table_style((block or {}).get('table_style', TABLE_STYLE_GRID))
+        self.selection_mode = 'cell'
+        self.selected_row = 0
+        self.selected_col = 0
+        self.selected_row_range = (0, 0)
+        self.selected_col_range = (0, 0)
+        self.hover_mode = ''
+        self.hover_index = None
+        self._drag_select_mode = ''
+        self._drag_anchor_index = None
+        self._cell_drag_anchor = None
+        self._floating_toolbar = None
+        self._floating_toolbar_root_bind = None
+        self._covered_cells = {}
+        self._merge_by_anchor = {}
+
+        self.frame = tk.Frame(
+            parent,
+            bg=COLORS['surface_alt'],
+            highlightbackground=COLORS['card_border'],
+            highlightthickness=1,
+        )
+        self.frame._table_block_editor = self
+
+        self._build_shell()
+        self._render_grid()
+
+    @staticmethod
+    def _normalize_rows(rows):
+        normalized = []
+        max_cols = 0
+        if not isinstance(rows, list):
+            rows = []
+        for row in rows:
+            if isinstance(row, (list, tuple)):
+                normalized_row = [str(cell or '').replace('\r', '').replace('\n', ' ').strip() for cell in row]
+            else:
+                normalized_row = [str(row or '').strip()]
+            max_cols = max(max_cols, len(normalized_row))
+            normalized.append(normalized_row)
+        if not normalized:
+            normalized = [['', ''], ['', '']]
+            return normalized
+        max_cols = max(1, max_cols)
+        for row in normalized:
+            if len(row) < max_cols:
+                row.extend([''] * (max_cols - len(row)))
+        return normalized
+
+    def _build_shell(self):
+        caption_row = tk.Frame(self.frame, bg=COLORS['surface_alt'])
+        caption_row.pack(fill=tk.X, padx=6, pady=(6, 6))
+        tk.Label(
+            caption_row,
+            text='表题',
+            font=FONTS['tiny'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['surface_alt'],
+        ).pack(side=tk.LEFT)
+        caption_entry = tk.Entry(
+            caption_row,
+            textvariable=self.caption_var,
+            font=FONTS['small'],
+            bg=COLORS['input_bg'],
+            fg=COLORS['text_main'],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=COLORS['input_border'],
+        )
+        caption_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0), ipady=2)
+        caption_entry.bind('<KeyRelease>', lambda _event: self._notify_change())
+        self.caption_entry = caption_entry
+
+        self.grid_shell = tk.Frame(self.frame, bg=COLORS['surface_alt'])
+        self.grid_shell.pack(fill=tk.X, padx=6, pady=(0, 6))
+
+    def _normalize_cell_text(self, value):
+        return str(value or '').replace('\r', '').replace('\n', ' ').strip()
+
+    def _sync_rows_from_widgets(self):
+        if not hasattr(self, '_cell_widgets'):
+            return
+        for row_idx, row_widgets in enumerate(self._cell_widgets):
+            for col_idx, widget in enumerate(row_widgets):
+                if widget is None or not widget.winfo_exists():
+                    continue
+                self.rows[row_idx][col_idx] = self._normalize_cell_text(widget.get())
+
+    def _row_count(self):
+        return len(self.rows)
+
+    def _col_count(self):
+        return max(len(row) for row in self.rows) if self.rows else 1
+
+    def _normalize_current_merges(self):
+        self.merged_cells = normalize_merged_cells(
+            self.merged_cells,
+            self._row_count(),
+            self._col_count(),
+        )
+
+    def _build_merge_maps(self):
+        self._normalize_current_merges()
+        covered = {}
+        anchors = {}
+        for cell in self.merged_cells:
+            row = cell['row']
+            col = cell['col']
+            anchors[(row, col)] = cell
+            for row_idx in range(row, row + cell['rowspan']):
+                for col_idx in range(col, col + cell['colspan']):
+                    if row_idx == row and col_idx == col:
+                        continue
+                    covered[(row_idx, col_idx)] = (row, col)
+        self._covered_cells = covered
+        self._merge_by_anchor = anchors
+
+    def _merge_for_cell(self, row_idx, col_idx):
+        anchor = self._covered_cells.get((row_idx, col_idx), (row_idx, col_idx))
+        return self._merge_by_anchor.get(anchor)
+
+    def _cell_selection_bounds(self, row_idx, col_idx):
+        merged = self._merge_for_cell(row_idx, col_idx)
+        if not merged:
+            return row_idx, row_idx, col_idx, col_idx
+        row = merged['row']
+        col = merged['col']
+        return row, row + merged['rowspan'] - 1, col, col + merged['colspan'] - 1
+
+    def _expanded_cell_range(self, anchor, target):
+        anchor_bounds = self._cell_selection_bounds(anchor[0], anchor[1])
+        target_bounds = self._cell_selection_bounds(target[0], target[1])
+        row_range = (
+            min(anchor_bounds[0], target_bounds[0]),
+            max(anchor_bounds[1], target_bounds[1]),
+        )
+        col_range = (
+            min(anchor_bounds[2], target_bounds[2]),
+            max(anchor_bounds[3], target_bounds[3]),
+        )
+        return expand_selection_range_for_merges(
+            row_range,
+            col_range,
+            self.merged_cells,
+            self._row_count(),
+            self._col_count(),
+        )
+
+    def _set_selected_cell_range(self, anchor, target):
+        if not self.rows:
+            return
+        anchor = (
+            max(0, min(int(anchor[0]), self._row_count() - 1)),
+            max(0, min(int(anchor[1]), self._col_count() - 1)),
+        )
+        target = (
+            max(0, min(int(target[0]), self._row_count() - 1)),
+            max(0, min(int(target[1]), self._col_count() - 1)),
+        )
+        row_range, col_range = self._expanded_cell_range(anchor, target)
+        self.selection_mode = 'cell'
+        self.selected_row = row_range[0]
+        self.selected_col = col_range[0]
+        self.selected_row_range = row_range
+        self.selected_col_range = col_range
+        self._refresh_selection_style()
+
+    def _selection_has_merge(self):
+        row_range, col_range = self._current_content_range()
+        for merged in self.merged_cells:
+            row_start = merged['row']
+            row_end = row_start + merged['rowspan'] - 1
+            col_start = merged['col']
+            col_end = col_start + merged['colspan'] - 1
+            if row_start <= row_range[1] and row_range[0] <= row_end and col_start <= col_range[1] and col_range[0] <= col_end:
+                return True
+        return False
+
+    def _current_content_range(self):
+        if self.selection_mode == 'table':
+            return (0, max(self._row_count() - 1, 0)), (0, max(self._col_count() - 1, 0))
+        if self.selection_mode == 'row':
+            return self._current_row_range(), (0, max(self._col_count() - 1, 0))
+        if self.selection_mode == 'column':
+            return (0, max(self._row_count() - 1, 0)), self._current_col_range()
+        return self._current_row_range(), self._current_col_range()
+
+    def _data_grid_row(self, row_idx):
+        if self.table_style == TABLE_STYLE_THREE_LINE:
+            return row_idx * 2 + 2
+        return row_idx + 1
+
+    def _data_rowspan(self, rowspan):
+        if self.table_style == TABLE_STYLE_THREE_LINE:
+            return max(1, int(rowspan) * 2 - 1)
+        return max(1, int(rowspan))
+
+    def _normalize_range(self, start, end, limit):
+        if limit <= 0:
+            return 0, 0
+        try:
+            start = int(start)
+        except Exception:
+            start = 0
+        try:
+            end = int(end)
+        except Exception:
+            end = start
+        if start > end:
+            start, end = end, start
+        return max(0, min(start, limit - 1)), max(0, min(end, limit - 1))
+
+    def _current_row_range(self):
+        if self.selection_mode == 'table':
+            return 0, max(self._row_count() - 1, 0)
+        if self.selection_mode == 'row':
+            return self._normalize_range(self.selected_row_range[0], self.selected_row_range[1], self._row_count())
+        return self._normalize_range(self.selected_row_range[0], self.selected_row_range[1], self._row_count())
+
+    def _current_col_range(self):
+        if self.selection_mode == 'table':
+            return 0, max(self._col_count() - 1, 0)
+        if self.selection_mode == 'column':
+            return self._normalize_range(self.selected_col_range[0], self.selected_col_range[1], self._col_count())
+        return self._normalize_range(self.selected_col_range[0], self.selected_col_range[1], self._col_count())
+
+    def _selected_row_count(self):
+        start, end = self._current_row_range()
+        return max(1, end - start + 1)
+
+    def _selected_col_count(self):
+        start, end = self._current_col_range()
+        return max(1, end - start + 1)
+
+    def _set_selected_cell(self, row_idx, col_idx):
+        if not self.rows:
+            self.selected_row = 0
+            self.selected_col = 0
+            return
+        row = max(0, min(int(row_idx), len(self.rows) - 1))
+        col = max(0, min(int(col_idx), len(self.rows[0]) - 1))
+        self._set_selected_cell_range((row, col), (row, col))
+        self._destroy_floating_toolbar()
+
+    def _set_selected_row(self, row_idx, end_idx=None, show_toolbar=True):
+        self.selection_mode = 'row'
+        start, end = self._normalize_range(row_idx, row_idx if end_idx is None else end_idx, self._row_count())
+        self.selected_row_range = (start, end)
+        self.selected_row = start
+        self.selected_col = max(0, min(self.selected_col, self._col_count() - 1))
+        self._refresh_selection_style()
+        if show_toolbar:
+            self._show_floating_toolbar()
+
+    def _set_selected_column(self, col_idx, end_idx=None, show_toolbar=True):
+        self.selection_mode = 'column'
+        start, end = self._normalize_range(col_idx, col_idx if end_idx is None else end_idx, self._col_count())
+        self.selected_col_range = (start, end)
+        self.selected_col = start
+        self.selected_row = max(0, min(self.selected_row, self._row_count() - 1))
+        self._refresh_selection_style()
+        if show_toolbar:
+            self._show_floating_toolbar()
+
+    def _set_selected_table(self, show_toolbar=True):
+        self.selection_mode = 'table'
+        self.selected_row_range = (0, max(self._row_count() - 1, 0))
+        self.selected_col_range = (0, max(self._col_count() - 1, 0))
+        self.selected_row = 0
+        self.selected_col = 0
+        self._refresh_selection_style()
+        if show_toolbar:
+            self._show_floating_toolbar()
+
+    def _set_hover(self, mode, index=None):
+        self.hover_mode = mode
+        self.hover_index = index
+        self._refresh_selection_style()
+
+    def _clear_hover(self, mode=None, index=None):
+        if mode is not None and self.hover_mode != mode:
+            return
+        if index is not None and self.hover_index != index:
+            return
+        self.hover_mode = ''
+        self.hover_index = None
+        self._refresh_selection_style()
+
+    def _is_cell_selected(self, row_idx, col_idx):
+        row_start, row_end, col_start, col_end = self._cell_selection_bounds(row_idx, col_idx)
+        if self.selection_mode == 'table':
+            return True
+        if self.selection_mode == 'row':
+            selected_start, selected_end = self.selected_row_range
+            return row_start <= selected_end and selected_start <= row_end
+        if self.selection_mode == 'column':
+            selected_start, selected_end = self.selected_col_range
+            return col_start <= selected_end and selected_start <= col_end
+        selected_row_start, selected_row_end = self.selected_row_range
+        selected_col_start, selected_col_end = self.selected_col_range
+        return (
+            row_start <= selected_row_end
+            and selected_row_start <= row_end
+            and col_start <= selected_col_end
+            and selected_col_start <= col_end
+        )
+
+    def _refresh_selection_style(self):
+        for row_idx, row_widgets in enumerate(getattr(self, '_cell_widgets', [])):
+            for col_idx, widget in enumerate(row_widgets):
+                if widget is None or not widget.winfo_exists():
+                    continue
+                selected = self._is_cell_selected(row_idx, col_idx)
+                is_header = self.has_header and row_idx == 0
+                if selected:
+                    bg = COLORS['accent_light']
+                elif self.hover_mode == 'row' and self.hover_index == row_idx:
+                    bg = COLORS['surface_alt']
+                elif self.hover_mode == 'column' and self.hover_index == col_idx:
+                    bg = COLORS['surface_alt']
+                elif is_header:
+                    bg = COLORS['surface_alt']
+                else:
+                    bg = COLORS['input_bg']
+                widget.configure(bg=bg)
+
+        for row_idx, selector in enumerate(getattr(self, '_row_selectors', [])):
+            selected = self.selection_mode in {'row', 'table'} and self.selected_row_range[0] <= row_idx <= self.selected_row_range[1]
+            hovered = self.hover_mode == 'row' and self.hover_index == row_idx
+            selector.configure(
+                bg=COLORS['accent_light'] if selected or hovered else COLORS['card_bg'],
+                fg=COLORS['accent'] if selected or hovered else COLORS['text_sub'],
+            )
+
+        for col_idx, selector in enumerate(getattr(self, '_col_selectors', [])):
+            selected = self.selection_mode in {'column', 'table'} and self.selected_col_range[0] <= col_idx <= self.selected_col_range[1]
+            hovered = self.hover_mode == 'column' and self.hover_index == col_idx
+            selector.configure(
+                bg=COLORS['accent_light'] if selected or hovered else COLORS['card_bg'],
+                fg=COLORS['accent'] if selected or hovered else COLORS['text_sub'],
+            )
+
+        selector = getattr(self, '_table_selector', None)
+        if selector is not None and selector.winfo_exists():
+            active = self.selection_mode == 'table' or self.hover_mode == 'table'
+            selector.configure(
+                bg=COLORS['accent_light'] if active else COLORS['card_bg'],
+                fg=COLORS['accent'] if active else COLORS['text_sub'],
+            )
+
+    def _render_grid(self):
+        self._destroy_floating_toolbar()
+        for child in self.grid_shell.winfo_children():
+            child.destroy()
+
+        self._cell_widgets = []
+        self._row_selectors = []
+        self._col_selectors = []
+        self._covered_cells = {}
+        self._merge_by_anchor = {}
+        row_count = len(self.rows)
+        col_count = max(len(row) for row in self.rows) if self.rows else 0
+
+        if row_count <= 0 or col_count <= 0:
+            self.rows = [['', ''], ['', '']]
+            row_count = len(self.rows)
+            col_count = len(self.rows[0])
+        self._build_merge_maps()
+        three_line = self.table_style == TABLE_STYLE_THREE_LINE
+
+        self._table_selector = tk.Label(
+            self.grid_shell,
+            text='↘',
+            width=self.ROW_SELECTOR_WIDTH,
+            height=self.COL_SELECTOR_HEIGHT,
+            font=FONTS['small'],
+            bg=COLORS['card_bg'],
+            fg=COLORS['text_sub'],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=COLORS['input_border'],
+            cursor='hand2',
+        )
+        self._table_selector.grid(row=0, column=0, sticky='nsew', padx=1, pady=1)
+        self._table_selector.bind('<Enter>', lambda _event: self._set_hover('table'))
+        self._table_selector.bind('<Leave>', lambda _event: self._clear_hover('table'))
+        self._table_selector.bind('<Button-1>', self._on_table_selector_press)
+        self._table_selector.bind('<Button-3>', self._on_table_context)
+
+        for col_idx in range(col_count):
+            selector = tk.Label(
+                self.grid_shell,
+                text='▼',
+                height=self.COL_SELECTOR_HEIGHT,
+                font=FONTS['small'],
+                bg=COLORS['card_bg'],
+                fg=COLORS['text_sub'],
+                relief=tk.FLAT,
+                highlightthickness=1,
+                highlightbackground=COLORS['input_border'],
+                cursor='hand2',
+            )
+            selector.grid(row=0, column=col_idx + 1, sticky='nsew', padx=1, pady=1)
+            selector.bind('<Enter>', lambda _event, c=col_idx: self._set_hover('column', c))
+            selector.bind('<Leave>', lambda _event, c=col_idx: self._clear_hover('column', c))
+            selector.bind('<Button-1>', lambda event, c=col_idx: self._on_column_selector_press(c, event))
+            selector.bind('<B1-Motion>', self._on_column_selector_drag)
+            selector.bind('<ButtonRelease-1>', self._on_selector_release)
+            selector.bind('<Button-3>', lambda event, c=col_idx: self._on_column_selector_context(c, event))
+            self._col_selectors.append(selector)
+
+        if three_line:
+            line_rows = {1: 2, self._data_grid_row(row_count - 1) + 1: 2}
+            if self.has_header and row_count > 1:
+                line_rows[self._data_grid_row(0) + 1] = 1
+            for line_row, height in sorted(line_rows.items()):
+                line = tk.Frame(self.grid_shell, bg=COLORS['text_main'], height=height)
+                line.grid(row=line_row, column=1, columnspan=col_count, sticky='ew', padx=1, pady=0)
+
+        for row_idx, row in enumerate(self.rows):
+            selector = tk.Label(
+                self.grid_shell,
+                text='▶',
+                width=self.ROW_SELECTOR_WIDTH,
+                font=FONTS['small'],
+                bg=COLORS['card_bg'],
+                fg=COLORS['text_sub'],
+                relief=tk.FLAT,
+                highlightthickness=1,
+                highlightbackground=COLORS['input_border'],
+                cursor='hand2',
+            )
+            selector.grid(row=self._data_grid_row(row_idx), column=0, sticky='nsew', padx=1, pady=1)
+            selector.bind('<Enter>', lambda _event, r=row_idx: self._set_hover('row', r))
+            selector.bind('<Leave>', lambda _event, r=row_idx: self._clear_hover('row', r))
+            selector.bind('<Button-1>', lambda event, r=row_idx: self._on_row_selector_press(r, event))
+            selector.bind('<B1-Motion>', self._on_row_selector_drag)
+            selector.bind('<ButtonRelease-1>', self._on_selector_release)
+            selector.bind('<Button-3>', lambda event, r=row_idx: self._on_row_selector_context(r, event))
+            self._row_selectors.append(selector)
+
+            row_widgets = [None] * col_count
+            for col_idx in range(col_count):
+                if (row_idx, col_idx) in self._covered_cells:
+                    continue
+                merged = self._merge_by_anchor.get((row_idx, col_idx))
+                rowspan = int(merged.get('rowspan', 1)) if merged else 1
+                colspan = int(merged.get('colspan', 1)) if merged else 1
+                cell_value = row[col_idx] if col_idx < len(row) else ''
+                cell = tk.Entry(
+                    self.grid_shell,
+                    font=FONTS['small'],
+                    width=self.CELL_WIDTH,
+                    bg=COLORS['surface_alt'] if self.has_header and row_idx == 0 else COLORS['input_bg'],
+                    fg=COLORS['text_main'],
+                    relief=tk.FLAT,
+                    highlightthickness=0 if three_line else 1,
+                    highlightbackground=COLORS['surface_alt'] if three_line else COLORS['input_border'],
+                    insertbackground=COLORS['text_main'],
+                )
+                cell.grid(
+                    row=self._data_grid_row(row_idx),
+                    column=col_idx + 1,
+                    rowspan=self._data_rowspan(rowspan),
+                    columnspan=colspan,
+                    sticky='nsew',
+                    padx=0 if three_line else 1,
+                    pady=0 if three_line else 1,
+                    ipadx=1,
+                    ipady=2,
+                )
+                cell.insert(0, cell_value)
+                if self.has_header and row_idx == 0:
+                    cell.configure(font=FONTS['body_bold'])
+                cell.bind('<FocusIn>', lambda _event, r=row_idx, c=col_idx: self._on_cell_focus(r, c))
+                cell.bind('<Button-1>', lambda event, r=row_idx, c=col_idx: self._on_cell_press(r, c, event))
+                cell.bind('<B1-Motion>', self._on_cell_drag)
+                cell.bind('<ButtonRelease-1>', self._on_cell_release)
+                cell.bind('<Button-3>', lambda event, r=row_idx, c=col_idx: self._on_cell_context(r, c, event))
+                cell.bind('<KeyRelease>', lambda _event: self._on_cell_changed())
+                row_widgets[col_idx] = cell
+            self._cell_widgets.append(row_widgets)
+
+        self.grid_shell.grid_columnconfigure(0, weight=0, minsize=24)
+        for col_idx in range(col_count):
+            self.grid_shell.grid_columnconfigure(col_idx + 1, weight=1, uniform='paper_table_col')
+        self.grid_shell.grid_rowconfigure(0, weight=0, minsize=20)
+        for row_idx in range(row_count):
+            self.grid_shell.grid_rowconfigure(self._data_grid_row(row_idx), weight=1)
+
+        self._refresh_selection_style()
+
+    def _index_from_root_position(self, widgets, axis, root_value):
+        for index, widget in enumerate(widgets):
+            if not widget.winfo_exists():
+                continue
+            start = widget.winfo_rooty() if axis == 'y' else widget.winfo_rootx()
+            size = widget.winfo_height() if axis == 'y' else widget.winfo_width()
+            if start <= root_value <= start + max(size, 1):
+                return index
+        if not widgets:
+            return None
+        first_start = widgets[0].winfo_rooty() if axis == 'y' else widgets[0].winfo_rootx()
+        return 0 if root_value < first_start else len(widgets) - 1
+
+    def _cell_from_root_position(self, x_root, y_root):
+        candidate = None
+        for row_idx, row_widgets in enumerate(getattr(self, '_cell_widgets', [])):
+            for col_idx, widget in enumerate(row_widgets):
+                if widget is None or not widget.winfo_exists():
+                    continue
+                x_start = widget.winfo_rootx()
+                y_start = widget.winfo_rooty()
+                x_end = x_start + max(widget.winfo_width(), 1)
+                y_end = y_start + max(widget.winfo_height(), 1)
+                if x_start <= x_root <= x_end and y_start <= y_root <= y_end:
+                    return row_idx, col_idx
+                if x_root >= x_start and y_root >= y_start:
+                    candidate = (row_idx, col_idx)
+        if candidate is not None:
+            return candidate
+        if self.rows:
+            return 0, 0
+        return None
+
+    def _on_table_selector_press(self, event=None):
+        self._set_selected_table(show_toolbar=True)
+        return 'break'
+
+    def _on_row_selector_press(self, row_idx, event=None):
+        self._drag_select_mode = 'row'
+        self._drag_anchor_index = row_idx
+        self._set_selected_row(row_idx, show_toolbar=False)
+        return 'break'
+
+    def _on_column_selector_press(self, col_idx, event=None):
+        self._drag_select_mode = 'column'
+        self._drag_anchor_index = col_idx
+        self._set_selected_column(col_idx, show_toolbar=False)
+        return 'break'
+
+    def _on_row_selector_drag(self, event=None):
+        if self._drag_select_mode != 'row' or self._drag_anchor_index is None:
+            return 'break'
+        target = self._index_from_root_position(self._row_selectors, 'y', getattr(event, 'y_root', 0))
+        if target is not None:
+            self._set_selected_row(self._drag_anchor_index, target, show_toolbar=False)
+        return 'break'
+
+    def _on_column_selector_drag(self, event=None):
+        if self._drag_select_mode != 'column' or self._drag_anchor_index is None:
+            return 'break'
+        target = self._index_from_root_position(self._col_selectors, 'x', getattr(event, 'x_root', 0))
+        if target is not None:
+            self._set_selected_column(self._drag_anchor_index, target, show_toolbar=False)
+        return 'break'
+
+    def _on_selector_release(self, event=None):
+        self._drag_select_mode = ''
+        self._drag_anchor_index = None
+        self._cell_drag_anchor = None
+        return 'break'
+
+    def _on_cell_press(self, row_idx, col_idx, event=None):
+        self._drag_select_mode = 'cell'
+        if getattr(event, 'state', 0) & 0x0001:
+            anchor = (self.selected_row, self.selected_col)
+            self._cell_drag_anchor = anchor
+            self._set_selected_cell_range(anchor, (row_idx, col_idx))
+        else:
+            self._cell_drag_anchor = (row_idx, col_idx)
+            self._set_selected_cell(row_idx, col_idx)
+        try:
+            widget = getattr(event, 'widget', None)
+            if widget is not None and widget.winfo_exists():
+                widget.focus_set()
+        except Exception:
+            pass
+        return None
+
+    def _on_cell_focus(self, row_idx, col_idx):
+        if self._drag_select_mode == 'cell':
+            return
+        self._set_selected_cell(row_idx, col_idx)
+
+    def _on_cell_drag(self, event=None):
+        if self._drag_select_mode != 'cell' or self._cell_drag_anchor is None:
+            return None
+        target = self._cell_from_root_position(
+            getattr(event, 'x_root', 0),
+            getattr(event, 'y_root', 0),
+        )
+        if target is not None:
+            self._set_selected_cell_range(self._cell_drag_anchor, target)
+        return 'break'
+
+    def _on_cell_release(self, event=None):
+        if self._drag_select_mode == 'cell':
+            self._drag_select_mode = ''
+            self._cell_drag_anchor = None
+        return None
+
+    def _on_cell_context(self, row_idx, col_idx, event=None):
+        row_range, col_range = self._current_content_range()
+        if not (row_range[0] <= row_idx <= row_range[1] and col_range[0] <= col_idx <= col_range[1]):
+            self._set_selected_cell(row_idx, col_idx)
+        return self._show_context_menu(event)
+
+    def _on_row_selector_context(self, row_idx, event=None):
+        self._set_selected_row(row_idx, show_toolbar=True)
+        return self._show_context_menu(event)
+
+    def _on_column_selector_context(self, col_idx, event=None):
+        self._set_selected_column(col_idx, show_toolbar=True)
+        return self._show_context_menu(event)
+
+    def _on_table_context(self, event=None):
+        self._set_selected_table(show_toolbar=True)
+        return self._show_context_menu(event)
+
+    def _show_context_menu(self, event=None):
+        menu = tk.Menu(self.frame, tearoff=0)
+        menu.add_command(label='上方插入行', command=lambda: self.insert_row(after=False))
+        menu.add_command(label='下方插入行', command=lambda: self.insert_row(after=True))
+        menu.add_command(label='左侧插入列', command=lambda: self.insert_column(after=False))
+        menu.add_command(label='右侧插入列', command=lambda: self.insert_column(after=True))
+        menu.add_separator()
+        row_range, col_range = self._current_content_range()
+        can_merge = (row_range[1] - row_range[0] + 1) * (col_range[1] - col_range[0] + 1) > 1
+        menu.add_command(
+            label='合并单元格',
+            command=self.merge_selection,
+            state=tk.NORMAL if can_merge else tk.DISABLED,
+        )
+        menu.add_command(
+            label='取消合并单元格',
+            command=self.unmerge_selection,
+            state=tk.NORMAL if self._selection_has_merge() else tk.DISABLED,
+        )
+        style_label = '切换为普通表格' if self.table_style == TABLE_STYLE_THREE_LINE else '切换为三线表'
+        menu.add_command(label=style_label, command=self.toggle_three_line_table)
+        menu.add_separator()
+        menu.add_command(label='删除所选行', command=self.delete_row)
+        menu.add_command(label='删除所选列', command=self.delete_column)
+        menu.add_command(label='清空所选内容', command=self.clear_selection)
+        menu.add_separator()
+        menu.add_command(label='删除整表', command=self.delete_table)
+        try:
+            menu.tk_popup(getattr(event, 'x_root', 0), getattr(event, 'y_root', 0))
+        finally:
+            menu.grab_release()
+        return 'break'
+
+    def _destroy_floating_toolbar(self):
+        bind_id = getattr(self, '_floating_toolbar_root_bind', None)
+        if bind_id:
+            try:
+                self.frame.winfo_toplevel().unbind('<Button-1>', bind_id)
+            except Exception:
+                pass
+        self._floating_toolbar_root_bind = None
+        toolbar = getattr(self, '_floating_toolbar', None)
+        if toolbar is not None and toolbar.winfo_exists():
+            try:
+                toolbar.destroy()
+            except tk.TclError:
+                pass
+        self._floating_toolbar = None
+
+    def _show_floating_toolbar(self):
+        self._destroy_floating_toolbar()
+
+    def _apply_rows_update(self, rows, *, merged_cells=None, mode=None, row_range=None, col_range=None, show_toolbar=True):
+        self.rows = self._normalize_rows(rows)
+        if merged_cells is not None:
+            self.merged_cells = normalize_merged_cells(merged_cells, self._row_count(), self._col_count())
+        else:
+            self._normalize_current_merges()
+        if mode == 'row' and row_range is not None:
+            self.selection_mode = 'row'
+            self.selected_row_range = self._normalize_range(row_range[0], row_range[1], self._row_count())
+            self.selected_row = self.selected_row_range[0]
+        elif mode == 'column' and col_range is not None:
+            self.selection_mode = 'column'
+            self.selected_col_range = self._normalize_range(col_range[0], col_range[1], self._col_count())
+            self.selected_col = self.selected_col_range[0]
+        elif mode == 'table':
+            self.selection_mode = 'table'
+            self.selected_row_range = (0, max(self._row_count() - 1, 0))
+            self.selected_col_range = (0, max(self._col_count() - 1, 0))
+        else:
+            self.selection_mode = 'cell'
+            self.selected_row = max(0, min(self.selected_row, self._row_count() - 1))
+            self.selected_col = max(0, min(self.selected_col, self._col_count() - 1))
+            self.selected_row_range = (self.selected_row, self.selected_row)
+            self.selected_col_range = (self.selected_col, self.selected_col)
+        self._render_grid()
+        self._notify_change()
+
+    def _on_cell_changed(self):
+        self._sync_rows_from_widgets()
+        self._notify_change()
+
+    def _notify_change(self):
+        self.on_change()
+
+    def serialize(self):
+        self._sync_rows_from_widgets()
+        return new_table_block(
+            self.rows,
+            table_id=self.block_id,
+            caption=self.caption_var.get().strip(),
+            has_header=self.has_header,
+            merged_cells=self.merged_cells,
+            table_style=self.table_style,
+        )
+
+    def set_data(self, block):
+        sanitized = sanitize_blocks([block])
+        if sanitized and sanitized[0].get('type') == 'table':
+            table_block = sanitized[0]
+            self.block_id = str(table_block.get('table_id', self.block_id) or self.block_id)
+            self.has_header = bool(table_block.get('has_header', True))
+            self.caption_var.set(str(table_block.get('caption', '') or ''))
+            self.rows = self._normalize_rows(table_block.get('rows', []))
+            self.merged_cells = normalize_merged_cells(
+                table_block.get('merged_cells', []),
+                len(self.rows),
+                len(self.rows[0]) if self.rows else 1,
+            )
+            self.table_style = normalize_table_style(table_block.get('table_style', TABLE_STYLE_GRID))
+            self.selection_mode = 'cell'
+            self.selected_row = 0
+            self.selected_col = 0
+            self.selected_row_range = (0, 0)
+            self.selected_col_range = (0, 0)
+            self._render_grid()
+
+    def insert_row(self, after=True):
+        self._sync_rows_from_widgets()
+        start, end = self._current_row_range()
+        count = self._selected_row_count() if self.selection_mode in {'row', 'table'} else 1
+        anchor = end if after else start
+        updated, merged = insert_table_rows_with_merges(
+            self.rows,
+            self.merged_cells,
+            anchor,
+            count=count,
+            after=after,
+        )
+        inserted_start = anchor + (1 if after else 0)
+        inserted_end = inserted_start + count - 1
+        self._apply_rows_update(updated, merged_cells=merged, mode='row', row_range=(inserted_start, inserted_end))
+
+    def delete_row(self):
+        self._sync_rows_from_widgets()
+        start, end = self._current_row_range()
+        updated, merged = delete_table_rows_with_merges(self.rows, self.merged_cells, start, end)
+        next_row = min(start, len(updated) - 1)
+        self._apply_rows_update(updated, merged_cells=merged, mode='row', row_range=(next_row, next_row))
+
+    def insert_column(self, after=True):
+        self._sync_rows_from_widgets()
+        start, end = self._current_col_range()
+        count = self._selected_col_count() if self.selection_mode in {'column', 'table'} else 1
+        anchor = end if after else start
+        updated, merged = insert_table_columns_with_merges(
+            self.rows,
+            self.merged_cells,
+            anchor,
+            count=count,
+            after=after,
+        )
+        inserted_start = anchor + (1 if after else 0)
+        inserted_end = inserted_start + count - 1
+        self._apply_rows_update(updated, merged_cells=merged, mode='column', col_range=(inserted_start, inserted_end))
+
+    def delete_column(self):
+        self._sync_rows_from_widgets()
+        start, end = self._current_col_range()
+        updated, merged = delete_table_columns_with_merges(self.rows, self.merged_cells, start, end)
+        next_col = min(start, len(updated[0]) - 1)
+        self._apply_rows_update(updated, merged_cells=merged, mode='column', col_range=(next_col, next_col))
+
+    def delete_selection(self):
+        if self.selection_mode == 'column':
+            self.delete_column()
+            return
+        if self.selection_mode in {'row', 'table'}:
+            self.delete_row()
+            return
+        self.clear_selection()
+
+    def clear_selection(self):
+        self._sync_rows_from_widgets()
+        row_range = self._current_row_range()
+        col_range = self._current_col_range()
+        updated = clear_table_cells(
+            self.rows,
+            mode=self.selection_mode,
+            row_range=row_range,
+            col_range=col_range,
+        )
+        self._apply_rows_update(
+            updated,
+            mode=self.selection_mode if self.selection_mode in {'row', 'column', 'table'} else None,
+            row_range=row_range,
+            col_range=col_range,
+        )
+
+    def merge_selection(self):
+        self._sync_rows_from_widgets()
+        row_range, col_range = self._current_content_range()
+        if (row_range[1] - row_range[0] + 1) * (col_range[1] - col_range[0] + 1) <= 1:
+            return
+        updated, merged = merge_table_cells(self.rows, self.merged_cells, row_range, col_range)
+        self._apply_rows_update(
+            updated,
+            merged_cells=merged,
+            mode=None,
+            row_range=row_range,
+            col_range=col_range,
+        )
+        self.selection_mode = 'cell'
+        self.selected_row = row_range[0]
+        self.selected_col = col_range[0]
+        self.selected_row_range = row_range
+        self.selected_col_range = col_range
+        self._refresh_selection_style()
+
+    def unmerge_selection(self):
+        self._sync_rows_from_widgets()
+        row_range, col_range = self._current_content_range()
+        updated, merged = unmerge_table_cells(self.rows, self.merged_cells, row_range, col_range)
+        self._apply_rows_update(
+            updated,
+            merged_cells=merged,
+            mode=None,
+            row_range=row_range,
+            col_range=col_range,
+        )
+        self.selection_mode = 'cell'
+        self.selected_row = row_range[0]
+        self.selected_col = col_range[0]
+        self.selected_row_range = row_range
+        self.selected_col_range = col_range
+        self._refresh_selection_style()
+
+    def toggle_three_line_table(self):
+        self._sync_rows_from_widgets()
+        self.table_style = (
+            TABLE_STYLE_GRID
+            if self.table_style == TABLE_STYLE_THREE_LINE
+            else TABLE_STYLE_THREE_LINE
+        )
+        self._render_grid()
+        self._notify_change()
+
+    def delete_table(self):
+        self._destroy_floating_toolbar()
+        self.on_delete(self)
+
+    def destroy(self):
+        self._destroy_floating_toolbar()
+        if self.frame.winfo_exists():
+            self.frame.destroy()
 
 
 class PaperWritePage(WorkspaceStateMixin):
@@ -105,6 +1011,7 @@ class PaperWritePage(WorkspaceStateMixin):
         '字体格式': '字',
         '字色': '色',
         '底色': '底',
+        '表格': '表',
         '加粗': 'B',
         '斜体': 'I',
         '下划线': 'U',
@@ -191,6 +1098,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self.task_runner = TaskRunner(self.frame, loading=self.loading, set_status=self.set_status)
         self._snapshots = []
         self._sections = {}   # {章节标题: 内容}
+        self._section_blocks = {}  # {章节标题: [段落块/表格块]}
         self._section_formats = {}  # {章节标题: [{'tag': 'fmt_*', 'start': '1.0', 'end': '1.4'}]}
         self._section_order = []  # 章节顺序
         self._section_levels = {}  # {章节标题: 层级}
@@ -223,6 +1131,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self._editor_popup_root_click_bind = None
         self._editor_format_fonts = {}
         self._editor_font_render_tags = {}
+        self._editor_block_widgets = []
         self._outline_level_fonts = {}
         self._stats_layout_job = None
         self._pending_stats_width = None
@@ -267,14 +1176,20 @@ class PaperWritePage(WorkspaceStateMixin):
 
     def export_workspace_state(self):
         current_section = self.section_entry.get().strip()
-        editor_text = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        editor_blocks = self._get_current_editor_blocks()
+        editor_text = blocks_to_plain_text(editor_blocks)
         sections = dict(self._sections)
+        section_blocks = self._copy_section_blocks_map()
         section_formats = self._copy_section_format_map()
         section_order = list(self._section_order)
         section_levels = dict(self._section_levels)
         editor_section_source = self._editor_section_source or current_section
         if editor_section_source:
             sections[editor_section_source] = editor_text
+            if editor_blocks:
+                section_blocks[editor_section_source] = deep_copy_blocks(editor_blocks)
+            else:
+                section_blocks.pop(editor_section_source, None)
             section_formats[editor_section_source] = self._serialize_editor_format_spans()
             if editor_section_source not in section_order:
                 section_order.append(editor_section_source)
@@ -282,6 +1197,11 @@ class PaperWritePage(WorkspaceStateMixin):
                 editor_section_source,
                 self._infer_outline_level(editor_section_source),
             )
+        section_blocks = {
+            title: deep_copy_blocks(blocks)
+            for title, blocks in section_blocks.items()
+            if title in sections and blocks
+        }
 
         selected_section = ''
         if hasattr(self, '_outline_selected') and self._outline_selected is not None:
@@ -294,6 +1214,7 @@ class PaperWritePage(WorkspaceStateMixin):
             'reference_style': self.ref_var.get(),
             'outline_text': self.outline_text.get('1.0', tk.END).strip(),
             'sections': sections,
+            'section_blocks': section_blocks,
             'section_formats': section_formats,
             'section_order': section_order,
             'section_levels': section_levels,
@@ -330,6 +1251,11 @@ class PaperWritePage(WorkspaceStateMixin):
 
         sections = state.get('sections', {})
         self._sections = dict(sections) if isinstance(sections, dict) else {}
+        raw_section_blocks = state.get('section_blocks', {})
+        self._section_blocks = self._normalize_section_blocks_map(raw_section_blocks, sections=self._sections)
+        fallback_blocks = self._build_section_blocks_from_sections(self._sections)
+        for title, blocks in fallback_blocks.items():
+            self._section_blocks.setdefault(title, blocks)
         order = state.get('section_order', [])
         self._section_order = [item for item in order if item in self._sections] if isinstance(order, list) else []
         if not self._section_order:
@@ -389,7 +1315,10 @@ class PaperWritePage(WorkspaceStateMixin):
 
         editor_text = self._normalize_section_body(state.get('editor_text', ''))
         editor_formats = self._section_formats.get(self._editor_section_source, [])
-        self._set_editor_content(editor_text, editor_formats, reset_undo=True)
+        editor_blocks = self._get_section_blocks(self._editor_section_source)
+        if not editor_blocks:
+            editor_blocks = self._blocks_from_section_text(editor_text)
+        self._set_editor_content(editor_text, editor_formats, reset_undo=True, blocks=editor_blocks)
         self._update_background_color_button()
 
         try:
@@ -716,6 +1645,18 @@ class PaperWritePage(WorkspaceStateMixin):
             values=['500', '800', '1000', '1500', '2000', '3000', '5000'],
             state='readonly', style='Modern.TCombobox', width=6,
         ).pack(side=tk.LEFT, padx=(6, 12))
+
+        self._write_table_button_shell, self._write_table_button = create_home_shell_button(
+            top_row,
+            '生成表格',
+            command=self._generate_table_block,
+            style='secondary',
+            padx=12,
+            pady=6,
+            font=FONTS['body'],
+            border_color=THEMES['light']['card_border'],
+        )
+        self._write_table_button_shell.pack(side=tk.LEFT, padx=(0, 8))
 
         self._write_section_button_shell, self._write_section_button = create_home_shell_button(
             top_row,
@@ -1121,15 +2062,146 @@ class PaperWritePage(WorkspaceStateMixin):
             )
         return cleaned
 
-    def _clear_editor_format_tags(self):
-        for tag in self._format_tag_names():
-            self.edit_text.tag_remove(tag, '1.0', tk.END)
-        self._clear_editor_font_render_tags()
+    def _clear_editor_block_widgets(self):
+        for editor in getattr(self, '_editor_block_widgets', []):
+            try:
+                editor.destroy()
+            except Exception:
+                pass
+        self._editor_block_widgets = []
 
-    def _set_editor_content(self, content, format_spans=None, reset_undo=False):
+    def _normalize_section_blocks(self, blocks):
+        return sanitize_blocks(blocks)
+
+    def _blocks_from_section_text(self, text):
+        blocks = blocks_from_plain_text(text)
+        if blocks:
+            return deep_copy_blocks(blocks)
+        if str(text or '').strip():
+            return [new_paragraph_block(text)]
+        return []
+
+    def _copy_section_blocks_map(self):
+        return {
+            title: deep_copy_blocks(blocks)
+            for title, blocks in getattr(self, '_section_blocks', {}).items()
+            if isinstance(title, str)
+        }
+
+    def _normalize_section_blocks_map(self, blocks_map, sections=None, aliases=None):
+        if not isinstance(blocks_map, dict):
+            return {}
+
+        target_sections = sections if isinstance(sections, dict) else self._sections
+        valid_titles = set(target_sections.keys()) if isinstance(target_sections, dict) else set()
+        aliases = aliases if isinstance(aliases, dict) else {}
+        normalized = {}
+
+        for raw_title, raw_blocks in blocks_map.items():
+            title = str(raw_title or '').strip()
+            if not title:
+                continue
+            resolved_title = title
+            if resolved_title not in valid_titles:
+                resolved_title = aliases.get(title, title)
+            if valid_titles and resolved_title not in valid_titles:
+                continue
+            blocks = self._normalize_section_blocks(raw_blocks)
+            if blocks:
+                normalized[resolved_title] = deep_copy_blocks(blocks)
+        return normalized
+
+    def _build_section_blocks_from_sections(self, sections=None):
+        source_sections = sections if isinstance(sections, dict) else self._sections
+        blocks_map = {}
+        for title, text in source_sections.items():
+            blocks = self._blocks_from_section_text(text)
+            if blocks:
+                blocks_map[title] = blocks
+        return blocks_map
+
+    def _get_section_blocks(self, title):
+        section = (title or '').strip()
+        if not section:
+            return []
+        blocks = self._section_blocks.get(section)
+        if blocks:
+            return deep_copy_blocks(blocks)
+        text = self._sections.get(section, '')
+        return self._blocks_from_section_text(text)
+
+    def _get_current_editor_blocks(self):
+        return self._capture_editor_blocks()
+
+    def _get_current_editor_text(self):
+        return blocks_to_plain_text(self._get_current_editor_blocks())
+
+    def _capture_editor_blocks(self):
+        if not getattr(self, 'edit_text', None):
+            return []
+
+        try:
+            dump_items = self.edit_text.dump('1.0', 'end-1c', text=True, window=True)
+        except Exception:
+            dump_items = []
+
+        blocks = []
+        text_buffer = []
+
+        def flush_text_buffer():
+            if not text_buffer:
+                return
+            text_value = ''.join(text_buffer)
+            text_buffer.clear()
+            for block in blocks_from_plain_text(text_value):
+                blocks.append(block)
+
+        for item in dump_items:
+            if not isinstance(item, (list, tuple)) or len(item) < 3:
+                continue
+            kind, value = item[0], item[1]
+            if kind == 'text':
+                text_buffer.append(value)
+                continue
+            if kind == 'window':
+                flush_text_buffer()
+                try:
+                    widget = self.edit_text.nametowidget(value)
+                except Exception:
+                    widget = None
+                editor = getattr(widget, '_table_block_editor', None) if widget is not None else None
+                if editor is not None:
+                    blocks.append(editor.serialize())
+
+        flush_text_buffer()
+        return self._normalize_section_blocks(blocks)
+
+    def _render_table_block(self, parent, block):
+        editor = _TableBlockWidget(
+            parent,
+            block,
+            on_change=self._on_table_block_changed,
+            on_delete=self._remove_table_block_widget,
+        )
+        self._editor_block_widgets.append(editor)
+        return editor
+
+    def _render_blocks_to_editor(self, blocks, format_spans=None, reset_undo=False):
+        self._clear_editor_block_widgets()
         self.edit_text.delete('1.0', tk.END)
-        if content:
-            self.edit_text.insert('1.0', content)
+
+        sanitized_blocks = self._normalize_section_blocks(blocks)
+        for block_index, block in enumerate(sanitized_blocks):
+            if block_index > 0:
+                self.edit_text.insert(tk.END, '\n\n')
+            if block['type'] == 'paragraph':
+                if block.get('text', ''):
+                    self.edit_text.insert(tk.END, block['text'])
+                continue
+            if block['type'] == 'table':
+                self._render_table_block(self.edit_text, block)
+                self.edit_text.window_create(tk.END, window=self._editor_block_widgets[-1].frame)
+
         self._clear_editor_format_tags()
         self._apply_format_spans_to_editor(format_spans or [])
         self._refresh_editor_font_render_tags()
@@ -1139,6 +2211,73 @@ class PaperWritePage(WorkspaceStateMixin):
         self.edit_text.see('1.0')
         if reset_undo:
             self._reset_editor_undo_stack()
+
+    def _set_section_blocks(self, title, blocks):
+        section = (title or '').strip()
+        if not section:
+            return []
+        sanitized = self._normalize_section_blocks(blocks)
+        if sanitized:
+            self._section_blocks[section] = deep_copy_blocks(sanitized)
+        else:
+            self._section_blocks.pop(section, None)
+        self._sections[section] = blocks_to_plain_text(sanitized)
+        return sanitized
+
+    def _remove_table_block_widget(self, editor):
+        current_section = self._editor_section_source or self.section_entry.get().strip()
+        if not current_section:
+            return
+        blocks = self._capture_editor_blocks()
+        table_id = getattr(editor, 'block_id', '')
+        filtered = []
+        removed = False
+        for block in blocks:
+            if block.get('type') == 'table' and str(block.get('table_id', '') or '') == str(table_id or ''):
+                removed = True
+                continue
+            filtered.append(block)
+        if not removed:
+            return
+        self._set_section_blocks(current_section, filtered)
+        self._set_editor_content('', self._section_formats.get(current_section, []), reset_undo=True, blocks=filtered)
+        self._touch_context_revision()
+        self._update_stats()
+        self._capture_selection_snapshot()
+        self._schedule_workspace_state_save()
+        self.set_status('已删除表格')
+
+    def _on_table_block_changed(self):
+        current_section = self._editor_section_source or self.section_entry.get().strip()
+        if current_section:
+            blocks = self._capture_editor_blocks()
+            self._set_section_blocks(current_section, blocks)
+        self._touch_context_revision()
+        self._update_stats()
+        self._schedule_workspace_state_save()
+
+    def _clear_editor_format_tags(self):
+        for tag in self._format_tag_names():
+            self.edit_text.tag_remove(tag, '1.0', tk.END)
+        self._clear_editor_font_render_tags()
+
+    def _set_editor_content(self, content, format_spans=None, reset_undo=False, blocks=None):
+        if blocks is None:
+            self._clear_editor_block_widgets()
+            self.edit_text.delete('1.0', tk.END)
+            if content:
+                self.edit_text.insert('1.0', content)
+            self._clear_editor_format_tags()
+            self._apply_format_spans_to_editor(format_spans or [])
+            self._refresh_editor_font_render_tags()
+            self.edit_text.tag_remove('find_match', '1.0', tk.END)
+            self.edit_text.tag_remove('outline_focus', '1.0', tk.END)
+            self._raise_editor_overlay_tags()
+            self.edit_text.see('1.0')
+            if reset_undo:
+                self._reset_editor_undo_stack()
+            return
+        self._render_blocks_to_editor(blocks, format_spans=format_spans, reset_undo=reset_undo)
 
     def _apply_format_spans_to_editor(self, spans):
         if not spans:
@@ -1256,7 +2395,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self.advice_label.configure(wraplength=wraplength)
 
     def _collect_stats_texts(self):
-        current_text = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        current_text = self._get_current_editor_text()
         current_section = self._editor_section_source or self.section_entry.get().strip()
 
         sections = dict(self._sections)
@@ -2792,12 +3931,13 @@ class PaperWritePage(WorkspaceStateMixin):
             return
         if title not in self._sections:
             return
-        self._sections[title] = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        blocks = self._capture_editor_blocks()
+        self._set_section_blocks(title, blocks)
         self._section_formats[title] = self._serialize_editor_format_spans()
 
     def export_polish_context(self):
         current_section = self.section_entry.get().strip()
-        current_content = self._normalize_editor_block_text(self.edit_text.get('1.0', tk.END))
+        current_content = self._get_current_editor_text()
         outline_text = self.outline_text.get('1.0', tk.END).strip()
         return {
             'paper_title': self.topic_entry.get().strip(),
@@ -2824,7 +3964,7 @@ class PaperWritePage(WorkspaceStateMixin):
             return ''
         self._store_current_editor_content()
         if self._editor_section_source == target_title or self.section_entry.get().strip() == target_title:
-            return self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+            return self._get_current_editor_text()
         return self._normalize_section_body(self._sections.get(target_title, ''))
 
     def _build_outline_send_payload(self, title, page_id):
@@ -2891,28 +4031,31 @@ class PaperWritePage(WorkspaceStateMixin):
             }
 
         section_name = (section_hint or '').strip() or self.section_entry.get().strip()
-        existing_content = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        existing_blocks = self._get_current_editor_blocks()
+        existing_content = blocks_to_plain_text(existing_blocks)
         existing_formats = []
         current_source = self._editor_section_source or self.section_entry.get().strip()
         if current_source and current_source == section_name:
             existing_formats = self._serialize_editor_format_spans()
         elif section_name:
             existing_formats = self._copy_section_formats(section_name)
-        if write_mode == 'append' and existing_content:
-            new_content = existing_content + '\n\n' + self._normalize_section_body(result)
+        result_blocks = self._blocks_from_section_text(result)
+        if write_mode == 'append' and existing_blocks:
+            new_blocks = self._normalize_section_blocks(existing_blocks + result_blocks)
         else:
-            new_content = self._normalize_section_body(result)
+            new_blocks = result_blocks or existing_blocks
+        new_content = blocks_to_plain_text(new_blocks)
         new_formats = self._preserve_existing_formats(
             section_name,
             existing_content,
             new_content,
             source_spans=existing_formats,
-        ) if section_name else []
+        ) if section_name and not any(block.get('type') == 'table' for block in new_blocks) else []
 
         if section_name:
             self.section_entry.delete(0, tk.END)
             self.section_entry.insert(0, section_name)
-        self._set_editor_content(new_content, new_formats)
+        self._set_editor_content(new_content, new_formats, blocks=new_blocks)
         self._editor_section_source = section_name or ''
         self._update_stats()
         self._touch_context_revision()
@@ -2920,7 +4063,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self._schedule_workspace_state_save()
 
         if section_name:
-            self._sections[section_name] = new_content
+            self._set_section_blocks(section_name, new_blocks)
             self._section_formats[section_name] = new_formats
             if section_name not in self._section_order:
                 self._section_order.append(section_name)
@@ -3043,6 +4186,7 @@ class PaperWritePage(WorkspaceStateMixin):
 
     def _clear_outline_structure_view(self):
         self._sections = {}
+        self._section_blocks = {}
         self._section_formats = {}
         self._section_order = []
         self._section_levels = {}
@@ -3052,6 +4196,7 @@ class PaperWritePage(WorkspaceStateMixin):
         if hasattr(self, '_outline_selected') and self._outline_selected is not None:
             self._outline_selected.set('')
         self._refresh_outline_list()
+        self._clear_editor_block_widgets()
         self.edit_text.delete('1.0', tk.END)
         self.section_entry.delete(0, tk.END)
         self._editor_section_source = ''
@@ -3061,6 +4206,7 @@ class PaperWritePage(WorkspaceStateMixin):
         fallback_title = str(title or '').strip() or '未解析大纲'
         raw_text = str(text or '').strip()
         self._sections = {fallback_title: raw_text}
+        self._section_blocks = self._build_section_blocks_from_sections(self._sections)
         self._section_formats = {fallback_title: []}
         self._section_order = [fallback_title]
         self._section_levels = {fallback_title: 1}
@@ -3310,6 +4456,7 @@ class PaperWritePage(WorkspaceStateMixin):
             # 先解析大纲，不把全文直接填入编辑区
             self._parse_and_show_outline(text, parsed=parsed)
             # 清空编辑区，等待用户点击章节
+            self._clear_editor_block_widgets()
             self.edit_text.delete('1.0', tk.END)
             self.section_entry.delete(0, tk.END)
             self._editor_section_source = ''
@@ -3342,6 +4489,7 @@ class PaperWritePage(WorkspaceStateMixin):
         """从文本中解析章节标题，填充左侧大纲列表"""
         parsed = parsed if isinstance(parsed, dict) else self._build_outline_structure(text)
         self._sections = dict(parsed['sections'])
+        self._section_blocks = self._build_section_blocks_from_sections(self._sections)
         self._section_formats = {title: [] for title in self._sections}
         self._section_order = list(parsed['order'])
         self._section_levels = dict(parsed['levels'])
@@ -3357,24 +4505,46 @@ class PaperWritePage(WorkspaceStateMixin):
         if self._section_order:
             self._select_section(self._section_order[0], touch_context=False)
         else:
+            self._clear_editor_block_widgets()
             self.edit_text.delete('1.0', tk.END)
             self._editor_section_source = ''
         self._touch_context_revision()
 
     def _apply_normalized_outline_state(self, normalized):
         old_sections = dict(self._sections)
+        old_blocks = self._copy_section_blocks_map()
         old_formats = self._copy_section_format_map() if hasattr(self, '_section_formats') else {}
         self._sections = dict(normalized.get('sections', {}))
         self._section_order = list(normalized.get('order', []))
         self._section_levels = dict(normalized.get('levels', {}))
         self._section_parent = dict(normalized.get('parents', {}))
+        aliases = dict(normalized.get('aliases', {}) or {})
         self._section_formats = {}
+        self._section_blocks = {}
         for title in self._section_order:
             if old_sections.get(title, None) == self._sections.get(title, None):
                 self._section_formats[title] = list(old_formats.get(title, []))
             else:
                 self._section_formats[title] = []
-        return dict(normalized.get('aliases', {}))
+
+            source_titles = [title] + [
+                old_title
+                for old_title, resolved_title in aliases.items()
+                if resolved_title == title
+            ]
+            selected_blocks = []
+            for old_title in source_titles:
+                if old_sections.get(old_title, None) == self._sections.get(title, None):
+                    selected_blocks = old_blocks.get(old_title, [])
+                    if selected_blocks:
+                        break
+            if selected_blocks:
+                self._section_blocks[title] = deep_copy_blocks(selected_blocks)
+                continue
+            blocks = self._blocks_from_section_text(self._sections.get(title, ''))
+            if blocks:
+                self._section_blocks[title] = blocks
+        return aliases
 
     def _normalize_outline_structure_state(self):
         normalized = self._normalize_outline_structure(
@@ -4185,7 +5355,7 @@ class PaperWritePage(WorkspaceStateMixin):
             parts.append(f'{title}\n{body}')
 
         if not parts:
-            current_text = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+            current_text = self._get_current_editor_text()
             if current_text:
                 current_title = self._editor_section_source or self.section_entry.get().strip() or '正文'
                 parts.append(f'{current_title}\n{current_text}')
@@ -4242,6 +5412,7 @@ class PaperWritePage(WorkspaceStateMixin):
             keyword_text,
             language='cn',
         )
+        self._section_blocks[abstract_title] = self._blocks_from_section_text(self._sections[abstract_title])
         self._section_formats[abstract_title] = []
         self._rebuild_section_children()
         self._sync_outline_text_from_sections()
@@ -4411,6 +5582,7 @@ class PaperWritePage(WorkspaceStateMixin):
             reference_title = self._make_unique_title(reference_title)
         self._section_order.insert(insert_index, reference_title)
         self._sections[reference_title] = ''
+        self._section_blocks.pop(reference_title, None)
         self._section_formats[reference_title] = []
         self._section_levels[reference_title] = 1
         self._section_parent[reference_title] = ''
@@ -4429,6 +5601,7 @@ class PaperWritePage(WorkspaceStateMixin):
         new_entries = self._parse_reference_entries(clean_references)
         merged_entries = self._merge_reference_entry_lists(existing_entries, new_entries)
         self._sections[reference_title] = self._build_reference_body_from_entries(merged_entries)
+        self._section_blocks[reference_title] = self._blocks_from_section_text(self._sections[reference_title])
         self._section_formats[reference_title] = []
         self._rebuild_section_children()
         self._sync_outline_text_from_sections()
@@ -4445,6 +5618,18 @@ class PaperWritePage(WorkspaceStateMixin):
                 return f'{existing}\n\n{new}'
             return new or existing
         return new or existing
+
+    def _compose_section_blocks(self, section, existing_text, new_text, write_mode='replace'):
+        if section and (self._editor_section_source == section or self.section_entry.get().strip() == section):
+            existing_blocks = self._get_current_editor_blocks()
+        else:
+            existing_blocks = self._get_section_blocks(section) if section else self._blocks_from_section_text(existing_text)
+        if not existing_blocks:
+            existing_blocks = self._blocks_from_section_text(existing_text)
+        new_blocks = self._blocks_from_section_text(new_text)
+        if write_mode == 'append':
+            return self._normalize_section_blocks(existing_blocks + new_blocks)
+        return self._normalize_section_blocks(new_blocks or existing_blocks)
 
     @classmethod
     def _merge_reference_entry_lists(cls, *groups):
@@ -4504,6 +5689,8 @@ class PaperWritePage(WorkspaceStateMixin):
         level = self._infer_outline_level(section)
         self._section_order.insert(insert_index, section)
         self._sections.setdefault(section, '')
+        if self._sections.get(section):
+            self._section_blocks.setdefault(section, self._blocks_from_section_text(self._sections.get(section, '')))
         self._section_formats.setdefault(section, [])
         self._section_levels[section] = level
         self._section_parent[section] = self._find_parent_for_insert(insert_index, level)
@@ -4584,21 +5771,34 @@ class PaperWritePage(WorkspaceStateMixin):
             rewritten_body = self._rewrite_citations_with_entry_map(current_body, old_number_map)
             if rewritten_body != current_body:
                 self._sections[title] = rewritten_body
+                blocks = self._blocks_from_section_text(rewritten_body)
+                if blocks:
+                    self._section_blocks[title] = blocks
+                else:
+                    self._section_blocks.pop(title, None)
                 self._section_formats[title] = []
 
         rewritten_existing = self._rewrite_citations_with_entry_map(existing_text, old_number_map)
         rewritten_new = self._rewrite_citations_with_entry_map(new_text, local_number_map)
         merged_text = self._compose_section_text(rewritten_existing, rewritten_new, write_mode=write_mode)
         original_merged_text = self._compose_section_text(existing_text, new_text, write_mode=write_mode)
+        merged_blocks = self._blocks_from_section_text(merged_text)
         merged_formats = (
             self._preserve_existing_formats(section, existing_text, merged_text, source_spans=existing_formats)
             if merged_text == original_merged_text
             else []
         )
+        if any(block.get('type') == 'table' for block in merged_blocks):
+            merged_formats = []
 
         self._sections[section] = merged_text
+        if merged_blocks:
+            self._section_blocks[section] = merged_blocks
+        else:
+            self._section_blocks.pop(section, None)
         self._section_formats[section] = merged_formats
         self._sections[reference_title] = self._build_reference_body_from_entries(final_entries)
+        self._section_blocks[reference_title] = self._blocks_from_section_text(self._sections[reference_title])
         self._section_formats[reference_title] = []
         return merged_text, merged_formats, reference_title
 
@@ -4709,6 +5909,8 @@ class PaperWritePage(WorkspaceStateMixin):
             return False
 
         self._sections[unique_title] = self._sections.pop(old_title)
+        if old_title in self._section_blocks:
+            self._section_blocks[unique_title] = self._section_blocks.pop(old_title)
         self._section_formats[unique_title] = self._section_formats.pop(old_title, [])
         self._section_levels[unique_title] = self._section_levels.pop(old_title, self._infer_outline_level(unique_title))
         self._section_parent[unique_title] = self._section_parent.pop(old_title, '')
@@ -4754,6 +5956,7 @@ class PaperWritePage(WorkspaceStateMixin):
 
         self._section_order.insert(anchor_index, new_title)
         self._sections[new_title] = ''
+        self._section_blocks.pop(new_title, None)
         self._section_formats[new_title] = []
         self._section_levels[new_title] = level
         self._section_parent[new_title] = parent
@@ -4773,6 +5976,7 @@ class PaperWritePage(WorkspaceStateMixin):
     def _clear_section_display(self):
         if hasattr(self, '_outline_selected') and self._outline_selected is not None:
             self._outline_selected.set('')
+        self._clear_editor_block_widgets()
         self.edit_text.delete('1.0', tk.END)
         self.section_entry.delete(0, tk.END)
         self._editor_section_source = ''
@@ -4814,6 +6018,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self._section_order = [candidate for candidate in self._section_order if candidate not in removed_titles]
         for candidate in subtree:
             self._sections.pop(candidate, None)
+            self._section_blocks.pop(candidate, None)
             self._section_formats.pop(candidate, None)
             self._section_levels.pop(candidate, None)
             self._section_parent.pop(candidate, None)
@@ -5050,7 +6255,12 @@ class PaperWritePage(WorkspaceStateMixin):
     def _load_section_into_editor(self, source_title):
         content = self._normalize_section_body(self._sections.get(source_title, ''))
         self._editor_section_source = source_title
-        self._set_editor_content(content, self._section_formats.get(source_title, []), reset_undo=True)
+        self._set_editor_content(
+            content,
+            self._section_formats.get(source_title, []),
+            reset_undo=True,
+            blocks=self._get_section_blocks(source_title),
+        )
         self._apply_level_font_to_editor()
 
     def _cancel_outline_drag_job(self):
@@ -5375,6 +6585,7 @@ class PaperWritePage(WorkspaceStateMixin):
 
         self.outline_text.delete('1.0', tk.END)
         self._sections = {}
+        self._section_blocks = {}
         self._section_formats = {}
         self._section_order = []
         self._section_levels = {}
@@ -5385,6 +6596,7 @@ class PaperWritePage(WorkspaceStateMixin):
             self._outline_selected.set('')
         self._refresh_outline_list()
 
+        self._clear_editor_block_widgets()
         self.edit_text.delete('1.0', tk.END)
         self.section_entry.delete(0, tk.END)
         self._editor_section_source = ''
@@ -5458,11 +6670,16 @@ class PaperWritePage(WorkspaceStateMixin):
             return ''
         section_order = state.get('section_order', [])
         sections = state.get('sections', {})
+        section_blocks = state.get('section_blocks', {})
         if not isinstance(sections, dict) or not sections:
             return ''
         parts = []
         for title in (section_order or list(sections.keys())):
-            body = str(sections.get(title, '') or '').strip()
+            body = ''
+            if isinstance(section_blocks, dict):
+                body = blocks_to_plain_text(section_blocks.get(title, []))
+            if not body:
+                body = str(sections.get(title, '') or '').strip()
             if title.strip():
                 parts.append(title.strip())
             if body:
@@ -5539,7 +6756,7 @@ class PaperWritePage(WorkspaceStateMixin):
         if not section:
             return ''
         if self._editor_section_source == section or self.section_entry.get().strip() == section:
-            return self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+            return self._get_current_editor_text()
         return self._normalize_section_body(self._sections.get(section, ''))
 
     def _resolve_section_existing_formats(self, section):
@@ -5585,6 +6802,11 @@ class PaperWritePage(WorkspaceStateMixin):
                 merged_formats = self._copy_section_formats(reference_section_title)
                 display_section = reference_section_title
             self._sections[display_section] = merged
+            blocks = self._blocks_from_section_text(merged)
+            if blocks:
+                self._section_blocks[display_section] = blocks
+            else:
+                self._section_blocks.pop(display_section, None)
             self._section_formats[display_section] = merged_formats
         else:
             clean_result, references_text = self._extract_references_from_section_result(result)
@@ -5607,14 +6829,15 @@ class PaperWritePage(WorkspaceStateMixin):
                     write_mode=write_mode,
                 )
             else:
-                merged = self._compose_section_text(existing, clean_result, write_mode=write_mode)
+                merged_blocks = self._compose_section_blocks(section, existing, clean_result, write_mode=write_mode)
+                merged = blocks_to_plain_text(merged_blocks)
                 merged_formats = self._preserve_existing_formats(
                     section,
                     existing,
                     merged,
                     source_spans=existing_formats,
-                )
-                self._sections[section] = merged
+                ) if not any(block.get('type') == 'table' for block in merged_blocks) else []
+                self._set_section_blocks(section, merged_blocks)
                 self._section_formats[section] = merged_formats
                 if references_text:
                     reference_section_title = self._write_references_to_section(references_text)
@@ -5963,7 +7186,7 @@ class PaperWritePage(WorkspaceStateMixin):
             return
         if not self._ensure_prompt_ready('paper_write.section'):
             return
-        existing = self._normalize_section_body(self.edit_text.get('1.0', tk.END))
+        existing = self._get_current_editor_text()
         existing_formats = self._resolve_section_existing_formats(section)
 
         def on_success(result):
@@ -5995,6 +7218,49 @@ class PaperWritePage(WorkspaceStateMixin):
             on_error=on_error,
             loading_text='正在撰写章节...',
             status_text='正在撰写章节...',
+            status_color=COLORS['warning'],
+        )
+
+    def _generate_table_block(self):
+        section = self.section_entry.get().strip()
+        outline = self.outline_text.get('1.0', tk.END).strip()
+        if not section:
+            messagebox.showwarning('提示', '请输入当前章节名称', parent=self.frame)
+            return
+        if not self._ensure_prompt_ready('paper_write.section'):
+            return
+
+        existing = self._get_current_editor_text()
+        existing_formats = self._resolve_section_existing_formats(section)
+
+        def on_success(result):
+            outcome = self._apply_written_section_result(
+                section,
+                result,
+                existing_text=existing,
+                existing_formats=existing_formats,
+                write_mode='append',
+            )
+            if outcome.get('reference_section_title'):
+                self.set_status(f'表格已生成，参考文献已写入 {outcome["reference_section_title"]}')
+            else:
+                self.set_status('表格已生成并插入当前章节')
+
+        def on_error(exc):
+            self.set_status(f'表格生成失败: {exc}', COLORS['error'])
+
+        self.task_runner.run(
+            work=lambda: self.writer.generate_table(
+                outline,
+                section,
+                existing,
+                int(self.wcount_var.get() or '1000'),
+                self.ref_var.get(),
+            ),
+            on_success=on_success,
+            on_error=on_error,
+            loading_text='正在生成表格...',
+            status_text='正在生成表格...',
             status_color=COLORS['warning'],
         )
 

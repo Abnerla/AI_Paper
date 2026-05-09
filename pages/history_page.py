@@ -955,6 +955,7 @@ class HistoryPage:
                 'section_order': ws['section_order'],
                 'sections': ws['sections'],
                 'section_levels': ws.get('section_levels', {}),
+                'section_blocks': ws.get('section_blocks', {}),
             }
         return None
 
