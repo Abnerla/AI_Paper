@@ -1453,17 +1453,33 @@ class APIClient:
         key = str((cfg or {}).get('key', '') or '').strip()
         if not key:
             raise ValueError('Claude API Key is not configured')
-        headers = {
-            'Content-Type': 'application/json',
-            'x-api-key': key,
-            'anthropic-version': ANTHROPIC_VERSION,
-        }
+
+        raw_auth_field = str((cfg or {}).get('auth_field', '') or '').strip()
+        auth_field = raw_auth_field or 'x-api-key'
+        fallback_mode = AUTH_VALUE_MODE_BEARER if auth_field.lower() in {'authorization', 'proxy-authorization'} else AUTH_VALUE_MODE_RAW
+        auth_value_mode = self._normalize_auth_value_mode(
+            (cfg or {}).get('auth_value_mode', fallback_mode),
+            default=fallback_mode,
+        )
+        use_bearer = auth_value_mode == AUTH_VALUE_MODE_BEARER
+        headers = self._build_auth_headers(
+            key,
+            auth_field=auth_field,
+            auth_value_mode=auth_value_mode,
+            include_content_type=True,
+        )
+        headers['anthropic-version'] = ANTHROPIC_VERSION
         headers, _extra_headers_payload, _added_keys, _ignored_keys = self._merge_request_headers(
             headers,
             cfg,
             protected_fields=self.PROTECTED_AUTH_FIELDS | {'anthropic-version', 'Content-Type'},
         )
-        return headers
+        return {
+            'headers': headers,
+            'auth_field': auth_field,
+            'auth_value_mode': auth_value_mode,
+            'use_bearer': use_bearer,
+        }
 
     @staticmethod
     def _merge_model_candidates(model_ids, current_model=''):
@@ -1537,9 +1553,10 @@ class APIClient:
             )
             extractor = self._extract_model_ids
         elif provider_name == HANDLER_CLAUDE:
-            auth_field = 'x-api-key'
+            header_bundle = self._build_claude_headers(cfg)
+            auth_field = header_bundle['auth_field']
             url = self._resolve_claude_urls(base_url)['models_url']
-            headers = self._build_claude_headers(cfg)
+            headers = header_bundle['headers']
             extra_header_keys = []
             ignored_extra_header_keys = []
             extractor = self._extract_model_ids
@@ -2256,7 +2273,56 @@ class APIClient:
             data['top_p'] = top_p
         if system:
             data['system'] = system
-        headers = self._build_claude_headers(cfg)
+
+        extra_json_payload = self._load_extra_json_payload(cfg)
+        if extra_json_payload:
+            data, _ignored_keys, _removed_keys = self._merge_openai_extra_json(data, extra_json_payload)
+
+        # Auto-inject parameters based on UI switches
+        teammates_mode = bool((cfg or {}).get('teammates_mode', False))
+        enable_tool_search = bool((cfg or {}).get('enable_tool_search', False))
+        high_intensity_thinking = bool((cfg or {}).get('high_intensity_thinking', False))
+        hide_ai_signature = bool((cfg or {}).get('hide_ai_signature', False))
+
+        # Build beta headers list
+        beta_headers = []
+        if teammates_mode:
+            beta_headers.append('teammates-2025-01-01')
+        if high_intensity_thinking:
+            beta_headers.append('extended-thinking-2025-01-01')
+
+        # Inject extended thinking configuration
+        if high_intensity_thinking and 'thinking' not in data:
+            data['thinking'] = {
+                'type': 'enabled',
+                'budget_tokens': 10000
+            }
+
+        # Inject web search tool
+        if enable_tool_search:
+            if 'tools' not in data:
+                data['tools'] = []
+            # Check if web search tool already exists
+            has_web_search = any(
+                tool.get('type') == 'web_search_20241220'
+                for tool in data['tools']
+            )
+            if not has_web_search:
+                data['tools'].append({
+                    'type': 'web_search_20241220'
+                })
+
+        # Inject hide AI signature (modify system prompt)
+        if hide_ai_signature and system:
+            if '请不要在回复中添加AI签名' not in system:
+                data['system'] = system + '\n\n请不要在回复中添加AI签名或标识。'
+
+        header_bundle = self._build_claude_headers(cfg)
+        headers = header_bundle['headers']
+
+        # Add beta headers if any
+        if beta_headers:
+            headers['anthropic-beta'] = ','.join(beta_headers)
         request_detail = self._build_request_debug_section(
             method='POST',
             url=urls['messages_url'],
@@ -2265,7 +2331,11 @@ class APIClient:
             timeout=request_timeout or 60,
             prompt=prompt,
             system=system,
-            extra={'request_model': model},
+            extra={
+                'request_model': model,
+                'auth_field': header_bundle['auth_field'],
+                'use_bearer': bool(header_bundle['use_bearer']),
+            },
         )
         try:
             resp = self._http_post(urls['messages_url'], data, headers, timeout=request_timeout or 60)

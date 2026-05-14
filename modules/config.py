@@ -12,7 +12,6 @@ import urllib.parse
 from datetime import datetime
 
 from modules.provider_registry import (
-    API_FORMAT_ANTHROPIC_MESSAGES,
     AUTH_VALUE_MODE_BEARER,
     AUTH_VALUE_MODE_RAW,
     PRESET_REGISTRY,
@@ -251,9 +250,6 @@ class ConfigManager:
                 else:
                     raw_auth_value_mode = default_auth['auth_value_mode']
             cfg['auth_value_mode'] = raw_auth_value_mode
-            if cfg['api_format'] == API_FORMAT_ANTHROPIC_MESSAGES:
-                cfg['auth_field'] = default_auth['auth_field']
-                cfg['auth_value_mode'] = default_auth['auth_value_mode']
         cfg.setdefault('model_mapping', '')
         cfg.setdefault('model', '')
         cfg.setdefault('model_display_name', '')
