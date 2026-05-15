@@ -1620,6 +1620,8 @@ class APIClient:
             except Exception as e:
                 if on_error:
                     on_error(str(e))
+                else:
+                    self._log(f'[call_async_error] {e}', level='ERROR')
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
@@ -2263,9 +2265,8 @@ class APIClient:
         data = {
             'model': model,
             'messages': [{'role': 'user', 'content': prompt}],
+            'max_tokens': max_tokens if max_tokens is not None else 4096,
         }
-        if max_tokens is not None:
-            data['max_tokens'] = max_tokens
         if temperature is not None:
             data['temperature'] = temperature
         top_p = self._coerce_float((cfg or {}).get('top_p', ''), default=None)
@@ -2341,15 +2342,27 @@ class APIClient:
             resp = self._http_post(urls['messages_url'], data, headers, timeout=request_timeout or 60)
         except Exception as exc:
             raise self._wrap_request_error(exc, detail={'request': request_detail}) from exc
+
+        content_blocks = resp.get('content') or []
+        result_text = ''
+        for block in content_blocks:
+            if isinstance(block, dict) and block.get('type', 'text') == 'text':
+                result_text = block.get('text', '')
+                break
+        if not result_text and content_blocks:
+            first = content_blocks[0]
+            if isinstance(first, dict):
+                result_text = first.get('text', '')
+
         response_detail = self._build_response_debug_section(
             body=resp,
             extra={
                 'response_model': str(resp.get('model', '') or model),
-                'text_preview': self._truncate_debug_text(resp['content'][0]['text'], limit=1000),
+                'text_preview': self._truncate_debug_text(result_text, limit=1000),
             },
         )
         return {
-            'text': resp['content'][0]['text'],
+            'text': result_text,
             'response_model': str(resp.get('model', '') or model),
             'usage': extract_claude_usage(resp),
             'request_detail': {'request': request_detail, 'response': response_detail},

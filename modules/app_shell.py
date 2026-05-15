@@ -51,7 +51,7 @@ BASE_DATA_DIR = RUNTIME_PATHS.base_data_root
 
 REPO_RAW_BASE_URL = 'https://raw.githubusercontent.com/Abnerla/AI_paper/main'
 STARTUP_REG_PATH = r'Software\Microsoft\Windows\CurrentVersion\Run'
-STARTUP_VALUE_NAME = "APP_NAME"
+STARTUP_VALUE_NAME = "纸研社"
 TOP_NAV_ITEMS = (
     ('home', '首页'),
     ('paper_write', '论文写作'),

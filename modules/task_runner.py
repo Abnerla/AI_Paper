@@ -34,13 +34,17 @@ class TaskRunner:
 
         self._active_count += 1
 
-        # 确保在启动线程前显示加载动画
-        if self.loading and loading_text:
-            self.loading.show(loading_text)
-            self.scheduler.update_idletasks()
-            
-        if self.set_status and status_text:
-            self.set_status(status_text, status_color)
+        try:
+            if self.loading and loading_text:
+                self.loading.show(loading_text)
+                self.scheduler.update_idletasks()
+
+            if self.set_status and status_text:
+                self.set_status(status_text, status_color)
+        except Exception:
+            self._active_count = max(0, self._active_count - 1)
+            raise
+
         self._log(f'[task_start] {task_label}')
 
         def worker():

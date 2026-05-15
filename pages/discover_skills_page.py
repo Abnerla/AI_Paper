@@ -884,6 +884,11 @@ class DiscoverSkillsPanel:
                 error = exc
 
             def finalize():
+                try:
+                    if not self.frame.winfo_exists():
+                        return
+                except Exception:
+                    return
                 if error is not None:
                     self.set_status('操作失败', COLORS['error'])
                     if callable(on_error):

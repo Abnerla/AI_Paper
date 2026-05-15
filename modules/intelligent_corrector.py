@@ -149,6 +149,7 @@ class IntelligentCorrector:
         self._issue_index = 0
 
     def analyze_text(self, text, citation_style='auto', source_kind='manual', knowledge_context=None) -> CorrectionRun:
+        self._issue_index = 0
         content = str(text or '')
         if not content.strip():
             raise ValueError('待纠错文本不能为空')

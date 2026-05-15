@@ -8621,7 +8621,9 @@ class PaperWritePage(WorkspaceStateMixin):
                 event.set()
 
         self.frame.after(0, runner)
-        event.wait()
+        event.wait(timeout=60)
+        if not event.is_set():
+            raise RuntimeError('UI 线程回调超时，窗口可能已关闭。')
         if payload.get('error') is not None:
             raise payload['error']
         return payload.get('result')

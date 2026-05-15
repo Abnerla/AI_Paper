@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -99,6 +100,7 @@ class KnowledgeBaseStore:
         self.documents_dir = os.path.join(self.root_dir, 'documents')
         self.index_path = os.path.join(self.root_dir, self.INDEX_FILE_NAME)
         self.log_callback = log_callback
+        self._lock = threading.RLock()
         os.makedirs(self.documents_dir, exist_ok=True)
 
     def _log(self, message, level='INFO'):
@@ -113,22 +115,24 @@ class KnowledgeBaseStore:
         }
 
     def _load_index(self):
-        if not os.path.exists(self.index_path):
-            return self._default_index()
-        try:
-            with open(self.index_path, 'r', encoding='utf-8') as handle:
-                payload = json.load(handle)
-        except Exception as exc:
-            raise KnowledgeBaseError(f'读取知识库索引失败：{exc}') from exc
-        return self._sanitize_index(payload)
+        with self._lock:
+            if not os.path.exists(self.index_path):
+                return self._default_index()
+            try:
+                with open(self.index_path, 'r', encoding='utf-8') as handle:
+                    payload = json.load(handle)
+            except Exception as exc:
+                raise KnowledgeBaseError(f'读取知识库索引失败：{exc}') from exc
+            return self._sanitize_index(payload)
 
     def _save_index(self, payload):
-        payload = self._sanitize_index(payload)
-        os.makedirs(self.root_dir, exist_ok=True)
-        temp_path = f'{self.index_path}.tmp'
-        with open(temp_path, 'w', encoding='utf-8') as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-        os.replace(temp_path, self.index_path)
+        with self._lock:
+            payload = self._sanitize_index(payload)
+            os.makedirs(self.root_dir, exist_ok=True)
+            temp_path = f'{self.index_path}.tmp'
+            with open(temp_path, 'w', encoding='utf-8') as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+            os.replace(temp_path, self.index_path)
 
     def _sanitize_index(self, payload):
         if not isinstance(payload, dict):
