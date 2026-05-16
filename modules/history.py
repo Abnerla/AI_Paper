@@ -11,6 +11,7 @@ from collections import Counter
 from datetime import datetime
 
 from modules.app_metadata import (
+    MODULE_AI_DIAGRAM,
     MODULE_AI_REDUCE,
     MODULE_CORRECTION,
     MODULE_PAPER_WRITE,
@@ -35,6 +36,7 @@ class HistoryManager:
 
     PAGE_STATE_BY_MODULE = {
         MODULE_PAPER_WRITE: 'paper_write',
+        MODULE_AI_DIAGRAM: 'ai_diagram',
         MODULE_AI_REDUCE: 'ai_reduce',
         MODULE_PLAGIARISM: 'plagiarism',
         MODULE_POLISH: 'polish',
@@ -181,6 +183,16 @@ class HistoryManager:
     def _extract_workspace_paper_title(self, workspace_state, page_state_id=''):
         if not isinstance(workspace_state, dict):
             return ''
+
+        if page_state_id == 'ai_diagram':
+            title = self._normalize_title_candidate(workspace_state.get('session_title', ''))
+            if title:
+                return title
+            block = workspace_state.get('current_block')
+            if isinstance(block, dict):
+                caption = self._normalize_title_candidate(block.get('caption', ''))
+                if caption:
+                    return caption
 
         for key in ('paper_title', 'current_paper_title'):
             title = self._normalize_title_candidate(workspace_state.get(key, ''))

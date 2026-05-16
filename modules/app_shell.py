@@ -55,6 +55,7 @@ STARTUP_VALUE_NAME = "纸研社"
 TOP_NAV_ITEMS = (
     ('home', '首页'),
     ('paper_write', '论文写作'),
+    ('ai_diagram', 'AI图表'),
     ('ai_reduce', '降AI检测'),
     ('plagiarism', '降查重率'),
     ('polish', '学术润色'),
@@ -480,6 +481,7 @@ class SmartPaperTool:
             'home': {'module': 'pages.home_page', 'class': 'HomePage', 'title': '首页'},
             'api_config': {'module': 'pages.api_config_page', 'class': 'APIConfigPage', 'title': '模型配置'},
             'paper_write': {'module': 'pages.paper_write_page', 'class': 'PaperWritePage', 'title': '论文写作'},
+            'ai_diagram': {'module': 'pages.ai_diagram_page', 'class': 'AIDiagramPage', 'title': 'AI图表'},
             'ai_reduce': {'module': 'pages.ai_reduce_page', 'class': 'AIReducePage', 'title': '降AI检测'},
             'polish': {'module': 'pages.polish_page', 'class': 'PolishPage', 'title': '学术润色'},
             'correction': {'module': 'pages.correction_page', 'class': 'CorrectionPage', 'title': '智能纠错'},
@@ -2958,6 +2960,7 @@ class SmartPaperTool:
             pull_paper_write_selection_snapshot=self._pull_paper_write_selection_snapshot,
             apply_result_to_paper_write=self._apply_result_to_paper_write,
             send_paper_write_content=self._send_paper_write_content,
+            apply_diagram_to_paper_write=self._apply_diagram_to_paper_write,
             navigate_to_page=self._navigate_to_page,
             write_app_log=self._write_app_log,
             restore_page_workspace=self._restore_page_workspace,
@@ -3024,6 +3027,21 @@ class SmartPaperTool:
             return outcome
         except Exception as exc:
             self._write_app_log(f'paper_write content send failed: {page_id} {exc}', level='ERROR')
+            return {'ok': False, 'message': str(exc)}
+
+    def _apply_diagram_to_paper_write(self, block, section_hint=''):
+        page = self._ensure_page('paper_write')
+        if not page or not hasattr(page, 'insert_external_diagram_block'):
+            return {'ok': False, 'message': '论文写作页不可用'}
+        try:
+            outcome = page.insert_external_diagram_block(block, section_hint=section_hint)
+            if outcome.get('ok'):
+                self._write_app_log(
+                    f'diagram inserted to paper_write: section={outcome.get("section", "")}'
+                )
+            return outcome
+        except Exception as exc:
+            self._write_app_log(f'diagram insert to paper_write failed: {exc}', level='ERROR')
             return {'ok': False, 'message': str(exc)}
 
     def _navigate_to_page(self, page_id):

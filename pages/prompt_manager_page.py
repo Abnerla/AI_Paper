@@ -371,7 +371,7 @@ class PromptManagerPanel:
 
         tk.Label(parent, text='内容', font=FONTS['body_bold'], fg=COLORS['text_main'], bg=COLORS['card_bg']).pack(anchor='w', pady=(14, 0))
         content_frame, content_text = create_scrolled_text(parent, height=18)
-        content_frame.pack(fill=tk.BOTH, expand=False, pady=(8, 0))
+        content_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
         self._editor_dialog_title_label = title_label
         self._editor_dialog_variable_tip_label = variable_tip_label

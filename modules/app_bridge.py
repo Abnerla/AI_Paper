@@ -104,6 +104,14 @@ class AppBridge:
             default={'ok': False, 'message': '论文写作内容发送桥接不可用'},
         )
 
+    def apply_diagram_to_paper_write(self, block, section_hint=''):
+        return self._call(
+            'apply_diagram_to_paper_write',
+            block,
+            section_hint=section_hint,
+            default={'ok': False, 'message': '论文写作图表桥接不可用'},
+        )
+
     def navigate_to_page(self, page_id):
         return self._call(
             'navigate_to_page',

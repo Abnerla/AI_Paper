@@ -9,6 +9,8 @@ import copy
 import re
 import uuid
 
+from modules.diagram_blocks import diagram_placeholder_text, sanitize_diagram_block
+
 
 TABLE_SEPARATOR_RE = re.compile(
     r'^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$'
@@ -463,6 +465,9 @@ def sanitize_block(block):
             row_heights=block.get('row_heights', []),
         )
         return table_block
+
+    if block_type == 'diagram':
+        return sanitize_diagram_block(block)
 
     text = normalize_paragraph_text(block.get('text', ''))
     if text:
@@ -1019,6 +1024,10 @@ def blocks_to_plain_text(blocks):
             markdown = table_block_to_markdown(block)
             if markdown:
                 parts.append(markdown)
+            continue
+
+        if block['type'] == 'diagram':
+            parts.append(diagram_placeholder_text(block))
 
     return '\n\n'.join(parts).strip()
 

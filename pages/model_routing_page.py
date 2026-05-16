@@ -24,6 +24,7 @@ ROUTING_FEATURES = (
     ('ai_reduce', '降AI检测'),
     ('plagiarism', '降查重率'),
     ('correction', '智能纠错'),
+    ('ai_diagram', 'AI图表'),
 )
 
 ROUTING_SCENES = (
@@ -36,6 +37,7 @@ ROUTING_SCENES = (
     ('ai_reduce.transform', '降AI检测 · 文本改写'),
     ('plagiarism.transform', '降查重率 · 文本改写'),
     ('correction.ai_review', '智能纠错 · AI 纠错'),
+    ('ai_diagram.chat', 'AI图表 · 图表对话'),
 )
 
 ROUTING_UNBOUND_LABEL = '（沿用默认/兜底）'

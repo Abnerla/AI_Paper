@@ -185,6 +185,7 @@ class ConfigManager:
         'ai_reduce',
         'plagiarism',
         'correction',
+        'ai_diagram',
     )
 
     def _load(self) -> dict:

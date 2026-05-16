@@ -6,10 +6,14 @@
 import os
 import re
 import sys
+import base64
+import io
 import difflib
 import tempfile
 from collections import Counter
 
+from modules.diagram_blocks import diagram_placeholder_text
+from modules.diagram_thumbnail import render_placeholder_png
 from modules.table_blocks import (
     TABLE_ALIGN_CENTER,
     TABLE_ALIGN_RIGHT,
@@ -729,6 +733,42 @@ class AuxTools:
                 if block.get('table_style') == TABLE_STYLE_THREE_LINE:
                     _apply_three_line_table_style(table)
 
+            def _write_diagram_block(block):
+                caption = str(block.get('caption', '') or '').strip() or diagram_placeholder_text(block)
+                caption_p = doc.add_paragraph(caption)
+                caption_p.paragraph_format.space_after = Pt(3)
+                for run in caption_p.runs:
+                    _set_run_font(run, body_font, body_font_en, body_pt)
+
+                image_buffer = None
+                b64 = str(block.get('thumbnail_b64') or '').strip()
+                if b64:
+                    try:
+                        payload = b64.split(',', 1)[1] if ',' in b64 else b64
+                        image_buffer = io.BytesIO(base64.b64decode(payload))
+                    except Exception:
+                        image_buffer = None
+                if image_buffer is None:
+                    try:
+                        image = render_placeholder_png(
+                            block.get('json_graph') or {},
+                            caption=caption,
+                            size=(900, 520),
+                        )
+                        if image is not None:
+                            image_buffer = io.BytesIO()
+                            image.save(image_buffer, format='PNG')
+                            image_buffer.seek(0)
+                    except Exception:
+                        image_buffer = None
+                if image_buffer is None:
+                    _write_body_paragraph(diagram_placeholder_text(block))
+                    return
+                try:
+                    doc.add_picture(image_buffer, width=Cm(14))
+                except Exception:
+                    _write_body_paragraph(diagram_placeholder_text(block))
+
             # 结构化导出（有章节数据时）
             if sections_data and isinstance(sections_data, dict):
                 sd_order = sections_data.get('section_order', [])
@@ -759,6 +799,9 @@ class AuxTools:
                                     continue
                                 if block['type'] == 'table':
                                     _write_table_block(block)
+                                    continue
+                                if block['type'] == 'diagram':
+                                    _write_diagram_block(block)
                             continue
 
                         sec_body = str(sd_sections.get(sec_title, '') or '').strip()

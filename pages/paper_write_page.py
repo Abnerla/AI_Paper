@@ -6,10 +6,12 @@
 import os
 import re
 import json
+import base64
+import io
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 try:
     from PIL import Image, ImageTk
@@ -19,6 +21,10 @@ except Exception:
 
 from modules.aux_tools import AuxTools
 from modules.app_metadata import MODULE_PAPER_WRITE
+from modules.diagram_blocks import new_diagram_block, sanitize_diagram_block
+from modules.diagram_generator import generate_from_prompt
+from modules.diagram_thumbnail import render_placeholder_png
+from modules.runtime_paths import resolve_data_path
 from modules.paper_writer import PaperWriter
 from modules.table_blocks import (
     TABLE_ALIGN_CENTER,
@@ -1932,6 +1938,315 @@ class _TableBlockWidget:
             self.frame.destroy()
 
 
+class _DiagramBlockWidget:
+    PREVIEW_W = 520
+    PREVIEW_H = 300
+    PREVIEW_MIN_W = 260
+    PREVIEW_MIN_H = 180
+    PREVIEW_MAX_W = 1400
+    PREVIEW_MAX_H = 1000
+    WINDOW_EXTRA_W = 80
+    WINDOW_EXTRA_H = 116
+    CAPTION_MAX_LEN = 18
+    CAPTION_TOPIC_KEYWORDS = (
+        ('架构', '架构图'),
+        ('流程', '流程图'),
+        ('结构', '结构图'),
+        ('关系', '关系图'),
+        ('框架', '框架图'),
+        ('模型', '模型图'),
+        ('时序', '时序图'),
+        ('用例', '用例图'),
+    )
+
+    def __init__(self, parent, block, on_change=None, on_delete=None, on_edit=None, figure_label=''):
+        self.parent = parent
+        self.on_change = on_change or (lambda: None)
+        self.on_delete = on_delete or (lambda _editor: None)
+        self.on_edit = on_edit or (lambda _editor: None)
+        self.figure_label = str(figure_label or '').strip()
+        self.block = sanitize_diagram_block(block or {}) or new_diagram_block(
+            mermaid='flowchart TB\n    A["开始"] --> B["处理"] --> C["结束"]',
+            caption='图表',
+        )
+        self.block_id = str(self.block.get('diagram_id', '') or os.urandom(6).hex())
+        self.display_width, self.display_height = self._normalize_display_size(self.block.get('display_size'))
+        self.block['display_size'] = {'w': self.display_width, 'h': self.display_height}
+        self.window_frame = None
+        self._photo = None
+        self._resize_state = None
+
+        self.frame = tk.Frame(
+            parent,
+            bg=COLORS['surface_alt'],
+            highlightbackground=COLORS['card_border'],
+            highlightthickness=1,
+        )
+        self.frame._diagram_block_editor = self
+        self._build()
+        self.refresh()
+
+    def _build(self):
+        header = tk.Frame(self.frame, bg=COLORS['surface_alt'])
+        header.pack(fill=tk.X, padx=8, pady=(8, 6))
+        self.title_label = tk.Label(
+            header,
+            text='图表',
+            font=FONTS.get('body_bold', FONTS['body']),
+            fg=COLORS['text_main'],
+            bg=COLORS['surface_alt'],
+            anchor='w',
+        )
+        self.title_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(
+            header,
+            text='编辑',
+            command=lambda: self.on_edit(self),
+            font=FONTS['small'],
+            bg=COLORS['primary'],
+            fg='#FFFFFF',
+            relief=tk.FLAT,
+            padx=10,
+            pady=3,
+            cursor='hand2',
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+        tk.Button(
+            header,
+            text='删除',
+            command=lambda: self.on_delete(self),
+            font=FONTS['small'],
+            bg=COLORS['card_bg'],
+            fg=COLORS['text_sub'],
+            relief=tk.FLAT,
+            padx=10,
+            pady=3,
+            cursor='hand2',
+        ).pack(side=tk.RIGHT)
+
+        self.preview_shell = tk.Frame(
+            self.frame,
+            bg='#FAFAFA',
+            width=self.display_width,
+            height=self.display_height,
+            highlightbackground=COLORS['input_border'],
+            highlightthickness=1,
+        )
+        self.preview_shell.pack(anchor='w', padx=8, pady=(0, 8))
+        self.preview_shell.pack_propagate(False)
+        self.preview = tk.Label(
+            self.preview_shell,
+            text='图表预览',
+            font=FONTS['small'],
+            fg=COLORS['text_sub'],
+            bg='#FAFAFA',
+            anchor='center',
+            justify=tk.CENTER,
+        )
+        self.preview.pack(fill=tk.BOTH, expand=True)
+
+        self.resize_handle = tk.Label(
+            self.frame,
+            text='↘',
+            font=FONTS['small'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['surface_alt'],
+            cursor='sizing',
+            anchor='center',
+        )
+        self.resize_handle.place(relx=1.0, rely=1.0, x=-3, y=-3, anchor='se', width=18, height=18)
+        self.resize_handle.bind('<ButtonPress-1>', self._start_resize)
+        self.resize_handle.bind('<B1-Motion>', self._drag_resize)
+        self.resize_handle.bind('<ButtonRelease-1>', self._stop_resize)
+
+    @classmethod
+    def _normalize_display_size(cls, value):
+        if not isinstance(value, dict):
+            return cls.PREVIEW_W, cls.PREVIEW_H
+        try:
+            width = int(float(value.get('w', value.get('width', cls.PREVIEW_W)) or cls.PREVIEW_W))
+        except (TypeError, ValueError):
+            width = cls.PREVIEW_W
+        try:
+            height = int(float(value.get('h', value.get('height', cls.PREVIEW_H)) or cls.PREVIEW_H))
+        except (TypeError, ValueError):
+            height = cls.PREVIEW_H
+        width = max(cls.PREVIEW_MIN_W, min(cls.PREVIEW_MAX_W, width))
+        height = max(cls.PREVIEW_MIN_H, min(cls.PREVIEW_MAX_H, height))
+        return width, height
+
+    def _set_display_size(self, width, height, *, redraw=True, notify=False):
+        self.display_width, self.display_height = self._normalize_display_size({'w': width, 'h': height})
+        self.block['display_size'] = {'w': self.display_width, 'h': self.display_height}
+        self._sync_window_frame_size()
+        if redraw:
+            self.refresh()
+        if notify:
+            self.on_change()
+
+    def _sync_window_frame_size(self):
+        shell = getattr(self, 'preview_shell', None)
+        if shell is not None and shell.winfo_exists():
+            shell.configure(width=self.display_width, height=self.display_height)
+        window_frame = getattr(self, 'window_frame', None)
+        if window_frame is not None and window_frame.winfo_exists():
+            window_frame.configure(
+                width=self.display_width + self.WINDOW_EXTRA_W,
+                height=self.display_height + self.WINDOW_EXTRA_H,
+            )
+
+    def _start_resize(self, event):
+        self._resize_state = {
+            'x_root': getattr(event, 'x_root', 0),
+            'y_root': getattr(event, 'y_root', 0),
+            'width': self.display_width,
+            'height': self.display_height,
+        }
+        try:
+            self.resize_handle.grab_set()
+        except tk.TclError:
+            pass
+        return 'break'
+
+    def _drag_resize(self, event):
+        state = self._resize_state
+        if not state:
+            return 'break'
+        width = int(state['width'] + getattr(event, 'x_root', 0) - state['x_root'])
+        height = int(state['height'] + getattr(event, 'y_root', 0) - state['y_root'])
+        self._set_display_size(width, height, redraw=True, notify=False)
+        return 'break'
+
+    def _stop_resize(self, event=None):
+        if not self._resize_state:
+            return 'break'
+        self._resize_state = None
+        try:
+            self.resize_handle.grab_release()
+        except tk.TclError:
+            pass
+        self._set_display_size(self.display_width, self.display_height, redraw=True, notify=True)
+        return 'break'
+
+    @classmethod
+    def _compact_caption(cls, caption):
+        text = re.sub(r'\s+', ' ', str(caption or '').strip())
+        text = re.sub(
+            r'^图\s*[0-9一二三四五六七八九十百千万]+(?:\.[0-9一二三四五六七八九十百千万]+)*\s*[-:：、.]*\s*',
+            '',
+            text,
+        )
+        text = re.sub(
+            r'\s*[·|/]\s*(?:flowchart|freeform|drawio|mermaid|mxgraph|xml)\b.*$',
+            '',
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = text.strip(' \t\r\n-—:：、，,。.；;')
+        if not text or re.fullmatch(r'[\d\W_]+', text):
+            return '架构图'
+
+        lowered = text.lower()
+        for keyword, label in cls.CAPTION_TOPIC_KEYWORDS:
+            if keyword.lower() in lowered:
+                return label
+
+        if len(text) > cls.CAPTION_MAX_LEN:
+            return '架构图'
+        return text
+
+    def _title_text(self):
+        caption = self._compact_caption(self.block.get('caption') or '')
+        if self.figure_label:
+            return f'{self.figure_label} {caption}'
+        return caption or '图表'
+
+    def _fit_image_to_preview(self, image):
+        target = (self.display_width, self.display_height)
+        image = image.convert('RGB')
+        image.thumbnail(target, Image.LANCZOS)
+        canvas = Image.new('RGB', target, '#FAFAFA')
+        x = max(0, (target[0] - image.width) // 2)
+        y = max(0, (target[1] - image.height) // 2)
+        canvas.paste(image, (x, y))
+        return canvas
+
+    def _thumbnail_image(self):
+        if Image is None or ImageTk is None:
+            return None
+
+        b64 = str(self.block.get('thumbnail_b64') or '').strip()
+        if b64:
+            try:
+                payload = b64.split(',', 1)[1] if ',' in b64 else b64
+                raw = base64.b64decode(payload)
+                image = Image.open(io.BytesIO(raw)).convert('RGB')
+                return self._fit_image_to_preview(image)
+            except Exception:
+                pass
+
+        thumb_path = str(self.block.get('thumbnail_path') or '').strip()
+        if thumb_path:
+            for path in (thumb_path, resolve_data_path(thumb_path)):
+                if not os.path.exists(path):
+                    continue
+                try:
+                    image = Image.open(path).convert('RGB')
+                    return self._fit_image_to_preview(image)
+                except Exception:
+                    pass
+
+        return render_placeholder_png(
+            self.block.get('json_graph') or {},
+            caption=self.block.get('caption') or '',
+            size=(self.display_width, self.display_height),
+        )
+
+    def refresh(self):
+        caption = self._compact_caption(self.block.get('caption') or '')
+        self.title_label.config(text=self._title_text())
+        self._sync_window_frame_size()
+        image = self._thumbnail_image()
+        if image is not None and ImageTk is not None:
+            self._photo = ImageTk.PhotoImage(image)
+            self.preview.config(image=self._photo, text='', width=self.display_width, height=self.display_height)
+        else:
+            node_count = len((self.block.get('json_graph') or {}).get('nodes') or [])
+            edge_count = len((self.block.get('json_graph') or {}).get('edges') or [])
+            self.preview.config(
+                image='',
+                text=f'{caption}\n节点 {node_count}，连线 {edge_count}',
+                width=self.display_width,
+                height=self.display_height,
+            )
+
+    def serialize(self):
+        return sanitize_diagram_block(self.block) or self.block
+
+    def set_data(self, block):
+        sanitized = sanitize_diagram_block(block)
+        if not sanitized:
+            return
+        self.block = sanitized
+        self.block_id = str(sanitized.get('diagram_id', self.block_id) or self.block_id)
+        self.display_width, self.display_height = self._normalize_display_size(sanitized.get('display_size'))
+        self.block['display_size'] = {'w': self.display_width, 'h': self.display_height}
+        self.refresh()
+        self.on_change()
+
+    def destroy(self):
+        if self._resize_state:
+            try:
+                self.resize_handle.grab_release()
+            except tk.TclError:
+                pass
+            self._resize_state = None
+        window_frame = getattr(self, 'window_frame', None)
+        if window_frame is not None and window_frame.winfo_exists():
+            window_frame.destroy()
+        elif self.frame.winfo_exists():
+            self.frame.destroy()
+
+
 class PaperWritePage(WorkspaceStateMixin):
     PAGE_STATE_ID = 'paper_write'
     PARAGRAPH_INDENT = '　　'
@@ -2093,7 +2408,7 @@ class PaperWritePage(WorkspaceStateMixin):
         self.task_runner = TaskRunner(self.frame, loading=self.loading, set_status=self.set_status)
         self._snapshots = []
         self._sections = {}   # {章节标题: 内容}
-        self._section_blocks = {}  # {章节标题: [段落块/表格块]}
+        self._section_blocks = {}  # {章节标题: [段落块/表格块/图表块]}
         self._section_formats = {}  # {章节标题: [{'tag': 'fmt_*', 'start': '1.0', 'end': '1.4'}]}
         self._section_order = []  # 章节顺序
         self._section_levels = {}  # {章节标题: 层级}
@@ -2681,6 +2996,18 @@ class PaperWritePage(WorkspaceStateMixin):
         )
         self._write_table_button_shell.pack(side=tk.LEFT, padx=(0, 8))
 
+        self._write_diagram_button_shell, self._write_diagram_button = create_home_shell_button(
+            top_row,
+            '生成图表',
+            command=self._generate_diagram_block,
+            style='secondary',
+            padx=12,
+            pady=6,
+            font=FONTS['body'],
+            border_color=THEMES['light']['card_border'],
+        )
+        self._write_diagram_button_shell.pack(side=tk.LEFT, padx=(0, 8))
+
         self._write_section_button_shell, self._write_section_button = create_home_shell_button(
             top_row,
             '写当前章节',
@@ -3165,6 +3492,102 @@ class PaperWritePage(WorkspaceStateMixin):
     def _get_current_editor_text(self):
         return blocks_to_plain_text(self._get_current_editor_blocks())
 
+    @staticmethod
+    def _chinese_numeral_to_int(text):
+        digits = {
+            '零': 0,
+            '一': 1,
+            '二': 2,
+            '三': 3,
+            '四': 4,
+            '五': 5,
+            '六': 6,
+            '七': 7,
+            '八': 8,
+            '九': 9,
+            '两': 2,
+        }
+        units = {'十': 10, '百': 100, '千': 1000, '万': 10000}
+        total = 0
+        section = 0
+        number = 0
+        for char in str(text or ''):
+            if char in digits:
+                number = digits[char]
+                continue
+            unit = units.get(char)
+            if not unit:
+                continue
+            if unit == 10000:
+                total += (section + number) * unit
+                section = 0
+            else:
+                section += (number or 1) * unit
+            number = 0
+        return total + section + number
+
+    @classmethod
+    def _figure_chapter_number_from_title(cls, title):
+        text = str(title or '').strip()
+        if not text:
+            return ''
+
+        candidates = [text]
+        parsed = cls._analyze_outline_heading(text)
+        if parsed:
+            candidates.extend([
+                str(parsed.get('prefix') or ''),
+                str(parsed.get('body') or ''),
+                str(parsed.get('title') or ''),
+            ])
+        joined = ' '.join(item for item in candidates if item)
+
+        chapter = re.search(r'第\s*(\d+)\s*[章节部分篇]', joined)
+        if chapter:
+            return str(int(chapter.group(1)))
+
+        chapter = re.search(r'第\s*([一二三四五六七八九十百千万两]+)\s*[章节部分篇]', joined)
+        if chapter:
+            number = cls._chinese_numeral_to_int(chapter.group(1))
+            return str(number) if number > 0 else ''
+
+        numeric = re.match(r'\s*#*\s*(\d+)(?:\.\d+)*[\s、．.:：]', joined)
+        if numeric:
+            return str(int(numeric.group(1)))
+
+        chinese = re.match(r'\s*#*\s*([一二三四五六七八九十百千万两]+)[\s、．.]', joined)
+        if chinese:
+            number = cls._chinese_numeral_to_int(chinese.group(1))
+            return str(number) if number > 0 else ''
+
+        return ''
+
+    def _diagram_figure_chapter_number(self, section_title):
+        section = str(section_title or '').strip()
+        candidate = section
+        visited = set()
+        while candidate and candidate not in visited:
+            visited.add(candidate)
+            number = self._figure_chapter_number_from_title(candidate)
+            if number:
+                return number
+            candidate = self._section_parent.get(candidate, '')
+
+        order = list(getattr(self, '_section_order', []) or [])
+        if section in order:
+            chapter_count = 0
+            for title in order[:order.index(section) + 1]:
+                if self._classify_outline_special_title(title):
+                    continue
+                level = self._section_levels.get(title, self._infer_outline_level(title))
+                if int(level or 1) <= 1:
+                    chapter_count += 1
+            if chapter_count > 0:
+                return str(chapter_count)
+            return str(order.index(section) + 1)
+
+        return '1'
+
     def _capture_editor_blocks(self):
         if not getattr(self, 'edit_text', None):
             return []
@@ -3201,6 +3624,10 @@ class PaperWritePage(WorkspaceStateMixin):
                 editor = getattr(widget, '_table_block_editor', None) if widget is not None else None
                 if editor is not None:
                     blocks.append(editor.serialize())
+                    continue
+                editor = getattr(widget, '_diagram_block_editor', None) if widget is not None else None
+                if editor is not None:
+                    blocks.append(editor.serialize())
 
         flush_text_buffer()
         return self._normalize_section_blocks(blocks)
@@ -3223,6 +3650,24 @@ class PaperWritePage(WorkspaceStateMixin):
         self._editor_block_widgets.append(editor)
         return editor
 
+    def _render_diagram_block(self, parent, block, figure_label=''):
+        window_frame = tk.Frame(parent, bg=COLORS['input_bg'])
+        editor = _DiagramBlockWidget(
+            window_frame,
+            block,
+            on_change=self._on_diagram_block_changed,
+            on_delete=self._remove_diagram_block_widget,
+            on_edit=self._edit_diagram_block_widget,
+            figure_label=figure_label,
+        )
+        editor.window_frame = window_frame
+        window_frame._diagram_block_editor = editor
+        window_frame.pack_propagate(False)
+        editor.frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 48))
+        editor._sync_window_frame_size()
+        self._editor_block_widgets.append(editor)
+        return editor
+
     def _set_active_table_editor(self, editor):
         if editor is not None:
             self._active_table_editor = editor
@@ -3233,6 +3678,9 @@ class PaperWritePage(WorkspaceStateMixin):
         self.edit_text.delete('1.0', tk.END)
 
         sanitized_blocks = self._normalize_section_blocks(blocks)
+        section_title = self._editor_section_source or self.section_entry.get().strip()
+        chapter_number = self._diagram_figure_chapter_number(section_title)
+        diagram_index = 0
         for block_index, block in enumerate(sanitized_blocks):
             if block_index > 0:
                 self.edit_text.insert(tk.END, '\n\n')
@@ -3242,6 +3690,12 @@ class PaperWritePage(WorkspaceStateMixin):
                 continue
             if block['type'] == 'table':
                 editor = self._render_table_block(self.edit_text, block)
+                self.edit_text.window_create(tk.END, window=editor.window_frame)
+                continue
+            if block['type'] == 'diagram':
+                diagram_index += 1
+                figure_label = f'图{chapter_number}.{diagram_index}'
+                editor = self._render_diagram_block(self.edit_text, block, figure_label=figure_label)
                 self.edit_text.window_create(tk.END, window=editor.window_frame)
 
         self._clear_editor_format_tags()
@@ -3297,6 +3751,59 @@ class PaperWritePage(WorkspaceStateMixin):
         self._touch_context_revision()
         self._update_stats()
         self._schedule_workspace_state_save()
+
+    def _remove_diagram_block_widget(self, editor):
+        current_section = self._editor_section_source or self.section_entry.get().strip()
+        if not current_section:
+            return
+        blocks = self._capture_editor_blocks()
+        diagram_id = getattr(editor, 'block_id', '')
+        filtered = []
+        removed = False
+        for block in blocks:
+            if block.get('type') == 'diagram' and str(block.get('diagram_id', '') or '') == str(diagram_id or ''):
+                removed = True
+                continue
+            filtered.append(block)
+        if not removed:
+            return
+        self._set_section_blocks(current_section, filtered)
+        self._set_editor_content('', self._section_formats.get(current_section, []), reset_undo=True, blocks=filtered)
+        self._touch_context_revision()
+        self._update_stats()
+        self._capture_selection_snapshot()
+        self._schedule_workspace_state_save()
+        self.set_status('已删除图表')
+
+    def _on_diagram_block_changed(self):
+        current_section = self._editor_section_source or self.section_entry.get().strip()
+        if current_section:
+            blocks = self._capture_editor_blocks()
+            self._set_section_blocks(current_section, blocks)
+        self._touch_context_revision()
+        self._update_stats()
+        self._schedule_workspace_state_save()
+
+    def _edit_diagram_block_widget(self, editor):
+        try:
+            from pages.diagram_editor_dialog import open_diagram_editor
+        except Exception as exc:
+            messagebox.showerror('图表编辑', f'图表编辑器加载失败：{exc}', parent=self.frame)
+            return
+
+        def on_save(new_block):
+            editor.set_data(new_block)
+            self._on_diagram_block_changed()
+            self.set_status('图表已更新')
+
+        open_diagram_editor(
+            self.frame,
+            editor.serialize(),
+            on_save=on_save,
+            api_client=self.api,
+            task_runner=self.task_runner,
+            prefer_webview=True,
+        )
 
     def _clear_editor_format_tags(self):
         for tag in self._format_tag_names():
@@ -5018,11 +5525,15 @@ class PaperWritePage(WorkspaceStateMixin):
 
     def export_polish_context(self):
         current_section = self.section_entry.get().strip()
+        selected_section = ''
+        if hasattr(self, '_outline_selected') and self._outline_selected is not None:
+            selected_section = self._outline_selected.get().strip()
         current_content = self._get_current_editor_text()
         outline_text = self.outline_text.get('1.0', tk.END).strip()
         return {
             'paper_title': self.topic_entry.get().strip(),
             'current_section': current_section,
+            'selected_section': selected_section,
             'current_content': current_content,
             'outline_text': outline_text,
             'context_revision': self._context_revision,
@@ -5131,7 +5642,7 @@ class PaperWritePage(WorkspaceStateMixin):
             existing_content,
             new_content,
             source_spans=existing_formats,
-        ) if section_name and not any(block.get('type') == 'table' for block in new_blocks) else []
+        ) if section_name and not any(block.get('type') in {'table', 'diagram'} for block in new_blocks) else []
 
         if section_name:
             self.section_entry.delete(0, tk.END)
@@ -5626,7 +6137,7 @@ class PaperWritePage(WorkspaceStateMixin):
     def _section_has_structured_table_blocks(self, title, blocks_map=None):
         source = blocks_map if isinstance(blocks_map, dict) else self._section_blocks
         blocks = source.get(title, [])
-        return any(isinstance(block, dict) and block.get('type') == 'table' for block in blocks)
+        return any(isinstance(block, dict) and block.get('type') in {'table', 'diagram'} for block in blocks)
 
     def _apply_normalized_outline_state(self, normalized, preserve_blocks=False):
         old_sections = dict(self._sections)
@@ -6422,6 +6933,22 @@ class PaperWritePage(WorkspaceStateMixin):
                         'caption': caption[:120],
                         'rows_preview': preview_rows,
                         'row_count': len(rows),
+                    }
+                )
+                continue
+            if block_type == 'diagram':
+                graph = block.get('json_graph') or {}
+                nodes = graph.get('nodes') or [] if isinstance(graph, dict) else []
+                edges = graph.get('edges') or [] if isinstance(graph, dict) else []
+                payload.append(
+                    {
+                        'index': index,
+                        'type': 'diagram',
+                        'caption': str(block.get('caption', '') or '').strip()[:120],
+                        'diagram_kind': str(block.get('diagram_kind', '') or '').strip()[:40],
+                        'authoring_format': str(block.get('authoring_format', '') or '').strip()[:20],
+                        'node_count': len(nodes),
+                        'edge_count': len(edges),
                     }
                 )
         return payload
@@ -7349,7 +7876,7 @@ class PaperWritePage(WorkspaceStateMixin):
             if merged_text == original_merged_text
             else []
         )
-        if any(block.get('type') == 'table' for block in merged_blocks):
+        if any(block.get('type') in {'table', 'diagram'} for block in merged_blocks):
             merged_formats = []
 
         self._sections[section] = merged_text
@@ -8021,16 +8548,27 @@ class PaperWritePage(WorkspaceStateMixin):
     def _cancel_outline_title_edit(self, title):
         row_info = getattr(self, '_outline_row_widgets', {}).get(title)
         if not row_info:
-            self._outline_editing_title = ''
+            if self._outline_editing_title == title:
+                self._outline_editing_title = ''
             return
 
         entry = row_info.pop('editor', None)
+        if self._outline_editing_title == title:
+            self._outline_editing_title = ''
         if entry and entry.winfo_exists():
+            try:
+                entry.unbind('<FocusOut>')
+                entry.unbind('<Return>')
+                entry.unbind('<Escape>')
+            except tk.TclError:
+                pass
             entry.destroy()
         row_info['title'].pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=6)
-        self._outline_editing_title = ''
 
     def _commit_outline_title_edit(self, title):
+        if self._outline_editing_title != title:
+            return
+
         row_info = getattr(self, '_outline_row_widgets', {}).get(title)
         if not row_info:
             self._outline_editing_title = ''
@@ -8436,7 +8974,7 @@ class PaperWritePage(WorkspaceStateMixin):
                     existing,
                     merged,
                     source_spans=existing_formats,
-                ) if not any(block.get('type') == 'table' for block in merged_blocks) else []
+                ) if not any(block.get('type') in {'table', 'diagram'} for block in merged_blocks) else []
                 self._set_section_blocks(section, merged_blocks)
                 self._section_formats[section] = merged_formats
                 if references_text:
@@ -8878,6 +9416,95 @@ class PaperWritePage(WorkspaceStateMixin):
             status_text='正在生成表格...',
             status_color=COLORS['warning'],
         )
+
+    def _generate_diagram_block(self):
+        section = self.section_entry.get().strip()
+        if not section:
+            messagebox.showwarning('提示', '请输入当前章节名称', parent=self.frame)
+            return
+        if not ensure_model_configured(self.config, self.frame, self.app_bridge):
+            return
+
+        instruction = simpledialog.askstring(
+            '生成图表',
+            '请输入图表需求：',
+            parent=self.frame,
+        )
+        if not instruction or not instruction.strip():
+            return
+
+        existing = self._get_current_editor_text()
+        knowledge_context = self._choose_knowledge_context('paper_write.diagram_generate', '生成图表')
+        if knowledge_context is None:
+            return
+
+        prompt = (
+            f'章节：{section}\n\n'
+            f'已有正文：\n{existing[:4000]}\n\n'
+            f'图表需求：{instruction.strip()}'
+        )
+
+        def on_success(block):
+            outcome = self.insert_external_diagram_block(block, section_hint=section)
+            if outcome.get('ok'):
+                self._add_history_version(
+                    '生成图表',
+                    instruction.strip(),
+                    block.get('caption') or '图表',
+                    extra={'topic': section, 'diagram_id': block.get('diagram_id', '')},
+                )
+                self.set_status('图表已生成并插入当前章节')
+            else:
+                self.set_status(outcome.get('message', '图表插入失败'), COLORS['error'])
+
+        def on_error(exc):
+            self.set_status(f'图表生成失败: {exc}', COLORS['error'])
+
+        self.task_runner.run(
+            work=lambda: generate_from_prompt(
+                self.api,
+                prompt,
+                diagram_kind='flowchart',
+                scene_id='paper_write.diagram_generate',
+            ),
+            on_success=on_success,
+            on_error=on_error,
+            loading_text='正在生成图表...',
+            status_text='正在生成图表...',
+            status_color=COLORS['warning'],
+        )
+
+    def insert_external_diagram_block(self, block, section_hint=''):
+        diagram = sanitize_diagram_block(block)
+        if not diagram:
+            return {'ok': False, 'message': '图表内容无效'}
+
+        section = (section_hint or '').strip() or self._editor_section_source or self.section_entry.get().strip()
+        if not section:
+            return {'ok': False, 'message': '请先选择或输入当前章节'}
+
+        if self.section_entry.get().strip() != section:
+            self.section_entry.delete(0, tk.END)
+            self.section_entry.insert(0, section)
+
+        blocks = self._get_current_editor_blocks()
+        if self._editor_section_source and self._editor_section_source != section:
+            blocks = self._get_section_blocks(section)
+        blocks = self._normalize_section_blocks(blocks + [diagram])
+        self._set_section_blocks(section, blocks)
+        self._set_editor_content('', self._section_formats.get(section, []), reset_undo=False, blocks=blocks)
+        self._editor_section_source = section
+        if section not in self._section_order:
+            self._section_order.append(section)
+            self._section_levels[section] = self._infer_outline_level(section)
+            self._section_parent[section] = self._find_parent_for_insert(len(self._section_order) - 1, self._section_levels[section])
+            self._rebuild_section_children()
+            self._sync_outline_text_from_sections()
+            self._refresh_outline_list()
+        self._touch_context_revision()
+        self._update_stats()
+        self._schedule_workspace_state_save()
+        return {'ok': True, 'message': '图表已插入论文写作页', 'section': section}
 
     def _gen_abstract(self):
         full_text = self._collect_full_text_for_abstract()
