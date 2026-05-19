@@ -22,6 +22,7 @@ PROMPT_SOURCES = (PROMPT_SOURCE_SYSTEM, PROMPT_SOURCE_USER)
 
 PAGE_ORDER = (
     'paper_write',
+    'ai_diagram',
     'ai_reduce',
     'plagiarism',
     'polish',
@@ -30,6 +31,7 @@ PAGE_ORDER = (
 
 PAGE_META = {
     'paper_write': {'label': '论文写作'},
+    'ai_diagram': {'label': 'AI 图表'},
     'ai_reduce': {'label': '降AI检测'},
     'plagiarism': {'label': '降查重率'},
     'polish': {'label': '学术润色'},
@@ -176,6 +178,21 @@ SCENE_DEFS = {
         'required_variables': ('text',),
         'warning': '该提示词仅影响 AI 补充识别，不影响本地规则检测。',
     },
+    'ai_diagram.chat': {
+        'page_id': 'ai_diagram',
+        'page_label': 'AI 图表',
+        'label': '图表对话',
+        'variables': (
+            ('instruction', '用户指令'),
+            ('current_xml', '当前 XML'),
+            ('previous_xml', '上一版 XML'),
+            ('pending_xml', '待续写片段'),
+            ('knowledge_context', '知识库资料'),
+            ('attachment_context', '附件资料'),
+            ('tool_feedback', '工具反馈'),
+        ),
+        'required_variables': ('instruction', 'current_xml'),
+    },
 }
 
 PAGE_SCENE_MAP = {}
@@ -185,6 +202,7 @@ for _scene_id, _scene_def in SCENE_DEFS.items():
 DEFAULTS_PATH = resolve_resource_path('modules', 'prompt_defaults.json')
 SYSTEM_DEFAULT_SYNC_SCENE_IDS = (
     'paper_write.outline', 'paper_write.section', 'paper_write.abstract', 'paper_write.import_outline',
+    'ai_diagram.chat',
     'polish.run_task', 'polish.translate', 'polish.grammar', 'polish.academic_vocab', 'polish.logic', 'polish.full',
     'ai_reduce.transform', 'plagiarism.transform', 'correction.ai_review',
 )

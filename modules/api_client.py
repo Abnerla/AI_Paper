@@ -85,6 +85,14 @@ class APIClient:
         'presence_penalty',
         'frequency_penalty',
     )
+    IMAGE_MODEL_HINTS = (
+        'gpt-4o', 'gpt-4.1', 'gpt-4.5', 'o3', 'o4', 'vision',
+        'claude-3', 'claude-sonnet', 'claude-opus', 'claude-haiku',
+        'gemini', 'qwen-vl', 'qvq', 'glm-4v', 'glm-4.1v',
+    )
+    TEXT_ONLY_MODEL_HINTS = (
+        'deepseek', 'text-', 'embedding', 'rerank', 'moonshot-v1',
+    )
 
     def __init__(self, config_mgr, log_callback=None):
         self.config = config_mgr
@@ -964,7 +972,90 @@ class APIClient:
             merged[key] = value
         return merged, sorted(set(ignored_keys)), sorted(set(removed_keys))
 
-    def _prepare_openai_compat_request(self, prompt, system, cfg, temperature, max_tokens):
+    @classmethod
+    def _normalize_multimodal_attachments(cls, attachments):
+        normalized = []
+        for item in list(attachments or []):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get('type') or '').strip().lower() not in {'image', 'input_image'}:
+                continue
+            data = str(item.get('data') or item.get('base64') or '').strip()
+            mime_type = str(item.get('mime_type') or item.get('media_type') or 'image/png').strip()
+            if not data or not mime_type.startswith('image/'):
+                continue
+            normalized.append({
+                'type': 'image',
+                'mime_type': mime_type,
+                'data': data,
+                'title': str(item.get('title') or '').strip(),
+                'source': str(item.get('source') or '').strip(),
+            })
+        return normalized
+
+    @classmethod
+    def _openai_user_content(cls, prompt, attachments):
+        images = cls._normalize_multimodal_attachments(attachments)
+        if not images:
+            return prompt
+        content = [{'type': 'text', 'text': prompt}]
+        for image in images:
+            content.append({
+                'type': 'image_url',
+                'image_url': {
+                    'url': f'data:{image["mime_type"]};base64,{image["data"]}',
+                },
+            })
+        return content
+
+    @classmethod
+    def _claude_user_content(cls, prompt, attachments):
+        images = cls._normalize_multimodal_attachments(attachments)
+        if not images:
+            return prompt
+        content = [{'type': 'text', 'text': prompt}]
+        for image in images:
+            content.append({
+                'type': 'image',
+                'source': {
+                    'type': 'base64',
+                    'media_type': image['mime_type'],
+                    'data': image['data'],
+                },
+            })
+        return content
+
+    @classmethod
+    def _gemini_user_parts(cls, prompt, attachments):
+        parts = [{'text': prompt}]
+        for image in cls._normalize_multimodal_attachments(attachments):
+            parts.append({
+                'inlineData': {
+                    'mimeType': image['mime_type'],
+                    'data': image['data'],
+                },
+            })
+        return parts
+
+    def supports_multimodal_attachments(self, api_name=None, usage_context=None, cfg=None):
+        """判断当前路由模型是否具备图片输入能力。"""
+        if api_name is None:
+            api_name = self._resolve_api_for_request(api_name, usage_context, cfg)
+        record = self._get_config(api_name, cfg=cfg)
+        record = self._resolve_effective_request_config(record)
+        handler_name = self._resolve_handler_name(api_name, record)
+        if handler_name not in {HANDLER_OPENAI, HANDLER_CLAUDE, HANDLER_GEMINI}:
+            return False
+        model_name = str(record.get('model') or '').strip().lower()
+        if any(hint in model_name for hint in self.TEXT_ONLY_MODEL_HINTS):
+            return False
+        if handler_name == HANDLER_GEMINI:
+            return True
+        if handler_name == HANDLER_CLAUDE:
+            return bool(model_name) and any(hint in model_name for hint in self.IMAGE_MODEL_HINTS)
+        return bool(model_name) and any(hint in model_name for hint in self.IMAGE_MODEL_HINTS)
+
+    def _prepare_openai_compat_request(self, prompt, system, cfg, temperature, max_tokens, multimodal_attachments=None):
         key = str((cfg or {}).get('key', '') or '').strip()
         if not key:
             raise ValueError('OpenAI API Key is not configured')
@@ -989,7 +1080,7 @@ class APIClient:
         messages = []
         if system:
             messages.append({'role': 'system', 'content': system})
-        messages.append({'role': 'user', 'content': prompt})
+        messages.append({'role': 'user', 'content': self._openai_user_content(prompt, multimodal_attachments)})
 
         payload = {
             'model': request_model,
@@ -1070,7 +1161,7 @@ class APIClient:
             'ignored_extra_header_keys': ignored_extra_header_keys,
         }
 
-    def _prepare_gemini_request(self, prompt, system, cfg, temperature, max_tokens):
+    def _prepare_gemini_request(self, prompt, system, cfg, temperature, max_tokens, multimodal_attachments=None):
         key = str((cfg or {}).get('key', '') or '').strip()
         if not key:
             raise ValueError('Gemini API Key is not configured')
@@ -1107,7 +1198,7 @@ class APIClient:
             'contents': [
                 {
                     'role': 'user',
-                    'parts': [{'text': prompt}],
+                    'parts': self._gemini_user_parts(prompt, multimodal_attachments),
                 }
             ],
         }
@@ -1639,6 +1730,7 @@ class APIClient:
         cfg: dict = None,
         usage_context: dict = None,
         disable_skills: bool = False,
+        multimodal_attachments=None,
     ) -> str:
         """同步调用 AI API"""
         if api_name is None:
@@ -1654,6 +1746,7 @@ class APIClient:
             cfg=cfg,
             usage_context=usage_context,
             disable_skills=disable_skills,
+            multimodal_attachments=multimodal_attachments,
         )
 
     def call_json_sync(
@@ -1669,6 +1762,7 @@ class APIClient:
         schema_name: str = '',
         usage_context: dict = None,
         disable_skills: bool = False,
+        multimodal_attachments=None,
     ):
         """Call the AI API and force JSON parsing."""
         schema_hint = f' (schema={schema_name})' if schema_name else ''
@@ -1687,6 +1781,7 @@ class APIClient:
             cfg=cfg,
             usage_context=usage_context,
             disable_skills=disable_skills,
+            multimodal_attachments=multimodal_attachments,
         )
         payload = self._extract_json_payload(raw)
         try:
@@ -1708,6 +1803,7 @@ class APIClient:
         return_payload=False,
         allow_empty_response=False,
         disable_skills=False,
+        multimodal_attachments=None,
     ):
         handlers = {
             HANDLER_OPENAI: self._call_openai_compat,
@@ -1738,6 +1834,7 @@ class APIClient:
             'metadata': {},
             'applied_skills': [],
         }
+        multimodal_attachments = self._normalize_multimodal_attachments(multimodal_attachments)
         if not disable_skills and getattr(self, 'skills_runtime', None):
             try:
                 request_state = self.skills_runtime.prepare_request(
@@ -1770,6 +1867,7 @@ class APIClient:
             f'model={model_name} '
             f'prompt_len={len(prompt or "")} '
             f'system_len={len(system or "")} '
+            f'attachments={len(multimodal_attachments)} '
             f'max_tokens={max_tokens_value if max_tokens_value is not None else "-"} '
             f'temperature={temperature_value if temperature_value is not None else "-"} '
             f'timeout={timeout_value}'
@@ -1783,6 +1881,7 @@ class APIClient:
                 max_tokens_value,
                 request_timeout=timeout_value,
                 allow_empty_response=allow_empty_response,
+                multimodal_attachments=multimodal_attachments,
             )
         except Exception as exc:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1897,7 +1996,7 @@ class APIClient:
             return result_text, dict(response_payload or {})
         return result_text
 
-    def _call_reserved_protocol(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False):
+    def _call_reserved_protocol(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False, multimodal_attachments=None):
         api_format = normalize_api_format((cfg or {}).get('api_format', ''))
         if api_format == API_FORMAT_AWS_BEDROCK_RESERVED:
             raise NotImplementedError('AWS Bedrock protocol is reserved but not implemented yet')
@@ -2113,9 +2212,9 @@ class APIClient:
                 if isinstance(exc, urllib.error.URLError):
                     raise RuntimeError(f'网络传输异常: {error_message}')
                 raise RuntimeError(error_message)
-    def _call_openai_compat(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False):
+    def _call_openai_compat(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False, multimodal_attachments=None):
         """Call an OpenAI-compatible endpoint."""
-        prepared = self._prepare_openai_compat_request(prompt, system, cfg, temperature, max_tokens)
+        prepared = self._prepare_openai_compat_request(prompt, system, cfg, temperature, max_tokens, multimodal_attachments=multimodal_attachments)
         compatibility_rules = sorted(set(prepared.get('compatibility_rules', [])))
         request_extra = {
             'auth_field': prepared['auth_field'],
@@ -2127,6 +2226,7 @@ class APIClient:
             'removed_extra_json_keys': list(prepared.get('removed_extra_json_keys', []) or []),
             'extra_header_keys': list(prepared.get('extra_header_keys', []) or []),
             'ignored_extra_header_keys': list(prepared.get('ignored_extra_header_keys', []) or []),
+            'multimodal_attachment_count': len(self._normalize_multimodal_attachments(multimodal_attachments)),
         }
         self._log(
             '[openai_compat] '
@@ -2258,13 +2358,13 @@ class APIClient:
             'request_detail': {'request': request_detail, 'response': response_detail},
         }
 
-    def _call_claude(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False):
+    def _call_claude(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False, multimodal_attachments=None):
         """閻犲鍟伴弫顥thropic Claude API"""
         urls = self._resolve_claude_urls(cfg.get('base_url', 'https://api.anthropic.com'))
         model = cfg.get('model', get_preset_definition('claude').get('model', 'claude-sonnet-4-6'))
         data = {
             'model': model,
-            'messages': [{'role': 'user', 'content': prompt}],
+            'messages': [{'role': 'user', 'content': self._claude_user_content(prompt, multimodal_attachments)}],
             'max_tokens': max_tokens if max_tokens is not None else 4096,
         }
         if temperature is not None:
@@ -2336,6 +2436,7 @@ class APIClient:
                 'request_model': model,
                 'auth_field': header_bundle['auth_field'],
                 'use_bearer': bool(header_bundle['use_bearer']),
+                'multimodal_attachment_count': len(self._normalize_multimodal_attachments(multimodal_attachments)),
             },
         )
         try:
@@ -2368,9 +2469,9 @@ class APIClient:
             'request_detail': {'request': request_detail, 'response': response_detail},
         }
 
-    def _call_gemini(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False):
+    def _call_gemini(self, prompt, system, cfg, temperature, max_tokens, request_timeout=None, allow_empty_response=False, multimodal_attachments=None):
         """Call the Gemini native API."""
-        prepared = self._prepare_gemini_request(prompt, system, cfg, temperature, max_tokens)
+        prepared = self._prepare_gemini_request(prompt, system, cfg, temperature, max_tokens, multimodal_attachments=multimodal_attachments)
         self._log(
             '[gemini] '
             f'endpoint={self._sanitize_url_for_log(prepared["url"])} '
@@ -2403,6 +2504,7 @@ class APIClient:
                 'removed_extra_json_keys': list(prepared.get('removed_extra_json_keys', []) or []),
                 'extra_header_keys': list(prepared.get('extra_header_keys', []) or []),
                 'ignored_extra_header_keys': list(prepared.get('ignored_extra_header_keys', []) or []),
+                'multimodal_attachment_count': len(self._normalize_multimodal_attachments(multimodal_attachments)),
             },
         )
         try:

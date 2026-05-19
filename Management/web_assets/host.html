@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>图表编辑器</title>
+  <link rel="stylesheet" href="host.css" />
+</head>
+<body>
+  <div class="body">
+    <div class="left-pane">
+      <div class="left-toolbar">
+        <input id="caption" type="text" placeholder="图表标题" />
+        <select id="kind"></select>
+      </div>
+      <div class="pane-title">Mermaid 源代码</div>
+      <textarea id="mermaid" spellcheck="false"></textarea>
+      <div class="pane-hint">Ctrl+Enter 保存，Esc 取消。修改文本后右侧会实时渲染。</div>
+    </div>
+    <div class="right-pane">
+      <div class="right-toolbar">
+        <div class="pane-title" id="rightPaneTitle">实时预览</div>
+        <span id="status" class="status">就绪</span>
+        <button id="btnDrawio" class="ghost" title="切换到 draw.io 视图（需安装离线包）" disabled>draw.io 视图</button>
+        <button id="btnSave" class="primary">保存并关闭</button>
+        <button id="btnCancel" class="ghost">取消</button>
+      </div>
+      <div id="preview" class="preview-box"></div>
+      <iframe id="drawioFrame" class="drawio-frame hidden"
+              src="about:blank"
+              sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>
+      <div id="parseInfo" class="parse-info"></div>
+    </div>
+  </div>
+  <script src="mermaid/mermaid.min.js"></script>
+  <script src="host.js"></script>
+</body>
+</html>

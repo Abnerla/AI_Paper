@@ -86,6 +86,7 @@ from modules.config import ConfigManager, resolve_model_display_name
 from modules.api_client import APIClient
 from modules.app_bridge import AppBridge
 from modules.history import HistoryManager
+from modules.mcp_service_manager import MCPServiceManager
 from modules.remote_content import RemoteContentManager, compare_versions, normalize_version
 from modules.runtime_logging import RuntimeLogStream, format_exception_trace
 from modules.skills_runtime import SkillManager
@@ -417,6 +418,9 @@ class SmartPaperTool:
         self._knowledge_base_window = None
         self._knowledge_base_panel = None
         self._knowledge_base_store = None
+        self._mcp_services_window = None
+        self._mcp_services_panel = None
+        self.mcp_service_manager = None
         self._discover_skills_window = None
         self._discover_skills_panel = None
         self._repo_manage_window = None
@@ -551,6 +555,11 @@ class SmartPaperTool:
         self.api_client = APIClient(self.config_mgr, log_callback=self._write_app_log)
         self.skill_manager = SkillManager(self.config_mgr, api_client=self.api_client, log_callback=self._write_app_log)
         self.api_client.set_skills_runtime(self.skill_manager)
+        self.mcp_service_manager = MCPServiceManager(
+            self.config_mgr,
+            log_callback=self._write_app_log,
+            app_bridge=self.app_bridge,
+        )
         self._remote_content = RemoteContentManager(self.root, log_callback=self._write_app_log)
         self._write_app_log(
             '[session_start] '
@@ -724,6 +733,7 @@ class SmartPaperTool:
         self._close_loading_screen()
         self.root.update_idletasks()
         self._startup_complete = True
+        self.root.after(800, self._start_auto_mcp_services)
         if startup_page and hasattr(startup_page, 'finish_startup_prelayout'):
             startup_page.finish_startup_prelayout()
         if startup_page and hasattr(startup_page, 'on_show') and not prepared_on_show:
@@ -2949,6 +2959,7 @@ class SmartPaperTool:
             show_api_config=self._show_api_config_dialog,
             show_prompt_manager=self._show_prompt_manager,
             show_skills_center=self._show_skills_center,
+            show_mcp_services=self._show_mcp_services,
             show_knowledge_base=self._show_knowledge_base,
             choose_knowledge_context=self._choose_knowledge_context,
             show_discover_skills=self._show_discover_skills,
@@ -2961,6 +2972,7 @@ class SmartPaperTool:
             apply_result_to_paper_write=self._apply_result_to_paper_write,
             send_paper_write_content=self._send_paper_write_content,
             apply_diagram_to_paper_write=self._apply_diagram_to_paper_write,
+            apply_mcp_diagram_update=self._apply_mcp_diagram_update,
             navigate_to_page=self._navigate_to_page,
             write_app_log=self._write_app_log,
             restore_page_workspace=self._restore_page_workspace,
@@ -2985,6 +2997,16 @@ class SmartPaperTool:
         except Exception as exc:
             self._write_app_log(f'拉取论文写作选区失败: {exc}', level='WARN')
             return None
+
+    def _apply_mcp_diagram_update(self, xml):
+        page = self.pages.get('ai_diagram')
+        if not page or not hasattr(page, 'apply_mcp_diagram_xml'):
+            return False
+        try:
+            return bool(page.apply_mcp_diagram_xml(xml))
+        except Exception as exc:
+            self._write_app_log(f'MCP 图表同步失败: {exc}', level='WARN')
+            return False
 
     def _apply_result_to_paper_write(
         self,
@@ -3300,6 +3322,9 @@ class SmartPaperTool:
         if window is self._skills_center_window:
             self._skills_center_window = None
             self._skills_center_panel = None
+        if window is self._mcp_services_window:
+            self._mcp_services_window = None
+            self._mcp_services_panel = None
         if window is self._knowledge_base_window:
             self._knowledge_base_window = None
             self._knowledge_base_panel = None
@@ -4195,6 +4220,48 @@ class SmartPaperTool:
         self._skills_center_panel = panel
         return panel
 
+    def _show_mcp_services(self):
+        from pages.mcp_services_page import MCPServicesPanel
+
+        existing_window = self._mcp_services_window
+        existing_panel = self._mcp_services_panel
+        if existing_window and existing_window.winfo_exists() and existing_panel:
+            existing_window.lift()
+            existing_window.focus_force()
+            if hasattr(existing_panel, 'refresh_all'):
+                existing_panel.refresh_all()
+            return existing_panel
+
+        window, body = self._create_dialog_shell('MCP 服务', '1500x1000')
+        window.resizable(True, True)
+        apply_adaptive_window_geometry(window, '1500x1000', min_width=1180, min_height=820)
+        self._mcp_services_window = window
+
+        panel = MCPServicesPanel(
+            body,
+            self.config_mgr,
+            self.mcp_service_manager,
+            set_status=self._set_status,
+            close_panel=lambda win=window: self._close_dialog(win),
+        )
+        panel.frame.pack(fill=tk.BOTH, expand=True, padx=28, pady=28)
+        self._mcp_services_panel = panel
+        return panel
+
+    def _start_auto_mcp_services(self):
+        if not self.mcp_service_manager:
+            return
+        try:
+            results = self.mcp_service_manager.start_auto_services()
+            ok_count = sum(1 for item in results if item.get('ok'))
+            fail_count = sum(1 for item in results if not item.get('ok'))
+            if ok_count or fail_count:
+                self._write_app_log(f'MCP 自动启动完成：成功 {ok_count}，失败 {fail_count}')
+                if fail_count:
+                    self._set_status(f'MCP 自动启动完成：成功 {ok_count}，失败 {fail_count}', COLORS['warning'])
+        except Exception as exc:
+            self._write_app_log(f'MCP 自动启动失败: {exc}', level='WARN')
+
     def _get_knowledge_base_store(self):
         if self._knowledge_base_store is None:
             from modules.knowledge_base import KnowledgeBaseStore
@@ -4243,13 +4310,6 @@ class SmartPaperTool:
     def _choose_knowledge_context(self, scene_id, *, page_id='paper_write', action_label='',
                                   total_char_limit=None, per_document_char_limit=None):
         store = self._get_knowledge_base_store()
-        active_project = store.get_active_project()
-        if not active_project:
-            return {}
-        project_scene_ids = set(active_project.get('bound_scene_ids', []))
-        if scene_id and scene_id not in project_scene_ids:
-            return {}
-
         from pages.knowledge_base_page import KnowledgeContextDialog
 
         if total_char_limit is None or per_document_char_limit is None:
@@ -5948,6 +6008,11 @@ class SmartPaperTool:
             except Exception:
                 pass
             self.config_mgr.save()
+        if self.mcp_service_manager:
+            try:
+                self.mcp_service_manager.stop_all()
+            except Exception:
+                pass
         self._stop_tray_icon()
         self._cancel_pending_after_jobs()
         self._restore_runtime_log_hooks()

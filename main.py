@@ -7,12 +7,15 @@ import sys
 import traceback
 
 from modules.report_importer_worker import maybe_run_from_argv
+from modules.diagram_mcp import maybe_run_from_argv as maybe_run_diagram_mcp_from_argv
 from pages.diagram_editor_window import maybe_run_from_argv as maybe_run_diagram_webview_from_argv
 
 
 if __name__ == '__main__':
     try:
         if maybe_run_from_argv():
+            raise SystemExit(0)
+        if maybe_run_diagram_mcp_from_argv():
             raise SystemExit(0)
         if maybe_run_diagram_webview_from_argv():
             raise SystemExit(0)

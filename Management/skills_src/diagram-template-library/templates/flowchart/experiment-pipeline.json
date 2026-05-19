@@ -1,0 +1,34 @@
+{
+  "id": "experiment-pipeline",
+  "name": "实验流程",
+  "description": "数据采集 → 预处理 → 模型训练 → 评估 → 报告 的标准实验链路。",
+  "diagram_kind": "flowchart",
+  "caption": "实验流程",
+  "mermaid": "flowchart TB\n    A([\"开始\"]) --> B[\"数据采集\"]\n    B --> C[\"数据预处理\"]\n    C --> D{数据质量合格?}\n    D -- 否 --> C\n    D -- 是 --> E[\"模型训练\"]\n    E --> F[\"性能评估\"]\n    F --> G{达到阈值?}\n    G -- 否 --> E\n    G -- 是 --> H[\"实验报告\"]\n    H --> I([\"结束\"])",
+  "json_graph": {
+    "nodes": [
+      {"id": "A", "label": "开始", "shape": "ellipse"},
+      {"id": "B", "label": "数据采集", "shape": "rect"},
+      {"id": "C", "label": "数据预处理", "shape": "rect"},
+      {"id": "D", "label": "数据质量合格?", "shape": "diamond"},
+      {"id": "E", "label": "模型训练", "shape": "rect"},
+      {"id": "F", "label": "性能评估", "shape": "rect"},
+      {"id": "G", "label": "达到阈值?", "shape": "diamond"},
+      {"id": "H", "label": "实验报告", "shape": "rect"},
+      {"id": "I", "label": "结束", "shape": "ellipse"}
+    ],
+    "edges": [
+      {"id": "e1", "source": "A", "target": "B"},
+      {"id": "e2", "source": "B", "target": "C"},
+      {"id": "e3", "source": "C", "target": "D"},
+      {"id": "e4", "source": "D", "target": "C", "label": "否"},
+      {"id": "e5", "source": "D", "target": "E", "label": "是"},
+      {"id": "e6", "source": "E", "target": "F"},
+      {"id": "e7", "source": "F", "target": "G"},
+      {"id": "e8", "source": "G", "target": "E", "label": "否"},
+      {"id": "e9", "source": "G", "target": "H", "label": "是"},
+      {"id": "e10", "source": "H", "target": "I"}
+    ],
+    "meta": {"layout": "TB"}
+  }
+}

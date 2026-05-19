@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
+from modules.diagram_context import DiagramReferenceError, read_reference_url
 from modules.prompt_center import SCENE_DEFS
 
 
@@ -19,6 +20,7 @@ PAPER_WRITE_SCENE_IDS = tuple(
     scene_id for scene_id in SCENE_DEFS.keys() if str(scene_id).startswith('paper_write.')
 )
 ALL_KB_SCENE_IDS = tuple(SCENE_DEFS.keys())
+PLAIN_TEXT_EXTENSIONS = {'.txt', '.md', '.markdown', '.json', '.csv', '.xml'}
 
 
 def append_knowledge_context(prompt, knowledge_context=None):
@@ -289,6 +291,25 @@ class KnowledgeBaseStore:
             self._delete_text_file(document)
         return True
 
+    def delete_project_documents(self, project_id):
+        project = self.get_project(project_id)
+        if not project:
+            raise KnowledgeBaseError('知识库项目不存在')
+        payload = self._load_index()
+        removed_docs = [doc for doc in payload['documents'] if doc.get('project_id') == project['id']]
+        if not removed_docs:
+            return 0
+        payload['documents'] = [doc for doc in payload['documents'] if doc.get('project_id') != project['id']]
+        now = _now_ts()
+        for project_item in payload['projects']:
+            if project_item['id'] == project['id']:
+                project_item['updated_at'] = now
+                break
+        self._save_index(payload)
+        for document in removed_docs:
+            self._delete_text_file(document)
+        return len(removed_docs)
+
     def list_documents(self, project_id=None, *, scene_id=None, enabled_only=False):
         payload = self._load_index()
         project_id = str(project_id or '').strip()
@@ -331,12 +352,70 @@ class KnowledgeBaseStore:
         if not text:
             raise KnowledgeBaseError('资料文件没有可导入的文本内容')
 
+        return self._append_document_from_text(
+            project,
+            text,
+            source_type=source_type,
+            source_path=normalized_path,
+            title=str(title or '').strip() or os.path.splitext(os.path.basename(normalized_path))[0],
+            tags=tags,
+            bound_scene_ids=bound_scene_ids,
+            enabled=enabled,
+        )
+
+    def import_url(
+        self,
+        project_id,
+        url,
+        *,
+        title=None,
+        tags=None,
+        bound_scene_ids=None,
+        enabled=True,
+        resolver=None,
+    ):
+        project = self.get_project(project_id)
+        if not project:
+            raise KnowledgeBaseError('知识库项目不存在')
+        try:
+            item = read_reference_url(url, resolver=resolver)
+        except DiagramReferenceError as exc:
+            raise KnowledgeBaseError(str(exc)) from exc
+        text = str(item.get('content') or '').strip()
+        if not text:
+            raise KnowledgeBaseError('URL 没有可导入的文本内容')
+        return self._append_document_from_text(
+            project,
+            text,
+            source_type='url',
+            source_path=str(item.get('source') or url or '').strip(),
+            title=str(title or '').strip() or str(item.get('title') or '').strip() or 'URL 资料',
+            tags=tags,
+            bound_scene_ids=bound_scene_ids,
+            enabled=enabled,
+        )
+
+    def _append_document_from_text(
+        self,
+        project,
+        text,
+        *,
+        source_type,
+        source_path,
+        title,
+        tags=None,
+        bound_scene_ids=None,
+        enabled=True,
+    ):
+        normalized_text = _normalize_text(text)
+        if not normalized_text:
+            raise KnowledgeBaseError('资料内容不能为空')
         payload = self._load_index()
         now = _now_ts()
         document_id = _new_id('doc')
         text_rel_path = f'documents/{document_id}.txt'
         text_abs_path = os.path.join(self.root_dir, text_rel_path)
-        self._write_text_file(text_abs_path, text)
+        self._write_text_file(text_abs_path, normalized_text)
         if bound_scene_ids is None:
             normalized_scene_ids = list(ALL_KB_SCENE_IDS)
         else:
@@ -344,16 +423,16 @@ class KnowledgeBaseStore:
         document = {
             'id': document_id,
             'project_id': project['id'],
-            'title': str(title or '').strip() or os.path.splitext(os.path.basename(normalized_path))[0],
-            'source_type': source_type,
-            'source_path': normalized_path,
+            'title': str(title or '').strip() or '未命名资料',
+            'source_type': str(source_type or 'text').strip().lower(),
+            'source_path': str(source_path or '').strip(),
             'text_path': text_rel_path,
             'tags': _parse_tags(tags or []),
             'enabled': bool(enabled),
             'bound_scene_ids': normalized_scene_ids,
             'created_at': now,
             'updated_at': now,
-            'char_count': len(text),
+            'char_count': len(normalized_text),
         }
         payload['documents'].append(document)
         for project_item in payload['projects']:
@@ -525,13 +604,14 @@ class KnowledgeBaseStore:
 
     def _extract_document_text(self, path):
         suffix = Path(path).suffix.lower()
-        if suffix in {'.txt', '.md'}:
-            return self._read_plain_text(path), suffix.lstrip('.')
+        if suffix in PLAIN_TEXT_EXTENSIONS:
+            source_type = 'md' if suffix == '.markdown' else suffix.lstrip('.')
+            return self._read_plain_text(path), source_type
         if suffix == '.docx':
             return self._read_docx_text(path), 'docx'
         if suffix == '.pdf':
             return self._read_pdf_text(path), 'pdf'
-        raise KnowledgeBaseError('仅支持导入 txt、md、docx、pdf 文件')
+        raise KnowledgeBaseError('仅支持导入 txt、md、markdown、json、csv、xml、docx、pdf 文件')
 
     @staticmethod
     def _read_plain_text(path):

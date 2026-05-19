@@ -7,8 +7,9 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
-from modules.app_metadata import MODULE_FILTER_OPTIONS, SOURCE_KIND_LABELS as GLOBAL_SOURCE_KIND_LABELS
+from modules.app_metadata import MODULE_AI_DIAGRAM, MODULE_FILTER_OPTIONS, SOURCE_KIND_LABELS as GLOBAL_SOURCE_KIND_LABELS
 from modules.aux_tools import AuxTools
+from modules.diagram_export import DiagramExportError, export_diagram_file, safe_diagram_filename
 from modules.ui_components import (
     COLORS,
     FONTS,
@@ -40,12 +41,24 @@ class HistoryPage:
         ('导出 txt', 'txt', 'secondary'),
         ('导出 PDF', 'pdf', 'secondary'),
     )
+    DIAGRAM_EXPORT_OPTIONS = (
+        ('导出 draw.io', 'drawio', 'secondary'),
+        ('导出 XML', 'xml', 'secondary'),
+        ('导出 PNG', 'png', 'secondary'),
+        ('导出 SVG', 'svg', 'secondary'),
+        ('导出 draw.io SVG', 'drawio.svg', 'secondary'),
+    )
     EXPORT_FILETYPES = {
         'doc': [('Word 97-2003 文档', '*.doc')],
         'docx': [('Word 文档', '*.docx')],
         'latex': [('LaTeX 源文件', '*.tex')],
         'txt': [('文本文件', '*.txt')],
         'pdf': [('PDF 文件', '*.pdf')],
+        'drawio': [('draw.io 文件', '*.drawio')],
+        'xml': [('XML 文件', '*.xml')],
+        'png': [('PNG 预览', '*.png')],
+        'svg': [('SVG 预览', '*.svg')],
+        'drawio.svg': [('draw.io SVG', '*.drawio.svg')],
     }
     EXPORT_EXTENSIONS = {
         'doc': '.doc',
@@ -53,6 +66,11 @@ class HistoryPage:
         'latex': '.tex',
         'txt': '.txt',
         'pdf': '.pdf',
+        'drawio': '.drawio',
+        'xml': '.xml',
+        'png': '.png',
+        'svg': '.svg',
+        'drawio.svg': '.drawio.svg',
     }
     EXPORT_LABELS = {
         'doc': 'DOC',
@@ -60,6 +78,11 @@ class HistoryPage:
         'latex': 'LaTeX',
         'txt': 'TXT',
         'pdf': 'PDF',
+        'drawio': 'draw.io',
+        'xml': 'XML',
+        'png': 'PNG',
+        'svg': 'SVG',
+        'drawio.svg': 'draw.io SVG',
     }
 
     def __init__(self, parent, config_mgr, api_client, history_mgr, set_status, navigate_page=None, app_bridge=None):
@@ -286,19 +309,9 @@ class HistoryPage:
             bg=section_bg,
         ).pack(anchor='w', padx=12, pady=(12, 6))
 
-        export_btns = ResponsiveButtonBar(export_block, min_item_width=150, gap_x=8, gap_y=8, bg=section_bg)
-        export_btns.pack(fill=tk.X, padx=12, pady=(0, 12))
-        for label, fmt, style in self.EXPORT_OPTIONS:
-            export_btns.add(
-                create_home_shell_button(
-                    export_btns,
-                    label,
-                    command=lambda current=fmt: self._export_selected(current),
-                    style=style,
-                    padx=12,
-                    pady=8,
-                )[0]
-            )
+        self.export_btns = ResponsiveButtonBar(export_block, min_item_width=150, gap_x=8, gap_y=8, bg=section_bg)
+        self.export_btns.pack(fill=tk.X, padx=12, pady=(0, 12))
+        self._render_export_buttons(self.EXPORT_OPTIONS)
 
         detail_block = tk.Frame(parent, bg=section_bg, highlightbackground=COLORS['card_border'], highlightthickness=1)
         detail_block.pack(fill=tk.BOTH, expand=True)
@@ -378,6 +391,26 @@ class HistoryPage:
             cursor='arrow',
         )
         return text_widget
+
+    def _render_export_buttons(self, options):
+        if not hasattr(self, 'export_btns'):
+            return
+        self.export_btns.clear()
+        for label, fmt, style in options:
+            self.export_btns.add(
+                create_home_shell_button(
+                    self.export_btns,
+                    label,
+                    command=lambda current=fmt: self._export_selected(current),
+                    style=style,
+                    padx=12,
+                    pady=8,
+                )[0]
+            )
+
+    def _refresh_export_buttons_for_bundle(self, bundle):
+        options = self.DIAGRAM_EXPORT_OPTIONS if self._bundle_has_diagram_block(bundle) else self.EXPORT_OPTIONS
+        self._render_export_buttons(options)
 
     def _set_filter(self, key):
         if key == self.filter_key:
@@ -498,6 +531,34 @@ class HistoryPage:
             if text:
                 return text
         return display_record.get('output_full') or display_record.get('output') or display_record.get('input_full') or display_record.get('input') or ''
+
+    @staticmethod
+    def _get_diagram_block(record):
+        if not isinstance(record, dict):
+            return None
+        ws = record.get('workspace_state') or {}
+        if not isinstance(ws, dict):
+            return None
+        block = ws.get('current_block')
+        if not isinstance(block, dict):
+            return None
+        xml = str(block.get('mxgraph_xml') or '').strip()
+        graph = block.get('json_graph')
+        if xml or isinstance(graph, dict):
+            return block
+        return None
+
+    def _bundle_has_diagram_block(self, bundle):
+        if not bundle:
+            return False
+        selected = bundle.get('selected') or {}
+        display = bundle.get('display') or {}
+        page_state_id = str(display.get('page_state_id') or '').strip()
+        if not page_state_id and hasattr(getattr(self, 'history', None), 'get_page_state_id'):
+            page_state_id = self.history.get_page_state_id(display)
+        if selected.get('module') != MODULE_AI_DIAGRAM and page_state_id != 'ai_diagram':
+            return False
+        return self._get_diagram_block(display) is not None
 
     @staticmethod
     def _build_full_text_from_workspace(ws):
@@ -728,6 +789,7 @@ class HistoryPage:
             self._clear_export_panel()
             return
 
+        self._refresh_export_buttons_for_bundle(bundle)
         selected = bundle['selected']
         display = bundle['display']
         title = self._get_paper_title(display)
@@ -759,6 +821,7 @@ class HistoryPage:
         self._set_readonly_text(self.preview_text, self._compose_preview_text(bundle))
 
     def _clear_export_panel(self):
+        self._render_export_buttons(self.EXPORT_OPTIONS)
         self.selected_title_label.configure(text='当前未选中版本')
         self.selected_meta_label.configure(text='请选择左侧历史记录后再执行导出。')
         self._set_readonly_text(self.summary_text, '选择左侧历史版本后，这里会显示版本编号、任务参数、回滚来源与正文统计。')
@@ -853,6 +916,10 @@ class HistoryPage:
             return
 
         display = bundle['display']
+        if self._bundle_has_diagram_block(bundle):
+            self._export_selected_diagram(display, fmt)
+            return
+
         text = self._get_export_text(display)
         if not text.strip():
             messagebox.showwarning('提示', '当前选中版本没有可导出的内容', parent=self.frame)
@@ -892,6 +959,41 @@ class HistoryPage:
             self.set_status(f'已导出 {self.EXPORT_LABELS.get(fmt, fmt.upper())} 文件')
             messagebox.showinfo('导出成功', f'已导出到：\n{path}', parent=self.frame)
         except Exception as exc:
+            messagebox.showerror('导出失败', str(exc), parent=self.frame)
+
+    def _export_selected_diagram(self, display, fmt):
+        if fmt not in {item[1] for item in self.DIAGRAM_EXPORT_OPTIONS}:
+            messagebox.showwarning('提示', 'AI 图表历史记录请选择图表导出格式。', parent=self.frame)
+            return
+
+        block = self._get_diagram_block(display)
+        if not isinstance(block, dict):
+            messagebox.showwarning('提示', '当前选中版本没有可导出的图表内容', parent=self.frame)
+            return
+
+        xml = str(block.get('mxgraph_xml') or '').strip()
+        if not xml:
+            messagebox.showwarning('提示', '当前选中图表缺少 draw.io XML，无法导出。', parent=self.frame)
+            return
+
+        title = block.get('caption') or self._get_paper_title(display)
+        time_str = (display.get('time', '') if display else '').replace(':', '-').replace(' ', '_')
+        safe_title = safe_diagram_filename(f'{title} - {time_str}' if time_str else title)
+        ext = self.EXPORT_EXTENSIONS.get(fmt, f'.{fmt}')
+        path = filedialog.asksaveasfilename(
+            defaultextension=ext,
+            filetypes=self.EXPORT_FILETYPES.get(fmt, [('所有文件', '*.*')]),
+            initialfile=f'{safe_title}{ext}',
+            parent=self.frame,
+        )
+        if not path:
+            return
+
+        try:
+            result = export_diagram_file(path, xml, block=block)
+            self.set_status(f'{result.get("note", "图表已导出")}：{path}')
+            messagebox.showinfo('导出成功', f'已导出到：\n{path}', parent=self.frame)
+        except (OSError, DiagramExportError) as exc:
             messagebox.showerror('导出失败', str(exc), parent=self.frame)
 
     def _get_record_font_styles(self, record):

@@ -166,7 +166,9 @@ class KnowledgeBasePanel:
         ).pack(side=tk.LEFT)
         for label, command, style in (
             ('导入资料', self._import_documents, 'primary_fixed'),
+            ('添加 URL', self._add_url_document, 'secondary'),
             ('删除资料', self._delete_document, 'secondary'),
+            ('清空资料', self._clear_documents, 'secondary'),
         ):
             shell, _button = create_home_shell_button(
                 docs_header,
@@ -490,8 +492,8 @@ class KnowledgeBasePanel:
         paths = filedialog.askopenfilenames(
             title='导入知识库资料',
             filetypes=[
-                ('支持的资料文件', '*.txt *.md *.docx *.pdf'),
-                ('文本文件', '*.txt *.md'),
+                ('支持的资料文件', '*.txt *.md *.markdown *.json *.csv *.xml *.docx *.pdf'),
+                ('文本文件', '*.txt *.md *.markdown *.json *.csv *.xml'),
                 ('Word 文档', '*.docx'),
                 ('PDF 文件', '*.pdf'),
             ],
@@ -511,6 +513,21 @@ class KnowledgeBasePanel:
         if imported:
             self.set_status(f'已导入 {len(imported)} 份知识库资料', COLORS['success'])
             self.refresh_all(preferred_document_id=imported[-1]['id'])
+
+    def _add_url_document(self):
+        if not self.current_project_id:
+            messagebox.showwarning('知识库', '请先创建或选择项目。', parent=self.frame)
+            return
+        url = simpledialog.askstring('添加 URL 资料', '请输入 http 或 https URL：', parent=self.frame)
+        if not url or not url.strip():
+            return
+        try:
+            document = self.store.import_url(self.current_project_id, url.strip())
+        except Exception as exc:
+            messagebox.showerror('添加 URL 资料', str(exc), parent=self.frame)
+            return
+        self.set_status(f'已添加 URL 资料：{document.get("title", "")}', COLORS['success'])
+        self.refresh_all(preferred_project_id=document['project_id'], preferred_document_id=document['id'])
 
     def _save_document(self):
         if not self.current_document_id:
@@ -544,6 +561,24 @@ class KnowledgeBasePanel:
             return
         self.set_status('知识库资料已删除', COLORS['success'])
         self.refresh_all(preferred_project_id=document['project_id'])
+
+    def _clear_documents(self):
+        project = self.store.get_project(self.current_project_id)
+        if not project:
+            messagebox.showwarning('知识库', '请先选择项目。', parent=self.frame)
+            return
+        if not self.documents:
+            self.set_status('当前项目没有可清空的资料', COLORS['warning'])
+            return
+        if not messagebox.askyesno('清空知识库资料', f'确定清空"{project["name"]}"下的全部资料吗？', parent=self.frame):
+            return
+        try:
+            count = self.store.delete_project_documents(project['id'])
+        except Exception as exc:
+            messagebox.showerror('知识库', str(exc), parent=self.frame)
+            return
+        self.set_status(f'已清空知识库资料：{count} 份', COLORS['success'])
+        self.refresh_all(preferred_project_id=project['id'])
 
 
 class ProjectScopeDialog:
@@ -719,7 +754,7 @@ class ProjectScopeDialog:
 
 
 class KnowledgeContextDialog:
-    """论文写作请求前的本次资料选择弹窗。"""
+    """生成请求前的知识库资料选择与管理弹窗。"""
 
     def __init__(self, parent, store: KnowledgeBaseStore, scene_id, action_label='',
                  total_char_limit=None, per_document_char_limit=None):
@@ -732,25 +767,16 @@ class KnowledgeContextDialog:
         self.per_document_char_limit = per_document_char_limit or DEFAULT_PER_DOCUMENT_CHAR_LIMIT
         self.result = None
         self.active_project = None
+        self.scene_allowed = False
         self.documents = []
         self.document_ids_by_index = []
         self.document_selected = []
         self.window = None
+        self.info_var = tk.StringVar(value='')
+        self.status_var = tk.StringVar(value='')
 
     def show(self):
-        self.active_project = self.store.get_active_project()
-        if not self.active_project:
-            return {}
-        project_scene_ids = set(self.active_project.get('bound_scene_ids', []))
-        if self.scene_id and self.scene_id not in project_scene_ids:
-            return {}
-        self.documents = self.store.list_documents(
-            self.active_project['id'],
-            scene_id=self.scene_id,
-            enabled_only=True,
-        )
-        if not self.documents:
-            return {}
+        self._load_state()
         self.window = tk.Toplevel(self.parent)
         self.window.title('选择知识库资料')
         self.window.configure(bg=COLORS['bg_main'])
@@ -760,14 +786,28 @@ class KnowledgeContextDialog:
         self.window.grab_set()
         self.window.protocol('WM_DELETE_WINDOW', self._cancel)
         self._build()
-        self._refresh_documents()
+        self._refresh_all()
         self.window.wait_window()
         return self.result
+
+    def _load_state(self):
+        self.active_project = self.store.get_active_project()
+        self.scene_allowed = False
+        self.documents = []
+        if not self.active_project:
+            return
+        project_scene_ids = set(self.active_project.get('bound_scene_ids', []))
+        self.scene_allowed = not self.scene_id or self.scene_id in project_scene_ids
+        if self.scene_allowed:
+            self.documents = self.store.list_documents(
+                self.active_project['id'],
+                scene_id=self.scene_id,
+                enabled_only=True,
+            )
 
     def _build(self):
         container = tk.Frame(self.window, bg=COLORS['bg_main'])
         container.pack(fill=tk.BOTH, expand=True, padx=22, pady=22)
-        project_name = self.active_project.get('name', '') if self.active_project else ''
         title = '选择知识库资料'
         if self.action_label:
             title = f'{title}：{self.action_label}'
@@ -778,10 +818,9 @@ class KnowledgeContextDialog:
             fg=COLORS['text_main'],
             bg=COLORS['bg_main'],
         ).pack(anchor='w')
-        info_text = f'项目：{project_name}　当前场景：{_scene_label(self.scene_id)}。取消会中止本次生成，跳过知识库会继续正常生成。'
         tk.Label(
             container,
-            text=info_text,
+            textvariable=self.info_var,
             font=FONTS['small'],
             fg=COLORS['text_sub'],
             bg=COLORS['bg_main'],
@@ -792,7 +831,36 @@ class KnowledgeContextDialog:
             font=FONTS['small'],
             fg=COLORS['text_sub'],
             bg=COLORS['bg_main'],
-        ).pack(anchor='w', pady=(0, 12))
+        ).pack(anchor='w', pady=(0, 10))
+
+        toolbar = tk.Frame(container, bg=COLORS['bg_main'])
+        toolbar.pack(fill=tk.X, pady=(0, 10))
+        for label, command, style in (
+            ('创建项目', self._create_project, 'secondary'),
+            ('导入资料', self._import_documents, 'primary_fixed'),
+            ('添加 URL', self._add_url_document, 'secondary'),
+            ('删除所选', self._delete_selected_documents, 'secondary'),
+            ('清空资料', self._clear_documents, 'secondary'),
+            ('使用范围', self._open_scope_dialog, 'secondary'),
+        ):
+            shell, _button = create_home_shell_button(
+                toolbar,
+                label,
+                command=command,
+                style=style,
+                padx=14,
+                pady=7,
+                border_color=THEMES['light']['card_border'] if style == 'primary_fixed' else None,
+            )
+            shell.pack(side=tk.LEFT, padx=(0, 8))
+
+        tk.Label(
+            container,
+            textvariable=self.status_var,
+            font=FONTS['small'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['bg_main'],
+        ).pack(anchor='w', pady=(0, 8))
 
         footer = tk.Frame(container, bg=COLORS['bg_main'])
         footer.pack(fill=tk.X, side=tk.BOTTOM, pady=(16, 0))
@@ -830,11 +898,34 @@ class KnowledgeContextDialog:
         self.docs_tree.configure(yscrollcommand=scroll.set)
         self.docs_tree.bind('<Button-1>', self._on_tree_click)
 
+    def _refresh_all(self):
+        self._load_state()
+        self._refresh_header()
+        self._refresh_documents()
+
+    def _refresh_header(self):
+        project_name = self.active_project.get('name', '') if self.active_project else '未启用项目'
+        self.info_var.set(
+            f'项目：{project_name}　当前场景：{_scene_label(self.scene_id)}。'
+            '取消会中止本次生成，跳过知识库会继续正常生成。'
+        )
+        if not self.active_project:
+            self.status_var.set('当前没有启用的知识库项目。可先创建项目，再导入资料。')
+        elif not self.scene_allowed:
+            self.status_var.set('当前启用项目未开放此场景。请点击“使用范围”加入当前场景。')
+        elif not self.documents:
+            self.status_var.set('当前场景没有可用资料。可导入文件或添加 URL。')
+        else:
+            self.status_var.set(f'当前场景可用资料：{len(self.documents)} 份')
+
     def _refresh_documents(self):
         for item in self.docs_tree.get_children():
             self.docs_tree.delete(item)
         self.document_ids_by_index = []
         self.document_selected = []
+        if not self.documents:
+            self.docs_tree.insert('', tk.END, iid='empty', values=('', '暂无可用资料', '', ''))
+            return
         for index, document in enumerate(self.documents):
             tags = document.get('tags', [])
             tag_text = '、'.join(tags) if tags else ''
@@ -847,6 +938,109 @@ class KnowledgeContextDialog:
                 f'{document.get("char_count", 0)} 字',
                 tag_text,
             ))
+
+    def _active_project_id(self):
+        return str((self.active_project or {}).get('id') or '').strip()
+
+    def _create_project(self):
+        name = simpledialog.askstring('新建知识库项目', '请输入项目名称：', parent=self.window)
+        if not name:
+            return
+        try:
+            project = self.store.create_project(name)
+            self.store.set_active_project(project['id'])
+        except Exception as exc:
+            messagebox.showerror('知识库', str(exc), parent=self.window)
+            return
+        self._refresh_all()
+
+    def _import_documents(self):
+        project_id = self._active_project_id()
+        if not project_id:
+            messagebox.showwarning('知识库', '请先创建或启用知识库项目。', parent=self.window)
+            return
+        paths = filedialog.askopenfilenames(
+            title='导入知识库资料',
+            filetypes=[
+                ('支持的资料文件', '*.txt *.md *.markdown *.json *.csv *.xml *.docx *.pdf'),
+                ('文本文件', '*.txt *.md *.markdown *.json *.csv *.xml'),
+                ('Word 文档', '*.docx'),
+                ('PDF 文件', '*.pdf'),
+            ],
+            parent=self.window,
+        )
+        if not paths:
+            return
+        failed = []
+        for path in paths:
+            try:
+                self.store.import_document(project_id, path)
+            except Exception as exc:
+                failed.append(f'{os.path.basename(path)}：{exc}')
+        if failed:
+            messagebox.showwarning('知识库导入', '\n'.join(failed), parent=self.window)
+        self._refresh_all()
+
+    def _add_url_document(self):
+        project_id = self._active_project_id()
+        if not project_id:
+            messagebox.showwarning('知识库', '请先创建或启用知识库项目。', parent=self.window)
+            return
+        url = simpledialog.askstring('添加 URL 资料', '请输入 http 或 https URL：', parent=self.window)
+        if not url or not url.strip():
+            return
+        try:
+            self.store.import_url(project_id, url.strip())
+        except Exception as exc:
+            messagebox.showerror('添加 URL 资料', str(exc), parent=self.window)
+            return
+        self._refresh_all()
+
+    def _open_scope_dialog(self):
+        if not self.active_project:
+            messagebox.showwarning('知识库', '请先创建或启用知识库项目。', parent=self.window)
+            return
+        scene_ids = ProjectScopeDialog(self.window, self.active_project).show()
+        if scene_ids is None:
+            return
+        try:
+            self.store.update_project(self.active_project['id'], bound_scene_ids=scene_ids)
+        except Exception as exc:
+            messagebox.showerror('知识库', str(exc), parent=self.window)
+            return
+        self._refresh_all()
+
+    def _selected_document_ids(self):
+        return [
+            self.document_ids_by_index[index]
+            for index, selected in enumerate(self.document_selected)
+            if selected and 0 <= index < len(self.document_ids_by_index)
+        ]
+
+    def _delete_selected_documents(self):
+        selected_ids = self._selected_document_ids()
+        if not selected_ids:
+            messagebox.showwarning('知识库', '请先勾选要删除的资料。', parent=self.window)
+            return
+        if not messagebox.askyesno('删除知识库资料', f'确定删除所选 {len(selected_ids)} 份资料吗？', parent=self.window):
+            return
+        for document_id in selected_ids:
+            self.store.delete_document(document_id)
+        self._refresh_all()
+
+    def _clear_documents(self):
+        project_id = self._active_project_id()
+        if not project_id:
+            messagebox.showwarning('知识库', '请先创建或启用知识库项目。', parent=self.window)
+            return
+        all_documents = self.store.list_documents(project_id)
+        if not all_documents:
+            self.status_var.set('当前项目没有可清空的资料。')
+            return
+        if not messagebox.askyesno('清空知识库资料', f'确定清空当前项目的 {len(all_documents)} 份资料吗？', parent=self.window):
+            return
+        self.store.delete_project_documents(project_id)
+        self._refresh_all()
 
     def _on_tree_click(self, event):
         region = self.docs_tree.identify_region(event.x, event.y)
@@ -866,13 +1060,15 @@ class KnowledgeContextDialog:
         self.docs_tree.item(iid, values=(checked, *self.docs_tree.item(iid, 'values')[1:]))
 
     def _use_selected(self):
-        selected_ids = [
-            self.document_ids_by_index[index]
-            for index, selected in enumerate(self.document_selected)
-            if selected and 0 <= index < len(self.document_ids_by_index)
-        ]
+        if not self.active_project:
+            messagebox.showwarning('知识库', '请先创建或启用知识库项目，或点击“跳过知识库”。', parent=self.window)
+            return
+        if not self.scene_allowed:
+            messagebox.showwarning('知识库', '当前项目未开放此场景，请先调整使用范围，或点击“跳过知识库”。', parent=self.window)
+            return
+        selected_ids = self._selected_document_ids()
         if not selected_ids:
-            messagebox.showwarning('知识库', '请选择至少一份资料，或点击"跳过知识库"。', parent=self.window)
+            messagebox.showwarning('知识库', '请选择至少一份资料，或点击“跳过知识库”。', parent=self.window)
             return
         context = self.store.build_context(
             self.active_project['id'], selected_ids, self.scene_id,

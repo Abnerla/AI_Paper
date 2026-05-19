@@ -140,6 +140,9 @@ class ConfigManager:
                     }
                 ],
             },
+            'mcp_center': {
+                'services': {},
+            },
             'workspace_state': {},
             'settings': {
                 'auto_save_history': True,
@@ -529,6 +532,89 @@ class ConfigManager:
             'repositories': repositories,
         }
 
+    def _default_mcp_service_records(self):
+        now = int(time.time())
+        return {
+            'ai_diagram_builtin': {
+                'id': 'ai_diagram_builtin',
+                'name': 'AI 图表 MCP',
+                'type': 'builtin_ai_diagram',
+                'enabled': True,
+                'auto_start': True,
+                'command': '',
+                'args': [],
+                'url': '',
+                'env': {},
+                'cwd': '',
+                'created_at': now,
+                'updated_at': now,
+                'builtin': True,
+            }
+        }
+
+    def _sanitize_mcp_service_record(self, service_id, record):
+        key = str(service_id or '').strip()
+        if not key or not isinstance(record, dict):
+            return None
+        service_type = str(record.get('type', '') or '').strip() or 'http'
+        if service_type not in {'builtin_ai_diagram', 'stdio', 'http', 'sse'}:
+            service_type = 'http'
+        builtin = bool(record.get('builtin') or service_type == 'builtin_ai_diagram' or key == 'ai_diagram_builtin')
+        args = []
+        raw_args = record.get('args', [])
+        if isinstance(raw_args, list):
+            args = [str(item or '').strip() for item in raw_args if str(item or '').strip()]
+        elif isinstance(raw_args, str):
+            args = [item.strip() for item in raw_args.splitlines() if item.strip()]
+        env = {}
+        raw_env = record.get('env', {})
+        if isinstance(raw_env, dict):
+            env = {
+                str(k or '').strip(): str(v or '')
+                for k, v in raw_env.items()
+                if str(k or '').strip()
+            }
+        return {
+            'id': key,
+            'name': str(record.get('name', '') or '').strip() or key,
+            'type': service_type,
+            'enabled': bool(record.get('enabled', True)),
+            'auto_start': bool(record.get('auto_start', builtin)),
+            'command': str(record.get('command', '') or '').strip(),
+            'args': args,
+            'url': str(record.get('url', '') or '').strip(),
+            'env': env,
+            'cwd': str(record.get('cwd', '') or '').strip(),
+            'created_at': self._safe_int_val(record.get('created_at', 0)) or int(time.time()),
+            'updated_at': self._safe_int_val(record.get('updated_at', 0)) or int(time.time()),
+            'builtin': builtin,
+        }
+
+    def _sanitize_mcp_center(self, mcp_center):
+        if not isinstance(mcp_center, dict):
+            mcp_center = {}
+        services = {}
+        defaults = self._default_mcp_service_records()
+        raw_services = mcp_center.get('services', {})
+        if isinstance(raw_services, dict):
+            for service_id, record in raw_services.items():
+                sanitized = self._sanitize_mcp_service_record(service_id, record)
+                if sanitized:
+                    services[sanitized['id']] = sanitized
+        for service_id, record in defaults.items():
+            current = services.get(service_id)
+            merged = dict(record)
+            if isinstance(current, dict):
+                merged.update(current)
+                merged['id'] = service_id
+                merged['type'] = record['type']
+                merged['builtin'] = True
+                merged['name'] = current.get('name') or record['name']
+            sanitized = self._sanitize_mcp_service_record(service_id, merged)
+            if sanitized:
+                services[service_id] = sanitized
+        return {'services': services}
+
     def _sanitize_loaded_data(self, data):
         apis = data.get('apis', {})
         cleaned_apis = {}
@@ -547,6 +633,7 @@ class ConfigManager:
             data['active_api'] = next(iter(cleaned_apis), '')
         data['prompt_center'] = self._sanitize_prompt_center(data.get('prompt_center', {}))
         data['skills_center'] = self._sanitize_skills_center(data.get('skills_center', {}))
+        data['mcp_center'] = self._sanitize_mcp_center(data.get('mcp_center', {}))
         data['workspace_state'] = self._sanitize_workspace_state(data.get('workspace_state', {}))
         self._sanitize_routing_settings(data, cleaned_apis)
         return data
@@ -1187,3 +1274,36 @@ class ConfigManager:
                 break
         skills_center['repositories'] = repositories
         self._data['skills_center'] = skills_center
+
+    def get_mcp_service_records(self):
+        mcp_center = self._sanitize_mcp_center(self._data.get('mcp_center', {}))
+        self._data['mcp_center'] = mcp_center
+        return copy.deepcopy(mcp_center.get('services', {}))
+
+    def get_mcp_service_record(self, service_id):
+        records = self.get_mcp_service_records()
+        return copy.deepcopy(records.get(str(service_id or '').strip(), {}))
+
+    def set_mcp_service_record(self, service_id, record):
+        mcp_center = self._sanitize_mcp_center(self._data.get('mcp_center', {}))
+        sanitized = self._sanitize_mcp_service_record(service_id, record)
+        if not sanitized:
+            return
+        records = mcp_center.setdefault('services', {})
+        previous = records.get(sanitized['id'])
+        if previous and previous.get('builtin'):
+            sanitized['builtin'] = True
+            sanitized['type'] = previous.get('type') or sanitized['type']
+        sanitized['updated_at'] = int(time.time())
+        records[sanitized['id']] = sanitized
+        self._data['mcp_center'] = self._sanitize_mcp_center(mcp_center)
+
+    def delete_mcp_service_record(self, service_id):
+        service_id = str(service_id or '').strip()
+        mcp_center = self._sanitize_mcp_center(self._data.get('mcp_center', {}))
+        record = (mcp_center.get('services') or {}).get(service_id)
+        if record and record.get('builtin'):
+            return False
+        mcp_center.setdefault('services', {}).pop(service_id, None)
+        self._data['mcp_center'] = self._sanitize_mcp_center(mcp_center)
+        return True

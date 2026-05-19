@@ -1,0 +1,53 @@
+{
+  "id": "diagram-template-library",
+  "name": "图表模板库",
+  "version": "v1.0.0",
+  "description": "提供常用学术图表模板：实验流程、研究框架、系统架构、ER 模型、用户旅程等。在编辑器中可一键插入并由 AI 填充内容。",
+  "min_app_version": "v1.5.0",
+  "entry": {
+    "module": "entry",
+    "class": "DiagramTemplateLibrarySkill"
+  },
+  "priority": 40,
+  "actions": [
+    {
+      "id": "list_templates",
+      "label": "列出模板",
+      "description": "按图表类型列出当前可用模板。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "diagram_kind",
+            "label": "图表类型",
+            "type": "select",
+            "required": false,
+            "default": "",
+            "options": [
+              {"label": "全部", "value": ""},
+              {"label": "流程图", "value": "flowchart"},
+              {"label": "时序图", "value": "sequence"},
+              {"label": "ER 图", "value": "erDiagram"},
+              {"label": "类图", "value": "classDiagram"},
+              {"label": "状态图", "value": "stateDiagram"},
+              {"label": "思维导图", "value": "mindmap"}
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "scene_bindings": [
+    "paper_write.diagram_generate"
+  ],
+  "global_hook": false,
+  "publisher": "PaperLab",
+  "homepage": "https://github.com/Abnerla/AI_paper",
+  "diagram_types": [
+    "flowchart",
+    "sequence",
+    "erDiagram",
+    "classDiagram",
+    "stateDiagram",
+    "mindmap"
+  ]
+}

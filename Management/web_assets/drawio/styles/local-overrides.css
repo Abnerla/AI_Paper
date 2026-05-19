@@ -1,0 +1,10 @@
+/*
+ * 本地嵌入 draw.io 的样式覆盖。
+ * 原版 draw.io 在 .geDiagramContainer 上使用 overflow:hidden，
+ * 嵌入到 pywebview 后会隐藏绘图区滚动条，不利于编辑大图。
+ */
+.geEditor > .geDiagramContainer {
+	overflow: scroll !important;
+	scrollbar-gutter: stable both-edges;
+}
+

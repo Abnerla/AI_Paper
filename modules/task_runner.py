@@ -4,6 +4,7 @@ Shared background task runner for Tk pages.
 """
 
 import threading
+import uuid
 
 
 class TaskRunner:
@@ -16,6 +17,7 @@ class TaskRunner:
         self.thread_factory = thread_factory or threading.Thread
         self.log_callback = log_callback or self._resolve_log_callback(set_status)
         self._active_count = 0
+        self._tasks = {}
 
     def run(
         self,
@@ -33,6 +35,8 @@ class TaskRunner:
             on_start()
 
         self._active_count += 1
+        task_id = uuid.uuid4().hex
+        self._tasks[task_id] = {'cancelled': False, 'label': task_label}
 
         try:
             if self.loading and loading_text:
@@ -52,28 +56,69 @@ class TaskRunner:
                 result = work()
             except Exception as exc:
                 # 即使出错也稍微延迟隐藏，避免闪烁
-                self.scheduler.after(100, lambda err=exc: self._finish_error(err, on_error, task_label))
+                self.scheduler.after(100, lambda err=exc, tid=task_id: self._finish_error(err, on_error, task_label, tid))
                 return
 
             # 成功时也稍微延迟隐藏，让用户看清“处理完成”等状态
-            self.scheduler.after(100, lambda value=result: self._finish_success(value, on_success, task_label))
+            self.scheduler.after(100, lambda value=result, tid=task_id: self._finish_success(value, on_success, task_label, tid))
 
         thread = self.thread_factory(target=worker, daemon=True)
+        self._tasks[task_id]['thread'] = thread
         thread.start()
-        return thread
+        return task_id
 
-    def _finish_success(self, result, callback, task_label):
-        self._active_count = max(0, self._active_count - 1)
-        if self.loading and self._active_count <= 0:
-            self.loading.hide()
+    def cancel(self, task_id=None):
+        """标记任务已取消。正在执行的网络请求无法强杀，但完成回调会被忽略。"""
+        if task_id:
+            task = self._tasks.get(task_id)
+            if task:
+                task['cancelled'] = True
+                if not task.get('released'):
+                    task['released'] = True
+                    self._active_count = max(0, self._active_count - 1)
+                    if self.loading and self._active_count <= 0:
+                        self.loading.hide()
+                self._log(f'[task_cancel_requested] {task.get("label", task_id)}', level='WARN')
+                return True
+            return False
+        cancelled = False
+        for task in self._tasks.values():
+            task['cancelled'] = True
+            if not task.get('released'):
+                task['released'] = True
+                self._active_count = max(0, self._active_count - 1)
+            cancelled = True
+        if cancelled:
+            if self.loading and self._active_count <= 0:
+                self.loading.hide()
+            self._log('[task_cancel_requested] all', level='WARN')
+        return cancelled
+
+    def is_cancelled(self, task_id):
+        return bool((self._tasks.get(task_id) or {}).get('cancelled'))
+
+    def _finish_success(self, result, callback, task_label, task_id=None):
+        task = self._tasks.pop(task_id, {}) if task_id else {}
+        if not task.get('released'):
+            self._active_count = max(0, self._active_count - 1)
+            if self.loading and self._active_count <= 0:
+                self.loading.hide()
+        if task.get('cancelled'):
+            self._log(f'[task_cancelled] {task_label}', level='WARN')
+            return
         self._log(f'[task_success] {task_label}')
         if callable(callback):
             callback(result)
 
-    def _finish_error(self, exc, callback, task_label):
-        self._active_count = max(0, self._active_count - 1)
-        if self.loading and self._active_count <= 0:
-            self.loading.hide()
+    def _finish_error(self, exc, callback, task_label, task_id=None):
+        task = self._tasks.pop(task_id, {}) if task_id else {}
+        if not task.get('released'):
+            self._active_count = max(0, self._active_count - 1)
+            if self.loading and self._active_count <= 0:
+                self.loading.hide()
+        if task.get('cancelled'):
+            self._log(f'[task_cancelled] {task_label} | {exc}', level='WARN')
+            return
         self._log(f'[task_error] {task_label} | {exc}', level='ERROR')
         if callable(callback):
             callback(exc)

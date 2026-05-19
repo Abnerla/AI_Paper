@@ -1,0 +1,9 @@
+{
+  "id": "literature-mindmap",
+  "name": "文献综述思维导图",
+  "description": "按时间线 / 方法 / 应用 / 不足 四维度展开的文献综述脑图。",
+  "diagram_kind": "mindmap",
+  "caption": "文献综述思维导图",
+  "mermaid": "mindmap\n  root((研究主题))\n    时间线\n      早期研究\n      近年进展\n    方法\n      传统方法\n      深度学习\n    应用\n      工业应用\n      医疗\n      金融\n    不足\n      数据稀缺\n      泛化能力\n      可解释性",
+  "json_graph": {"nodes": [], "edges": [], "meta": {"layout": "TB"}}
+}

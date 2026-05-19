@@ -42,6 +42,9 @@ class AppBridge:
     def show_skills_center(self):
         return self._call('show_skills_center')
 
+    def show_mcp_services(self):
+        return self._call('show_mcp_services')
+
     def show_knowledge_base(self):
         return self._call('show_knowledge_base')
 
@@ -111,6 +114,9 @@ class AppBridge:
             section_hint=section_hint,
             default={'ok': False, 'message': '论文写作图表桥接不可用'},
         )
+
+    def apply_mcp_diagram_update(self, xml):
+        return self._call('apply_mcp_diagram_update', xml, default=False)
 
     def navigate_to_page(self, page_id):
         return self._call(

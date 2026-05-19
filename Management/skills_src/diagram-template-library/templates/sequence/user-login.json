@@ -1,0 +1,9 @@
+{
+  "id": "user-login-sequence",
+  "name": "用户登录时序",
+  "description": "用户、前端、后端、数据库四方时序交互模板。",
+  "diagram_kind": "sequence",
+  "caption": "用户登录时序",
+  "mermaid": "sequenceDiagram\n    participant U as 用户\n    participant F as 前端\n    participant B as 后端\n    participant D as 数据库\n    U->>F: 输入账号密码\n    F->>B: POST /login\n    B->>D: 查询用户\n    D-->>B: 返回记录\n    B-->>F: 返回 token\n    F-->>U: 跳转主页",
+  "json_graph": {"nodes": [], "edges": [], "meta": {"layout": "TB"}}
+}

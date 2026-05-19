@@ -1462,6 +1462,7 @@ class HomePage:
             ('模型配置', lambda: self._trigger_action('show_api_config'), FONTS['tiny']),
             ('模型路由', lambda: self._trigger_action('show_model_routing'), FONTS['tiny']),
             ('提示词', lambda: self._trigger_action('show_prompt_manager'), FONTS['tiny']),
+            ('MCP 服务', lambda: self._trigger_action('show_mcp_services'), FONTS['tiny']),
         )
         for label, command, font in hero_tag_specs:
             self.hero_tags_bar.add(

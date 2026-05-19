@@ -1,0 +1,30 @@
+{
+  "id": "research-framework",
+  "name": "研究框架",
+  "description": "理论基础 → 研究问题 → 方法设计 → 数据分析 → 结论的研究框架图。",
+  "diagram_kind": "flowchart",
+  "caption": "研究框架",
+  "mermaid": "flowchart LR\n    A[\"理论基础\"] --> B[\"研究问题\"]\n    B --> C[\"研究假设\"]\n    C --> D[\"方法设计\"]\n    D --> E[\"数据收集\"]\n    E --> F[\"数据分析\"]\n    F --> G[\"结果讨论\"]\n    G --> H[\"研究结论\"]",
+  "json_graph": {
+    "nodes": [
+      {"id": "A", "label": "理论基础", "shape": "rect"},
+      {"id": "B", "label": "研究问题", "shape": "rect"},
+      {"id": "C", "label": "研究假设", "shape": "rect"},
+      {"id": "D", "label": "方法设计", "shape": "rect"},
+      {"id": "E", "label": "数据收集", "shape": "rect"},
+      {"id": "F", "label": "数据分析", "shape": "rect"},
+      {"id": "G", "label": "结果讨论", "shape": "rect"},
+      {"id": "H", "label": "研究结论", "shape": "rect"}
+    ],
+    "edges": [
+      {"id": "e1", "source": "A", "target": "B"},
+      {"id": "e2", "source": "B", "target": "C"},
+      {"id": "e3", "source": "C", "target": "D"},
+      {"id": "e4", "source": "D", "target": "E"},
+      {"id": "e5", "source": "E", "target": "F"},
+      {"id": "e6", "source": "F", "target": "G"},
+      {"id": "e7", "source": "G", "target": "H"}
+    ],
+    "meta": {"layout": "LR"}
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "flowchart-expert",
+  "name": "图表领域专家",
+  "version": "v1.0.0",
+  "description": "为 AI 生成与编辑流程图、时序图、ER 图、状态图、思维导图等图表注入符号规范、布局建议与学术风格要求。",
+  "min_app_version": "v1.5.0",
+  "entry": {
+    "module": "entry",
+    "class": "FlowchartExpertSkill"
+  },
+  "priority": 30,
+  "actions": [],
+  "scene_bindings": [
+    "paper_write.diagram_generate",
+    "paper_write.diagram_edit"
+  ],
+  "global_hook": false,
+  "publisher": "PaperLab",
+  "homepage": "https://github.com/Abnerla/AI_paper",
+  "diagram_types": [
+    "flowchart",
+    "sequence",
+    "classDiagram",
+    "stateDiagram",
+    "erDiagram",
+    "mindmap"
+  ]
+}
