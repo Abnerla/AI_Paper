@@ -147,6 +147,17 @@ def print_disk_usage(label, path=PROJECT_DIR):
     )
 
 
+def build_dmg_size(source_size):
+    """为 hdiutil 的临时镜像预留足够的文件系统空间。"""
+    mib = 1024 * 1024
+    minimum_size = 256 * mib
+    padding_size = max(128 * mib, source_size // 2)
+    target_size = max(minimum_size, source_size + padding_size)
+    step_size = 64 * mib
+    rounded_size = ((target_size + step_size - 1) // step_size) * step_size
+    return rounded_size, f'{rounded_size // mib}m'
+
+
 def write_text_file(path, content, executable=False):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8', newline='\n') as file:
@@ -317,7 +328,9 @@ def create_dmg():
         os.remove(dmg_path)
 
     app_size = get_path_size(app_path)
+    dmg_size_bytes, dmg_size_arg = build_dmg_size(app_size)
     print(f'[build] DMG source size: {format_size(app_size)}')
+    print(f'[build] DMG staging size: {format_size(dmg_size_bytes)} ({dmg_size_arg})')
     print_disk_usage('Before DMG creation', DIST_DIR)
 
     cmd = [
@@ -326,6 +339,8 @@ def create_dmg():
         '-srcfolder', app_path,
         '-ov',
         '-format', 'UDZO',
+        '-fs', 'HFS+',
+        '-size', dmg_size_arg,
         dmg_path,
     ]
     print(f'[build] Creating DMG for {arch_suffix}: {dmg_path}')
@@ -345,8 +360,9 @@ def create_dmg():
         error_output = '\n'.join(filter(None, [completed.stdout, completed.stderr]))
         if 'No space left on device' in error_output:
             print(
-                '[build] DMG creation failed because the runner is out of disk space. '
-                f'app_bundle={format_size(app_size)}'
+                '[build] DMG creation failed while writing the temporary image volume. '
+                f'app_bundle={format_size(app_size)}, '
+                f'dmg_staging_size={format_size(dmg_size_bytes)}'
             )
             print_disk_usage('After DMG failure', DIST_DIR)
         raise subprocess.CalledProcessError(
