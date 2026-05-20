@@ -1,0 +1,85 @@
+{
+  "id": "argument-structure-checker",
+  "name": "论证结构检查器",
+  "version": "v1.0.0",
+  "description": "检查学术论文的论证结构，分析论点-论据链条、逻辑漏洞、过度概括等问题，提供论证优化建议。",
+  "min_app_version": "v1.4.0",
+  "entry": {
+    "module": "entry",
+    "class": "ArgumentStructureCheckerSkill"
+  },
+  "priority": 14,
+  "actions": [
+    {
+      "id": "check_argument",
+      "label": "检查论证结构",
+      "description": "分析论点-论据链条，检测逻辑漏洞和论证问题。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "text",
+            "label": "论证内容",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "粘贴需要检查的论证段落"
+          },
+          {
+            "id": "check_focus",
+            "label": "检查重点",
+            "type": "select",
+            "required": false,
+            "default": "all",
+            "options": [
+              {"label": "全面检查", "value": "all"},
+              {"label": "论点-论据链条", "value": "claim_evidence"},
+              {"label": "逻辑漏洞", "value": "logical_fallacies"},
+              {"label": "过度概括", "value": "overgeneralization"},
+              {"label": "因果推理", "value": "causal_reasoning"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "strengthen_argument",
+      "label": "强化论证",
+      "description": "针对薄弱的论证提供强化建议和改写示例。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "claim",
+            "label": "核心论点",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "你的核心论点是什么？"
+          },
+          {
+            "id": "evidence",
+            "label": "现有论据",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "你有哪些支持这个论点的证据或论据？"
+          },
+          {
+            "id": "target_audience",
+            "label": "目标读者",
+            "type": "select",
+            "required": false,
+            "default": "academic",
+            "options": [
+              {"label": "学术同行", "value": "academic"},
+              {"label": "期刊审稿人", "value": "reviewer"},
+              {"label": "跨学科读者", "value": "interdisciplinary"},
+              {"label": "一般读者", "value": "general"}
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "scene_bindings": [
+    "paper_write.section",
+    "polish.run_task"
+  ],
+  "global_hook": false
+}

@@ -1,0 +1,107 @@
+{
+  "id": "literature-searcher",
+  "name": "文献检索器",
+  "version": "v1.0.0",
+  "description": "生成系统化的文献检索策略，推荐合适的数据库和检索词，验证文献真实性，帮助用户找到真实有效的学术文献。",
+  "min_app_version": "v1.4.0",
+  "entry": {
+    "module": "entry",
+    "class": "LiteratureSearcherSkill"
+  },
+  "priority": 8,
+  "actions": [
+    {
+      "id": "search_strategy",
+      "label": "生成检索策略",
+      "description": "根据研究主题生成系统化的文献检索策略，包括数据库推荐、检索词组合和筛选标准。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "topic",
+            "label": "研究主题",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "描述你的研究主题或研究问题"
+          },
+          {
+            "id": "discipline",
+            "label": "学科领域",
+            "type": "select",
+            "required": false,
+            "default": "auto",
+            "options": [
+              {"label": "自动识别", "value": "auto"},
+              {"label": "教育学", "value": "education"},
+              {"label": "管理学", "value": "management"},
+              {"label": "心理学", "value": "psychology"},
+              {"label": "社会学", "value": "sociology"},
+              {"label": "计算机科学", "value": "computer_science"},
+              {"label": "经济学", "value": "economics"},
+              {"label": "法学", "value": "law"},
+              {"label": "医学", "value": "medicine"},
+              {"label": "理工科", "value": "science_engineering"},
+              {"label": "其他", "value": "other"}
+            ]
+          },
+          {
+            "id": "time_range",
+            "label": "时间范围",
+            "type": "select",
+            "required": false,
+            "default": "5years",
+            "options": [
+              {"label": "近5年", "value": "5years"},
+              {"label": "近10年", "value": "10years"},
+              {"label": "不限", "value": "any"},
+              {"label": "自定义", "value": "custom"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "verify_reference",
+      "label": "验证文献真实性",
+      "description": "检查文献是否真实存在，评估文献的可信度和质量。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "reference",
+            "label": "文献信息",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "粘贴需要验证的文献引用信息（标题、作者、期刊、年份等）"
+          }
+        ]
+      }
+    },
+    {
+      "id": "evaluate_source",
+      "label": "评估文献质量",
+      "description": "评估文献来源的可信度、影响因子、是否为掠夺性期刊等。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "journal_name",
+            "label": "期刊名称",
+            "type": "text",
+            "required": true,
+            "placeholder": "输入期刊全称或缩写"
+          },
+          {
+            "id": "context",
+            "label": "使用场景",
+            "type": "textarea",
+            "required": false,
+            "placeholder": "描述你打算如何使用这篇文献"
+          }
+        ]
+      }
+    }
+  ],
+  "scene_bindings": [
+    "paper_write.section",
+    "paper_write.reference"
+  ],
+  "global_hook": false
+}

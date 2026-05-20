@@ -1,0 +1,81 @@
+{
+  "id": "research-question-refiner",
+  "name": "研究问题提炼器",
+  "version": "v1.0.0",
+  "description": "使用FINER标准（可行、有趣、新颖、伦理、相关）将模糊的研究主题提炼为精确、可回答的研究问题。",
+  "min_app_version": "v1.4.0",
+  "entry": {
+    "module": "entry",
+    "class": "ResearchQuestionRefinerSkill"
+  },
+  "priority": 6,
+  "actions": [
+    {
+      "id": "refine_question",
+      "label": "提炼研究问题",
+      "description": "使用FINER标准将研究主题转化为精确的研究问题。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "topic",
+            "label": "研究主题",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "描述你的研究主题或初步想法"
+          },
+          {
+            "id": "existing_questions",
+            "label": "已有的研究问题（如有）",
+            "type": "textarea",
+            "required": false,
+            "placeholder": "如果你已经有一些研究问题的雏形，请在此列出"
+          },
+          {
+            "id": "discipline",
+            "label": "学科领域",
+            "type": "select",
+            "required": false,
+            "default": "auto",
+            "options": [
+              {"label": "自动识别", "value": "auto"},
+              {"label": "社会科学", "value": "social_science"},
+              {"label": "自然科学", "value": "natural_science"},
+              {"label": "人文学科", "value": "humanities"},
+              {"label": "工程技术", "value": "engineering"},
+              {"label": "医学健康", "value": "medical"},
+              {"label": "其他", "value": "other"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "evaluate_question",
+      "label": "评估研究问题",
+      "description": "评估现有研究问题的质量，提供改进建议。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "question",
+            "label": "研究问题",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "粘贴你需要评估的研究问题"
+          },
+          {
+            "id": "context",
+            "label": "研究背景",
+            "type": "textarea",
+            "required": false,
+            "placeholder": "简述研究背景和你的研究条件（时间、资源、数据可得性等）"
+          }
+        ]
+      }
+    }
+  ],
+  "scene_bindings": [
+    "paper_write.topic",
+    "paper_write.outline"
+  ],
+  "global_hook": false
+}

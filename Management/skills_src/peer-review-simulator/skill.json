@@ -1,0 +1,96 @@
+{
+  "id": "peer-review-simulator",
+  "name": "同行评审模拟器",
+  "version": "v1.0.0",
+  "description": "模拟国际期刊的同行评审过程，从主编、方法论、领域专家、跨学科、魔鬼代言人五个视角进行评审，输出结构化的审稿意见和修改路线图。",
+  "min_app_version": "v1.4.0",
+  "entry": {
+    "module": "entry",
+    "class": "PeerReviewSimulatorSkill"
+  },
+  "priority": 12,
+  "actions": [
+    {
+      "id": "full_review",
+      "label": "模拟同行评审",
+      "description": "从5个不同视角模拟完整的同行评审过程。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "paper_content",
+            "label": "论文内容",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "粘贴论文的摘要、引言、方法、结果、讨论等核心部分"
+          },
+          {
+            "id": "paper_type",
+            "label": "论文类型",
+            "type": "select",
+            "required": false,
+            "default": "auto",
+            "options": [
+              {"label": "自动识别", "value": "auto"},
+              {"label": "实证研究", "value": "empirical"},
+              {"label": "综述论文", "value": "review"},
+              {"label": "理论研究", "value": "theoretical"},
+              {"label": "案例研究", "value": "case_study"},
+              {"label": "方法论研究", "value": "methodological"}
+            ]
+          },
+          {
+            "id": "target_journal",
+            "label": "目标期刊（可选）",
+            "type": "text",
+            "required": false,
+            "placeholder": "如果你有目标期刊，请填写"
+          }
+        ]
+      }
+    },
+    {
+      "id": "quick_assessment",
+      "label": "快速质量评估",
+      "description": "快速评估论文的核心质量维度（15分钟内完成）。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "paper_content",
+            "label": "论文内容",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "粘贴论文的摘要和核心部分"
+          }
+        ]
+      }
+    },
+    {
+      "id": "methodology_check",
+      "label": "方法论审查",
+      "description": "专注于研究设计、数据分析和可重复性的审查。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "methodology_section",
+            "label": "方法论部分",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "粘贴论文的方法论部分"
+          },
+          {
+            "id": "results_section",
+            "label": "结果部分",
+            "type": "textarea",
+            "required": false,
+            "placeholder": "粘贴论文的结果部分（可选）"
+          }
+        ]
+      }
+    }
+  ],
+  "scene_bindings": [
+    "paper_write.section",
+    "polish.run_task"
+  ],
+  "global_hook": false
+}

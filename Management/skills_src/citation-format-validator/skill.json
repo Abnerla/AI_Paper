@@ -1,0 +1,128 @@
+{
+  "id": "citation-format-validator",
+  "name": "引用格式验证器",
+  "version": "v1.0.0",
+  "description": "验证学术论文的引用格式是否符合规范，支持APA、GB/T 7714、MLA、IEEE、Vancouver等多种引用格式，检查引用完整性和一致性。",
+  "min_app_version": "v1.4.0",
+  "entry": {
+    "module": "entry",
+    "class": "CitationFormatValidatorSkill"
+  },
+  "priority": 16,
+  "actions": [
+    {
+      "id": "validate_citations",
+      "label": "验证引用格式",
+      "description": "检查文内引用和参考文献列表的格式是否符合规范。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "paper_text",
+            "label": "论文正文",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "粘贴论文正文（包含文内引用）"
+          },
+          {
+            "id": "reference_list",
+            "label": "参考文献列表",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "粘贴参考文献列表"
+          },
+          {
+            "id": "citation_format",
+            "label": "引用格式",
+            "type": "select",
+            "required": true,
+            "default": "auto",
+            "options": [
+              {"label": "自动识别", "value": "auto"},
+              {"label": "APA 7th", "value": "apa7"},
+              {"label": "GB/T 7714", "value": "gbt7714"},
+              {"label": "MLA 9th", "value": "mla9"},
+              {"label": "IEEE", "value": "ieee"},
+              {"label": "Vancouver", "value": "vancouver"},
+              {"label": "Chicago", "value": "chicago"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "convert_format",
+      "label": "转换引用格式",
+      "description": "将参考文献从一种格式转换为另一种格式。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "references",
+            "label": "参考文献",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "粘贴需要转换格式的参考文献"
+          },
+          {
+            "id": "source_format",
+            "label": "当前格式",
+            "type": "select",
+            "required": true,
+            "default": "auto",
+            "options": [
+              {"label": "自动识别", "value": "auto"},
+              {"label": "APA 7th", "value": "apa7"},
+              {"label": "GB/T 7714", "value": "gbt7714"},
+              {"label": "MLA 9th", "value": "mla9"},
+              {"label": "IEEE", "value": "ieee"},
+              {"label": "Vancouver", "value": "vancouver"},
+              {"label": "Chicago", "value": "chicago"}
+            ]
+          },
+          {
+            "id": "target_format",
+            "label": "目标格式",
+            "type": "select",
+            "required": true,
+            "default": "apa7",
+            "options": [
+              {"label": "APA 7th", "value": "apa7"},
+              {"label": "GB/T 7714", "value": "gbt7714"},
+              {"label": "MLA 9th", "value": "mla9"},
+              {"label": "IEEE", "value": "ieee"},
+              {"label": "Vancouver", "value": "vancouver"},
+              {"label": "Chicago", "value": "chicago"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "check_completeness",
+      "label": "检查引用完整性",
+      "description": "检查文内引用与参考文献列表是否匹配，是否有遗漏或多余。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "paper_text",
+            "label": "论文正文",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "粘贴论文正文（包含文内引用）"
+          },
+          {
+            "id": "reference_list",
+            "label": "参考文献列表",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "粘贴参考文献列表"
+          }
+        ]
+      }
+    }
+  ],
+  "scene_bindings": [
+    "paper_write.section",
+    "paper_write.reference"
+  ],
+  "global_hook": false
+}
