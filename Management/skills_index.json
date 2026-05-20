@@ -1,6 +1,6 @@
 {
   "id": "skills-index-default",
-  "updated_at": "2026-05-03 16:10:00",
+  "updated_at": "2026-05-20 12:00:00",
   "skills": [
     {
       "id": "outline-optimizer",
@@ -86,6 +86,107 @@
       "homepage": "https://github.com/Abnerla/AI_paper",
       "global_hook": false,
       "scene_bindings": [
+        "paper_write.section"
+      ]
+    },
+    {
+      "id": "topic-refiner",
+      "name": "论文主题确定器",
+      "version": "v1.0.0",
+      "description": "通过苏格拉底式追问，帮助用户从模糊想法收敛到明确的论文研究主题。持续发问直到主题清晰、可研究、有边界。",
+      "min_app_version": "v1.4.0",
+      "download_url": "https://raw.githubusercontent.com/Abnerla/AI_paper/main/Management/skills/topic-refiner.zip",
+      "publisher": "PaperLab",
+      "homepage": "https://github.com/Abnerla/AI_paper",
+      "global_hook": false,
+      "scene_bindings": [
+        "paper_write.outline"
+      ]
+    },
+    {
+      "id": "literature-searcher",
+      "name": "文献检索器",
+      "version": "v1.0.0",
+      "description": "生成系统化的文献检索策略，推荐合适的数据库和检索词，验证文献真实性，帮助用户找到真实有效的学术文献。",
+      "min_app_version": "v1.4.0",
+      "download_url": "https://raw.githubusercontent.com/Abnerla/AI_paper/main/Management/skills/literature-searcher.zip",
+      "publisher": "PaperLab",
+      "homepage": "https://github.com/Abnerla/AI_paper",
+      "global_hook": false,
+      "scene_bindings": [
+        "paper_write.section"
+      ]
+    },
+    {
+      "id": "research-question-refiner",
+      "name": "研究问题提炼器",
+      "version": "v1.0.0",
+      "description": "使用FINER标准（可行、有趣、新颖、伦理、相关）将模糊的研究主题提炼为精确、可回答的研究问题。",
+      "min_app_version": "v1.4.0",
+      "download_url": "https://raw.githubusercontent.com/Abnerla/AI_paper/main/Management/skills/research-question-refiner.zip",
+      "publisher": "PaperLab",
+      "homepage": "https://github.com/Abnerla/AI_paper",
+      "global_hook": false,
+      "scene_bindings": [
+        "paper_write.outline"
+      ]
+    },
+    {
+      "id": "peer-review-simulator",
+      "name": "同行评审模拟器",
+      "version": "v1.0.0",
+      "description": "模拟国际期刊的同行评审过程，从主编、方法论、领域专家、跨学科、魔鬼代言人五个视角进行评审，输出结构化的审稿意见和修改路线图。",
+      "min_app_version": "v1.4.0",
+      "download_url": "https://raw.githubusercontent.com/Abnerla/AI_paper/main/Management/skills/peer-review-simulator.zip",
+      "publisher": "PaperLab",
+      "homepage": "https://github.com/Abnerla/AI_paper",
+      "global_hook": false,
+      "scene_bindings": [
+        "paper_write.section",
+        "polish.run_task"
+      ]
+    },
+    {
+      "id": "argument-structure-checker",
+      "name": "论证结构检查器",
+      "version": "v1.0.0",
+      "description": "检查学术论文的论证结构，分析论点-论据链条、逻辑漏洞、过度概括等问题，提供论证优化建议。",
+      "min_app_version": "v1.4.0",
+      "download_url": "https://raw.githubusercontent.com/Abnerla/AI_paper/main/Management/skills/argument-structure-checker.zip",
+      "publisher": "PaperLab",
+      "homepage": "https://github.com/Abnerla/AI_paper",
+      "global_hook": false,
+      "scene_bindings": [
+        "paper_write.section",
+        "polish.run_task"
+      ]
+    },
+    {
+      "id": "citation-format-validator",
+      "name": "引用格式验证器",
+      "version": "v1.0.0",
+      "description": "验证学术论文的引用格式是否符合规范，支持APA、GB/T 7714、MLA、IEEE、Vancouver等多种引用格式，检查引用完整性和一致性。",
+      "min_app_version": "v1.4.0",
+      "download_url": "https://raw.githubusercontent.com/Abnerla/AI_paper/main/Management/skills/citation-format-validator.zip",
+      "publisher": "PaperLab",
+      "homepage": "https://github.com/Abnerla/AI_paper",
+      "global_hook": false,
+      "scene_bindings": [
+        "paper_write.section"
+      ]
+    },
+    {
+      "id": "methodology-designer",
+      "name": "研究方法设计器",
+      "version": "v1.0.0",
+      "description": "根据研究问题设计完整的研究方法论蓝图，包括研究范式、方法选择、数据策略、分析框架和效度标准。",
+      "min_app_version": "v1.4.0",
+      "download_url": "https://raw.githubusercontent.com/Abnerla/AI_paper/main/Management/skills/methodology-designer.zip",
+      "publisher": "PaperLab",
+      "homepage": "https://github.com/Abnerla/AI_paper",
+      "global_hook": false,
+      "scene_bindings": [
+        "paper_write.outline",
         "paper_write.section"
       ]
     }

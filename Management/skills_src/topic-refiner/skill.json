@@ -1,0 +1,67 @@
+{
+  "id": "topic-refiner",
+  "name": "论文主题确定器",
+  "version": "v1.0.0",
+  "description": "通过苏格拉底式追问，帮助用户从模糊想法收敛到明确的论文研究主题。持续发问直到主题清晰、可研究、有边界。",
+  "min_app_version": "v1.4.0",
+  "entry": {
+    "module": "entry",
+    "class": "TopicRefinerSkill"
+  },
+  "priority": 5,
+  "actions": [
+    {
+      "id": "refine_topic",
+      "label": "确定论文主题",
+      "description": "通过连续追问帮助你把模糊的想法变成清晰的论文主题。",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "initial_idea",
+            "label": "你的初步想法",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "描述你感兴趣的研究方向或初步想法，例如：我想研究AI对教育的影响"
+          },
+          {
+            "id": "discipline",
+            "label": "学科领域",
+            "type": "select",
+            "required": false,
+            "default": "auto",
+            "options": [
+              {"label": "自动识别", "value": "auto"},
+              {"label": "教育学", "value": "education"},
+              {"label": "管理学", "value": "management"},
+              {"label": "心理学", "value": "psychology"},
+              {"label": "社会学", "value": "sociology"},
+              {"label": "计算机科学", "value": "computer_science"},
+              {"label": "经济学", "value": "economics"},
+              {"label": "法学", "value": "law"},
+              {"label": "文学", "value": "literature"},
+              {"label": "其他", "value": "other"}
+            ]
+          },
+          {
+            "id": "paper_type",
+            "label": "论文类型",
+            "type": "select",
+            "required": false,
+            "default": "auto",
+            "options": [
+              {"label": "自动推荐", "value": "auto"},
+              {"label": "期刊论文", "value": "journal"},
+              {"label": "会议论文", "value": "conference"},
+              {"label": "学位论文", "value": "thesis"},
+              {"label": "课程论文", "value": "course"}
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "scene_bindings": [
+    "paper_write.outline"
+  ],
+  "global_hook": false
+}
