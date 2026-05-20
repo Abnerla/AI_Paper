@@ -374,7 +374,8 @@ class CorrectionPage(WorkspaceStateMixin):
         self._set_optional_label_text(self.info_label, self._sanitize_info_text(text), fg=fg)
 
     def _build_input_card(self, parent):
-        input_frame, self.input_text = create_scrolled_text(parent, height=18)
+        # 中文混排环境下 WORD 自动换行会异常吃掉中文末尾的空格输入，改用 CHAR。
+        input_frame, self.input_text = create_scrolled_text(parent, height=18, wrap=tk.CHAR)
         input_frame.pack(fill=tk.BOTH, expand=True)
         self.input_text.bind('<KeyRelease>', self._mark_input_manual, add='+')
 
@@ -391,7 +392,7 @@ class CorrectionPage(WorkspaceStateMixin):
         preview_note.pack(fill=tk.X)
         bind_adaptive_wrap(preview_note, parent, padding=12, min_width=220)
 
-        output_frame, self.output_text = create_scrolled_text(parent, height=18)
+        output_frame, self.output_text = create_scrolled_text(parent, height=18, wrap=tk.CHAR)
         output_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
         self.output_text.configure(state=tk.DISABLED, cursor='arrow')
 

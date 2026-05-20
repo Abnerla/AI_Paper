@@ -157,24 +157,36 @@ class DiagramAIService:
                 )
                 continue
 
-            if result.pending_xml and result.tool_name in {'display_diagram', 'append_diagram'} and continuations < max_continuations:
-                continuations += 1
-                next_pending = result.pending_xml
-                feedback = _join_feedback(
-                    feedback,
-                    (
-                        f'上一轮图表 XML 片段尚未完整，继续使用 append_diagram 输出剩余 mxCell。'
-                        f'\n续写次数：{continuations}/{max_continuations}'
-                        f'\n当前片段结尾：\n{next_pending[-1200:]}'
+            if result.pending_xml and result.tool_name in {'display_diagram', 'append_diagram'}:
+                if continuations < max_continuations:
+                    continuations += 1
+                    next_pending = result.pending_xml
+                    feedback = _join_feedback(
+                        feedback,
+                        (
+                            f'上一轮图表 XML 片段尚未完整，继续使用 append_diagram 输出剩余 mxCell。'
+                            f'\n续写次数：{continuations}/{max_continuations}'
+                            f'\n当前片段结尾：\n{next_pending[-1200:]}'
+                        ),
+                    )
+                    _emit_event(
+                        event_callback,
+                        'continuation',
+                        f'检测到图表片段未完整，正在第 {continuations} 次续写。',
+                        {'attempt': continuations, 'max_attempts': max_continuations},
+                    )
+                    continue
+                return DiagramAIResult(
+                    result.block,
+                    result.message or '图表片段仍未完整，无法更新画布。',
+                    result.tool_name,
+                    result.tool_output or '图表片段续写未完成',
+                    error=(
+                        f'图表 XML 续写未完成：已达到 {max_continuations} 次续写上限。'
+                        '请重试，或减少单次生成内容。'
                     ),
+                    pending_xml=result.pending_xml,
                 )
-                _emit_event(
-                    event_callback,
-                    'continuation',
-                    f'检测到图表片段未完整，正在第 {continuations} 次续写。',
-                    {'attempt': continuations, 'max_attempts': max_continuations},
-                )
-                continue
 
             return result
 

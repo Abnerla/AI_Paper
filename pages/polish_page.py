@@ -418,7 +418,8 @@ class PolishPage(WorkspaceStateMixin):
         shell.grid(row=0, column=1, sticky='e', padx=(12, 0))
 
     def _build_input_card(self, parent):
-        input_frame, self.input_text = create_scrolled_text(parent, height=18)
+        # 中文混排环境下 WORD 自动换行会异常吃掉中文末尾的空格输入，改用 CHAR。
+        input_frame, self.input_text = create_scrolled_text(parent, height=18, wrap=tk.CHAR)
         input_frame.pack(fill=tk.BOTH, expand=True)
         self.input_text.bind('<KeyRelease>', self._mark_input_manual)
 
@@ -431,7 +432,7 @@ class PolishPage(WorkspaceStateMixin):
         self.preview_detail_label.pack(fill=tk.X)
         bind_adaptive_wrap(self.preview_detail_label, preview_banner, padding=18, min_width=220)
 
-        output_frame, self.output_text = create_scrolled_text(parent, height=18)
+        output_frame, self.output_text = create_scrolled_text(parent, height=18, wrap=tk.CHAR)
         output_frame.pack(fill=tk.BOTH, expand=True)
         self.output_text.configure(state=tk.DISABLED)
 

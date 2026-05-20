@@ -902,7 +902,9 @@ class TextTransformPageBase(WorkspaceStateMixin):
         left_card = CardFrame(body, title=self.INPUT_CARD_TITLE)
         self._input_card = left_card
         self._build_input_card_title_meta(left_card)
-        input_frame, self.input_text = create_scrolled_text(left_card.inner, height=20)
+        # 中文混排环境下使用 WORD 自动换行会把空格视为分词点，
+        # 在中文末尾输入空格会异常触发换行。改用 CHAR 按字符换行避免该问题。
+        input_frame, self.input_text = create_scrolled_text(left_card.inner, height=20, wrap=tk.CHAR)
         input_frame.pack(fill=tk.BOTH, expand=True)
         self._register_editable_text(self.input_text, self.INPUT_PLACEHOLDER)
         self._bind_input_context_menu()
@@ -910,7 +912,7 @@ class TextTransformPageBase(WorkspaceStateMixin):
         right_card = CardFrame(body, title=None if self.SHOW_OUTPUT_HEADER_REPLACE_ACTION else self.OUTPUT_CARD_TITLE)
         if self.SHOW_OUTPUT_HEADER_REPLACE_ACTION:
             self._build_output_card_header(right_card.inner)
-        output_frame, self.output_text = create_scrolled_text(right_card.inner, height=20)
+        output_frame, self.output_text = create_scrolled_text(right_card.inner, height=20, wrap=tk.CHAR)
         output_frame.pack(fill=tk.BOTH, expand=True, pady=(8 if self.SHOW_OUTPUT_HEADER_REPLACE_ACTION else 0, 0))
         self._register_editable_text(self.output_text, self.OUTPUT_PLACEHOLDER)
 

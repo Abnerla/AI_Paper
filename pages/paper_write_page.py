@@ -24,6 +24,7 @@ from modules.app_metadata import MODULE_PAPER_WRITE
 from modules.diagram_blocks import new_diagram_block, sanitize_diagram_block
 from modules.diagram_generator import generate_from_prompt
 from modules.diagram_thumbnail import render_placeholder_png
+from modules.math_renderer import iter_math_segments, render_latex_to_image, wrap_math_source
 from modules.runtime_paths import resolve_data_path
 from modules.paper_writer import PaperWriter
 from modules.table_blocks import (
@@ -2247,6 +2248,76 @@ class _DiagramBlockWidget:
             self.frame.destroy()
 
 
+class _MathBlockWidget:
+    """LaTeX 公式渲染控件，嵌入 Text 编辑器中。"""
+
+    def __init__(self, parent, latex_source, *, display=False, font_size=14, fg_color='#222222', bg_color='#FFFFFF'):
+        self.parent = parent
+        self.latex_source = str(latex_source or '').strip()
+        self.display = bool(display)
+        self.font_size = int(font_size)
+        self.fg_color = str(fg_color)
+        self.bg_color = str(bg_color)
+        self.window_frame = None
+        self._photo = None
+
+        self.frame = tk.Frame(parent, bg=bg_color, bd=0, highlightthickness=0)
+        self.frame._math_block_editor = self
+        self.label = tk.Label(self.frame, bg=bg_color, bd=0, highlightthickness=0)
+        if display:
+            self.label.pack(anchor='center', padx=12, pady=6)
+        else:
+            self.label.pack(anchor='w', padx=1, pady=0)
+        self._render()
+
+    def _render(self):
+        if not self.latex_source:
+            self.label.configure(text='(empty formula)', fg=COLORS.get('text_muted', '#999999'))
+            return
+        image = render_latex_to_image(
+            self.latex_source,
+            font_size=self.font_size,
+            fg_color=self.fg_color,
+            bg_color=self.bg_color,
+            display=self.display,
+        )
+        if image is None:
+            fallback = wrap_math_source(self.latex_source, display=self.display)
+            self.label.configure(
+                text=fallback,
+                fg=COLORS.get('text_sub', '#666666'),
+                font=FONTS.get('small', ('Consolas', 10)),
+            )
+            return
+        if ImageTk is None:
+            self.label.configure(text=self.latex_source, fg=COLORS.get('text_sub', '#666666'))
+            return
+        self._photo = ImageTk.PhotoImage(image)
+        self.label.configure(image=self._photo, text='')
+
+    def serialize(self) -> str:
+        return wrap_math_source(self.latex_source, display=self.display)
+
+    def set_data(self, latex_source, *, display=None, font_size=None, fg_color=None, bg_color=None):
+        self.latex_source = str(latex_source or '').strip()
+        if display is not None:
+            self.display = bool(display)
+        if font_size is not None:
+            self.font_size = int(font_size)
+        if fg_color is not None:
+            self.fg_color = str(fg_color)
+        if bg_color is not None:
+            self.bg_color = str(bg_color)
+        self._render()
+
+    def destroy(self):
+        window_frame = getattr(self, 'window_frame', None)
+        if window_frame is not None and window_frame.winfo_exists():
+            window_frame.destroy()
+        elif self.frame.winfo_exists():
+            self.frame.destroy()
+
+
 class PaperWritePage(WorkspaceStateMixin):
     PAGE_STATE_ID = 'paper_write'
     PARAGRAPH_INDENT = '　　'
@@ -2494,6 +2565,34 @@ class PaperWritePage(WorkspaceStateMixin):
         self.style_var.trace_add('write', lambda *_args: self._schedule_workspace_state_save())
         self.ref_var.trace_add('write', lambda *_args: self._schedule_workspace_state_save())
         self.wcount_var.trace_add('write', lambda *_args: self._schedule_workspace_state_save())
+
+    def _validate_wcount_input(self, new_value):
+        """验证目标字数输入：只允许空字符串或纯数字（最多6位）"""
+        if new_value == '':
+            return True
+        if new_value.isdigit() and len(new_value) <= 6:
+            return True
+        return False
+
+    def _normalize_wcount_value(self, event=None):
+        """规范化目标字数：空值或非法值回退到1000"""
+        value = self.wcount_var.get().strip()
+        try:
+            num = int(value)
+            if num <= 0:
+                self.wcount_var.set('1000')
+            elif num > 100000:
+                self.wcount_var.set('100000')
+        except (ValueError, TypeError):
+            self.wcount_var.set('1000')
+
+    def _get_target_word_count(self):
+        """获取目标字数，对非法值返回默认值1000"""
+        try:
+            value = int(self.wcount_var.get() or '1000')
+            return max(1, min(100000, value))
+        except (ValueError, TypeError):
+            return 1000
 
     def export_workspace_state(self):
         current_section = self.section_entry.get().strip()
@@ -2978,11 +3077,16 @@ class PaperWritePage(WorkspaceStateMixin):
         tk.Label(top_row, text='目标字数', font=FONTS['small'],
                  fg=COLORS['text_sub'], bg=COLORS['card_bg']).pack(side=tk.LEFT)
         self.wcount_var = tk.StringVar(value='1000')
-        ttk.Combobox(
+        wcount_validate = (self.frame.register(self._validate_wcount_input), '%P')
+        wcount_combo = ttk.Combobox(
             top_row, textvariable=self.wcount_var,
             values=['500', '800', '1000', '1500', '2000', '3000', '5000'],
-            state='readonly', style='Modern.TCombobox', width=6,
-        ).pack(side=tk.LEFT, padx=(6, 12))
+            state='normal', style='Modern.TCombobox', width=6,
+            validate='key', validatecommand=wcount_validate,
+        )
+        wcount_combo.pack(side=tk.LEFT, padx=(6, 12))
+        wcount_combo.bind('<FocusOut>', self._normalize_wcount_value)
+        wcount_combo.bind('<Return>', self._normalize_wcount_value)
 
         self._write_table_button_shell, self._write_table_button = create_home_shell_button(
             top_row,
@@ -3628,6 +3732,10 @@ class PaperWritePage(WorkspaceStateMixin):
                 editor = getattr(widget, '_diagram_block_editor', None) if widget is not None else None
                 if editor is not None:
                     blocks.append(editor.serialize())
+                    continue
+                math_editor = getattr(widget, '_math_block_editor', None) if widget is not None else None
+                if math_editor is not None:
+                    text_buffer.append(math_editor.serialize())
 
         flush_text_buffer()
         return self._normalize_section_blocks(blocks)
@@ -3647,6 +3755,38 @@ class PaperWritePage(WorkspaceStateMixin):
         window_frame.pack_propagate(False)
         editor.frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, editor.TABLE_EDITOR_RIGHT_GAP))
         editor._sync_window_frame_size()
+        self._editor_block_widgets.append(editor)
+        return editor
+
+    def _insert_paragraph_with_math(self, text):
+        if not text:
+            return
+        for kind, content in iter_math_segments(text):
+            if kind == 'text':
+                if content:
+                    self.edit_text.insert(tk.END, content)
+            else:
+                editor = self._render_math_block(
+                    self.edit_text,
+                    content,
+                    display=(kind == 'display_math'),
+                )
+                self.edit_text.window_create(tk.END, window=editor.window_frame)
+
+    def _render_math_block(self, parent, latex, *, display=False):
+        window_frame = tk.Frame(parent, bg=COLORS['input_bg'])
+        font_size = int(self._current_size_pt or 12)
+        editor = _MathBlockWidget(
+            window_frame,
+            latex,
+            display=display,
+            font_size=font_size,
+            fg_color=COLORS.get('text_main', '#222222'),
+            bg_color=COLORS.get('input_bg', '#FFFFFF'),
+        )
+        editor.window_frame = window_frame
+        window_frame._math_block_editor = editor
+        editor.frame.pack(side=tk.LEFT, anchor='center' if display else 'w')
         self._editor_block_widgets.append(editor)
         return editor
 
@@ -3685,8 +3825,9 @@ class PaperWritePage(WorkspaceStateMixin):
             if block_index > 0:
                 self.edit_text.insert(tk.END, '\n\n')
             if block['type'] == 'paragraph':
-                if block.get('text', ''):
-                    self.edit_text.insert(tk.END, block['text'])
+                paragraph_text = block.get('text', '')
+                if paragraph_text:
+                    self._insert_paragraph_with_math(paragraph_text)
                 continue
             if block['type'] == 'table':
                 editor = self._render_table_block(self.edit_text, block)
@@ -3914,7 +4055,13 @@ class PaperWritePage(WorkspaceStateMixin):
         self._update_advice(total, cn, en, chapter_total, chapter_cn)
 
     def _on_editor_key_release(self, event=None):
-        self._sync_editor_state()
+        keysym = str(getattr(event, 'keysym', '') or '').lower() if event is not None else ''
+        char = str(getattr(event, 'char', '') or '') if event is not None else ''
+        fast_path = bool(char) or keysym in {
+            'space', 'kp_space', 'backspace', 'delete', 'tab',
+            'left', 'right', 'up', 'down', 'home', 'end', 'prior', 'next',
+        }
+        self._sync_editor_state(refresh_editor_fonts=not fast_path)
 
     def _on_editor_mouse_release(self, event=None):
         self._active_table_editor = None
@@ -3974,9 +4121,10 @@ class PaperWritePage(WorkspaceStateMixin):
     def _count_english_words(text):
         return len(re.findall(r"\b[a-zA-Z]+(?:[-'][a-zA-Z]+)*\b", text or ''))
 
-    def _sync_editor_state(self, *, touch_context=True, capture_selection=True):
+    def _sync_editor_state(self, *, touch_context=True, capture_selection=True, refresh_editor_fonts=True):
         self._store_current_editor_content()
-        self._refresh_editor_font_render_tags()
+        if refresh_editor_fonts:
+            self._refresh_editor_font_render_tags()
         self._refresh_mixed_font_tags()
         if touch_context:
             self._touch_context_revision()
@@ -9176,7 +9324,7 @@ class PaperWritePage(WorkspaceStateMixin):
             'outline': self.outline_text.get('1.0', tk.END).strip(),
             'existing_text': self._resolve_section_existing_content(section),
             'existing_formats': self._resolve_section_existing_formats(section),
-            'word_count': int(self.wcount_var.get() or '1000'),
+            'word_count': self._get_target_word_count(),
             'reference_style': self.ref_var.get(),
         }
 
@@ -9288,7 +9436,7 @@ class PaperWritePage(WorkspaceStateMixin):
             messagebox.showwarning('提示', message, parent=self.frame)
             return
 
-        word_count = int(self.wcount_var.get() or '1000')
+        word_count = self._get_target_word_count()
         if not self._confirm_batch_write_warning(targets, word_count):
             return
 
@@ -9359,7 +9507,7 @@ class PaperWritePage(WorkspaceStateMixin):
                 outline,
                 section,
                 existing,
-                int(self.wcount_var.get() or '1000'),
+                self._get_target_word_count(),
                 self.ref_var.get(),
                 knowledge_context=knowledge_context,
             ),
@@ -9406,7 +9554,7 @@ class PaperWritePage(WorkspaceStateMixin):
                 outline,
                 section,
                 existing,
-                int(self.wcount_var.get() or '1000'),
+                self._get_target_word_count(),
                 self.ref_var.get(),
                 knowledge_context=knowledge_context,
             ),

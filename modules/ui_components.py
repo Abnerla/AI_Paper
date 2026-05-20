@@ -2512,17 +2512,31 @@ def apply_mixed_fonts(widget, cn_font_name, en_font_name, size_pt):
     """为Text widget应用中英文混合字体：中文用cn_font，英文用en_font。
 
     基础字体设置为中文字体，英文字符区间加 _font_en tag 覆盖。
+
+    为避免每次按键时反复 configure 基础字体引发的视觉抖动（光标处的字符
+    因字体重新测量而短暂回缩再复位），此处对相同字体配置做幂等处理；
+    并且仅在文本内容变化时才重排 `_font_en` 标签。
     """
     size_pt = int(size_pt)
-    widget.configure(font=(cn_font_name, size_pt))
+    font_signature = (str(cn_font_name), str(en_font_name), size_pt)
+    cached_signature = getattr(widget, '_mixed_font_signature', None)
+    if cached_signature != font_signature:
+        widget.configure(font=(cn_font_name, size_pt))
+        en_font = tkfont.Font(root=widget, family=en_font_name, size=size_pt)
+        widget.tag_configure('_font_en', font=en_font)
+        widget._mixed_font_signature = font_signature
+        # 字体已变更，强制重排所有英文区段。
+        widget._mixed_font_content_signature = None
 
-    en_font = tkfont.Font(root=widget, family=en_font_name, size=size_pt)
-    widget.tag_configure('_font_en', font=en_font)
-
-    widget.tag_remove('_font_en', '1.0', tk.END)
     text_end = widget.index('end-1c')
     content = widget.get('1.0', text_end)
+    content_signature = (content, font_signature)
+    if getattr(widget, '_mixed_font_content_signature', None) == content_signature:
+        return
+
+    widget.tag_remove('_font_en', '1.0', tk.END)
     if not content:
+        widget._mixed_font_content_signature = content_signature
         return
 
     line = 1
@@ -2536,7 +2550,9 @@ def apply_mixed_fonts(widget, cn_font_name, en_font_name, size_pt):
             line += 1
             col = 0
             continue
-        if _is_cjk_char(ch):
+        if _is_cjk_char(ch) or ch in (' ', '\t'):
+            # 空格/Tab 保持基础字体，避免英文字体与中文字体下空格宽度差
+            # 在键入时引发的视觉回缩抖动。
             if en_start is not None:
                 widget.tag_add('_font_en', en_start, f'{line}.{col}')
                 en_start = None
@@ -2547,3 +2563,4 @@ def apply_mixed_fonts(widget, cn_font_name, en_font_name, size_pt):
     if en_start is not None:
         widget.tag_add('_font_en', en_start, text_end)
     widget.tag_lower('_font_en')
+    widget._mixed_font_content_signature = content_signature
