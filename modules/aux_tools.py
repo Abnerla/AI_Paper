@@ -14,6 +14,7 @@ from collections import Counter
 
 from modules.diagram_blocks import diagram_placeholder_text
 from modules.diagram_thumbnail import render_placeholder_png
+from modules.math_renderer import iter_math_segments, render_latex_to_image, wrap_math_source
 from modules.table_blocks import (
     TABLE_ALIGN_CENTER,
     TABLE_ALIGN_RIGHT,
@@ -587,6 +588,76 @@ class AuxTools:
                 run.font.size = Pt(pt_size)
                 run._element.rPr.rFonts.set(qn('w:eastAsia'), cn_font)
 
+            def _contains_math(text_value):
+                for kind, _content in iter_math_segments(str(text_value or '')):
+                    if kind != 'text':
+                        return True
+                return False
+
+            def _normalize_inline_text(text_value):
+                return re.sub(r'[ \t\r\f\v]*\n[ \t\r\f\v]*', ' ', str(text_value or ''))
+
+            def _math_image_buffer(latex, *, display=False):
+                image = render_latex_to_image(
+                    str(latex or '').strip(),
+                    font_size=int(body_pt),
+                    fg_color='#222222',
+                    bg_color='#FFFFFF',
+                    display=display,
+                )
+                if image is None:
+                    return None, None
+                buffer = io.BytesIO()
+                image.save(buffer, format='PNG')
+                buffer.seek(0)
+                return buffer, image
+
+            def _add_math_run(paragraph, latex, *, display=False):
+                buffer, image = _math_image_buffer(latex, display=display)
+                run = paragraph.add_run()
+                if buffer is None or image is None:
+                    run.text = wrap_math_source(str(latex or '').strip(), display=display)
+                    _set_run_font(run, body_font, body_font_en, body_pt)
+                    return
+                if display:
+                    width_cm = min(14.0, max(1.0, image.width / 150 * 2.54))
+                    run.add_picture(buffer, width=Cm(width_cm))
+                else:
+                    run.add_picture(buffer, height=Pt(max(body_pt * 1.45, body_pt + 4)))
+
+            def _trim_inline_parts(parts):
+                trimmed = [part for part in parts if part[0] != 'text' or part[1]]
+                while trimmed and trimmed[0][0] == 'text' and not trimmed[0][1].strip():
+                    trimmed.pop(0)
+                while trimmed and trimmed[-1][0] == 'text' and not trimmed[-1][1].strip():
+                    trimmed.pop()
+                if trimmed and trimmed[0][0] == 'text':
+                    trimmed[0] = ('text', trimmed[0][1].lstrip())
+                if trimmed and trimmed[-1][0] == 'text':
+                    trimmed[-1] = ('text', trimmed[-1][1].rstrip())
+                return trimmed
+
+            def _write_inline_parts(parts):
+                inline_parts = _trim_inline_parts(parts)
+                if not inline_parts:
+                    return
+                p = doc.add_paragraph()
+                p.paragraph_format.first_line_indent = Pt(24)
+                p.paragraph_format.space_after = Pt(6)
+                for kind, content in inline_parts:
+                    if kind == 'text':
+                        run = p.add_run(content)
+                        _set_run_font(run, body_font, body_font_en, body_pt)
+                    else:
+                        _add_math_run(p, content, display=False)
+
+            def _write_display_math(latex):
+                p = doc.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p.paragraph_format.first_line_indent = Pt(0)
+                p.paragraph_format.space_after = Pt(6)
+                _add_math_run(p, latex, display=True)
+
             def _set_cell_borders(cell, **borders):
                 tc_pr = cell._tc.get_or_add_tcPr()
                 tc_borders = tc_pr.first_child_found_in('w:tcBorders')
@@ -654,11 +725,28 @@ class AuxTools:
                     _set_run_font(run, h1_font, h1_font_en, h1_pt)
 
             def _write_body_paragraph(paragraph_text):
-                p = doc.add_paragraph(paragraph_text)
-                p.paragraph_format.first_line_indent = Pt(24)
-                p.paragraph_format.space_after = Pt(6)
-                for run in p.runs:
-                    _set_run_font(run, body_font, body_font_en, body_pt)
+                text_value = str(paragraph_text or '')
+                if not text_value.strip():
+                    return
+                if not _contains_math(text_value):
+                    p = doc.add_paragraph(_normalize_inline_text(text_value).strip())
+                    p.paragraph_format.first_line_indent = Pt(24)
+                    p.paragraph_format.space_after = Pt(6)
+                    for run in p.runs:
+                        _set_run_font(run, body_font, body_font_en, body_pt)
+                    return
+
+                inline_parts = []
+                for kind, content in iter_math_segments(text_value):
+                    if kind == 'text':
+                        inline_parts.append(('text', _normalize_inline_text(content)))
+                    elif kind == 'display_math':
+                        _write_inline_parts(inline_parts)
+                        inline_parts = []
+                        _write_display_math(content)
+                    else:
+                        inline_parts.append(('math', content))
+                _write_inline_parts(inline_parts)
 
             def _write_table_block(block):
                 rows = block.get('rows', [])
@@ -810,9 +898,9 @@ class AuxTools:
                                 if block['type'] == 'table':
                                     _write_table_block(block)
                                     continue
-                                for para_text in str(block.get('text', '') or '').split('\n'):
-                                    if para_text.strip():
-                                        _write_body_paragraph(para_text)
+                                block_text = str(block.get('text', '') or '')
+                                if block_text.strip():
+                                    _write_body_paragraph(block_text)
                     doc.save(filepath)
                     return True
 
@@ -823,7 +911,9 @@ class AuxTools:
                     if block['type'] == 'table':
                         _write_table_block(block)
                         continue
-                    for para_text in str(block.get('text', '') or '').split('\n'):
+                    block_text = str(block.get('text', '') or '')
+                    paragraph_items = [block_text] if _contains_math(block_text) else block_text.split('\n')
+                    for para_text in paragraph_items:
                         if not para_text.strip():
                             continue
                         if re.match(r'^第[一二三四五六七八九十\d]+[章]', para_text):
@@ -844,7 +934,7 @@ class AuxTools:
                         else:
                             _write_body_paragraph(para_text)
             else:
-                paragraphs = text.split('\n')
+                paragraphs = [text] if _contains_math(text) else text.split('\n')
                 for para_text in paragraphs:
                     if not para_text.strip():
                         continue

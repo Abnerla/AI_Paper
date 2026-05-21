@@ -462,17 +462,14 @@ class DiscoverSkillsPanel:
             else:
                 all_skills.append({
                     'id': skill_id,
-                    'name': item.get('name', skill_id),
-                    'version': item.get('version', ''),
-                    'latest_version': item.get('version', ''),
-                    'description': item.get('description', ''),
-                    'min_app_version': item.get('min_app_version', ''),
-                    'download_url': item.get('download_url', ''),
-                    'publisher': item.get('publisher', ''),
-                    'homepage': item.get('homepage', ''),
-                    'global_hook': bool(item.get('global_hook', False)),
-                    'scene_bindings': list(item.get('scene_bindings', [])),
-                    'registry_entry': item,
+                        'name': item.get('name') or skill_id,
+                        'version': item.get('version', ''),
+                        'latest_version': item.get('version', ''),
+                        'description': item.get('description') or '',
+                        'min_app_version': item.get('min_app_version', ''),
+                        'download_url': item.get('download_url', ''),
+                        'publisher': item.get('publisher') or '',
+                        'homepage': item.get('homepage') or '',
                     'manifest': None,
                     'is_installed': False,
                     'has_update': False,
@@ -590,9 +587,10 @@ class DiscoverSkillsPanel:
         # 头部行：名称 + 状态标签
         header = tk.Frame(card.inner, bg=COLORS['card_bg'])
         header.pack(fill=tk.X)
+        skill_name = view.get('name') or skill_id
         name_label = tk.Label(
             header,
-            text=view.get('name', skill_id),
+            text=skill_name,
             font=FONTS['body_bold'],
             fg=COLORS['text_main'],
             bg=COLORS['card_bg'],
@@ -696,7 +694,7 @@ class DiscoverSkillsPanel:
     # ------------------------------------------------------------------ 安装技能
     def _install_skill(self, view):
         skill_id = view.get('id', '')
-        skill_name = view.get('name', skill_id)
+        skill_name = view.get('name') or skill_id
         is_installed = bool(view.get('is_installed', False))
         is_update = is_installed and view.get('has_update', False)
         registry_entry = view.get('registry_entry') or {}
@@ -750,7 +748,7 @@ class DiscoverSkillsPanel:
     # ------------------------------------------------------------------ 技能详情
     def _show_skill_detail(self, view):
         detail_window = tk.Toplevel(self.frame.winfo_toplevel())
-        skill_name = view.get('name', view.get('id', ''))
+        skill_name = view.get('name') or view.get('id', '')
         detail_window.title(f'技能详情 - {skill_name}')
         detail_window.configure(bg=COLORS['bg_main'])
         detail_window.transient(self.frame.winfo_toplevel())

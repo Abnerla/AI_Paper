@@ -22,8 +22,10 @@ from typing import Callable, Literal, NoReturn
 # 平台特定导入（可选）
 try:
     if sys.platform == 'win32':
+        import ctypes
         import winreg
 except ImportError:
+    ctypes = None
     winreg = None
 
 try:
@@ -34,6 +36,55 @@ except ImportError:
 
 
 InstallMode = Literal['installer', 'portable', 'dmg', 'appimage', 'deb_rpm', 'dev']
+
+
+def _windows_cmd_executable() -> str:
+    """返回 Windows 命令解释器路径。"""
+    return (
+        os.environ.get('COMSPEC')
+        or os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'System32', 'cmd.exe')
+    )
+
+
+def _quote_cmd_arg(value: str | os.PathLike) -> str:
+    """按 cmd.exe 命令行规则包裹参数，避免路径中的空格或 & 破坏命令。"""
+    text = str(value)
+    return '"' + text.replace('"', '""') + '"'
+
+
+def _launch_detached_update_script(script_path: Path, *args: str | os.PathLike) -> None:
+    """以分离进程运行更新脚本，当前应用退出后脚本继续执行。"""
+    command = ' '.join(_quote_cmd_arg(arg) for arg in (script_path, *args))
+    if sys.platform == 'win32':
+        _shell_execute_update_script(command, script_path.parent)
+        return
+
+    creationflags = (
+        getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+        | getattr(subprocess, 'DETACHED_PROCESS', 0)
+        | getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    )
+    subprocess.Popen(
+        [_windows_cmd_executable(), '/d', '/s', '/c', f'"{command}"'],
+        creationflags=creationflags,
+        close_fds=True,
+        cwd=str(script_path.parent),
+    )
+
+
+def _shell_execute_update_script(command: str, cwd: Path) -> None:
+    """通过 Windows Shell 启动更新脚本，必要时弹出系统授权窗口。"""
+    params = f'/d /s /c "{command}"'
+    result = ctypes.windll.shell32.ShellExecuteW(
+        None,
+        'runas',
+        _windows_cmd_executable(),
+        params,
+        str(cwd),
+        0,
+    )
+    if result <= 32:
+        raise OSError(f'ShellExecuteW 启动更新脚本失败，错误码: {result}')
 
 
 # ============================================================================
@@ -324,18 +375,42 @@ def apply_update(asset_path: Path, mode: InstallMode) -> NoReturn:
 # ============================================================================
 
 def _apply_windows_installer(setup_exe: Path) -> NoReturn:
-    """Windows Inno Setup 静默安装"""
-    subprocess.Popen(
-        [
-            str(setup_exe),
-            '/VERYSILENT',
-            '/SUPPRESSMSGBOXES',
-            '/NORESTART',
-            '/CLOSEAPPLICATIONS',
-            '/RESTARTAPPLICATIONS',
-        ],
-        close_fds=True,
+    """Windows Inno Setup 静默安装并重启应用。"""
+    update_script = setup_exe.parent / 'installer_update.cmd'
+    update_script.write_text(
+        '@echo off\n'
+        'setlocal\n'
+        'set "WAIT_PID=%~1"\n'
+        'set "SETUP=%~2"\n'
+        'set "APP_EXE=%~3"\n'
+        'set "LOG=%~dp0installer-update.log"\n'
+        '> "%LOG%" echo installer updater started\n'
+        'call :wait_parent\n'
+        'if not exist "%SETUP%" (\n'
+        '  echo setup missing: %SETUP% >> "%LOG%"\n'
+        '  exit /b 1\n'
+        ')\n'
+        '"%SETUP%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS >> "%LOG%" 2>&1\n'
+        'set "SETUP_RESULT=%ERRORLEVEL%"\n'
+        'echo installer exit code: %SETUP_RESULT% >> "%LOG%"\n'
+        'if not "%SETUP_RESULT%"=="0" exit /b %SETUP_RESULT%\n'
+        'if exist "%APP_EXE%" (\n'
+        '  start "" "%APP_EXE%" >> "%LOG%" 2>&1\n'
+        ') else (\n'
+        '  echo app exe missing after install: %APP_EXE% >> "%LOG%"\n'
+        ')\n'
+        'del "%~f0"\n'
+        'exit /b 0\n'
+        ':wait_parent\n'
+        'tasklist /FI "PID eq %WAIT_PID%" 2>nul | findstr /R /C:"[ ]%WAIT_PID%[ ]" >nul\n'
+        'if not errorlevel 1 (\n'
+        '  timeout /t 1 /nobreak >nul\n'
+        '  goto wait_parent\n'
+        ')\n'
+        'exit /b 0\n',
+        encoding='ascii',
     )
+    _launch_detached_update_script(update_script, str(os.getpid()), str(setup_exe), sys.executable)
     os._exit(0)
 
 
@@ -345,23 +420,42 @@ def _apply_windows_portable(new_exe: Path) -> NoReturn:
     swap_script = new_exe.parent / 'swap.cmd'
     swap_script.write_text(
         '@echo off\n'
-        ':wait\n'
-        'tasklist /FI "PID eq %1" | find "%1" >nul && (timeout /t 1 /nobreak >nul & goto wait)\n'
-        'move /Y "%~3" "%~2"\n'
-        'start "" "%~2"\n'
-        '(goto) 2>nul & del "%~f0"\n',
-        encoding='gbk',
+        'setlocal\n'
+        'set "WAIT_PID=%~1"\n'
+        'set "TARGET=%~2"\n'
+        'set "SOURCE=%~3"\n'
+        'set "LOG=%~dp0portable-update.log"\n'
+        '> "%LOG%" echo portable updater started\n'
+        'call :wait_parent\n'
+        'if not exist "%SOURCE%" (\n'
+        '  echo source missing: %SOURCE% >> "%LOG%"\n'
+        '  exit /b 1\n'
+        ')\n'
+        'set /a ATTEMPT=0\n'
+        ':replace\n'
+        'set /a ATTEMPT+=1\n'
+        'move /Y "%SOURCE%" "%TARGET%" >> "%LOG%" 2>&1\n'
+        'if not errorlevel 1 goto launch\n'
+        'if %ATTEMPT% GEQ 30 goto fail\n'
+        'timeout /t 1 /nobreak >nul\n'
+        'goto replace\n'
+        ':launch\n'
+        'start "" "%TARGET%" >> "%LOG%" 2>&1\n'
+        'del "%~f0"\n'
+        'exit /b 0\n'
+        ':fail\n'
+        'echo replace failed after %ATTEMPT% attempts >> "%LOG%"\n'
+        'exit /b 1\n'
+        ':wait_parent\n'
+        'tasklist /FI "PID eq %WAIT_PID%" 2>nul | findstr /R /C:"[ ]%WAIT_PID%[ ]" >nul\n'
+        'if not errorlevel 1 (\n'
+        '  timeout /t 1 /nobreak >nul\n'
+        '  goto wait_parent\n'
+        ')\n'
+        'exit /b 0\n',
+        encoding='ascii',
     )
-
-    # 启动脚本（分离进程）
-    CREATE_NEW_PROCESS_GROUP = 0x00000200
-    DETACHED_PROCESS = 0x00000008
-
-    subprocess.Popen(
-        ['cmd', '/c', 'start', '', '/min', str(swap_script), str(os.getpid()), sys.executable, str(new_exe)],
-        creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
-        close_fds=True,
-    )
+    _launch_detached_update_script(swap_script, str(os.getpid()), sys.executable, str(new_exe))
 
     os._exit(0)
 

@@ -1191,13 +1191,13 @@ class SkillManager:
                 result.append(
                     {
                         'id': skill_id,
-                        'name': item.get('name', skill_id),
+                        'name': item.get('name') or skill_id,
                         'version': item.get('version', ''),
                         'latest_version': item.get('version', ''),
-                        'description': item.get('description', ''),
+                        'description': item.get('description') or '',
                         'min_app_version': item.get('min_app_version', ''),
-                        'publisher': item.get('publisher', ''),
-                        'homepage': item.get('homepage', ''),
+                        'publisher': item.get('publisher') or '',
+                        'homepage': item.get('homepage') or '',
                         'global_hook': bool(item.get('global_hook', False)),
                         'scene_bindings': list(item.get('scene_bindings', [])),
                         'registry_entry': item,
@@ -1208,7 +1208,7 @@ class SkillManager:
                         'global_enabled': False,
                         'bound_scene_ids': [],
                         'source_type': 'registry',
-                        'source_label': item.get('name', skill_id),
+                        'source_label': item.get('name') or skill_id,
                         'actions_count': 0,
                     }
                 )

@@ -17,6 +17,8 @@
 
 软件所有数据保存在本地，API 密钥采用加密存储，无需注册、无需联网登录，开箱即用。
 
+**广义上来说软件可以用于任何写作方面的应用，包括但不限于文章写作、推文写作等，你只需要自己修改提示词即可使用**
+
 > ⚠️ **学术诚信声明**
 >
 > - 纸研社**不是**用来绕过学校、期刊、会议、AIGC 平台的原创性/AI 检测的工具。
@@ -31,13 +33,15 @@
   <br><br>
   <img src="Introduction/2.png" width="80%">
   <br><br>
-  <img src="Introduction/3.png" width="80%">
-  <br><br>
   <img src="Introduction/4.png" width="80%">
   <br><br>
   <img src="Introduction/5.png" width="80%">
   <br><br>
   <img src="Introduction/6.png" width="80%">
+  <br><br>
+  <img src="Introduction/7.png" width="80%">
+  <br><br>
+  <img src="Introduction/8.png" width="80%">
 </div>
 
 ## 功能特性

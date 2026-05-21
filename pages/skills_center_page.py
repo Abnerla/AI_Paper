@@ -579,9 +579,10 @@ class SkillsCenterPanel:
 
         title_row = tk.Frame(body, bg=body.cget('bg'))
         title_row.pack(fill=tk.X, padx=16, pady=(14, 0))
+        skill_name = item.get('name') or skill_id
         tk.Label(
             title_row,
-            text=item.get('name', skill_id),
+            text=skill_name,
             font=FONTS['body_bold'],
             fg=COLORS['text_main'],
             bg=body.cget('bg'),
@@ -679,7 +680,7 @@ class SkillsCenterPanel:
             self._set_action_result('')
             return
 
-        self.title_label.configure(text=item.get('name', item.get('id', '')))
+        self.title_label.configure(text=item.get('name') or item.get('id', ''))
         self.meta_label.configure(
             text=(
                 f'ID：{item.get("id", "")}\n'

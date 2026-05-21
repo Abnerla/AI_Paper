@@ -1818,7 +1818,7 @@ class SmartPaperTool:
             update_btn.configure(
                 text='立即重启更新',
                 state=tk.NORMAL,
-                command=lambda: apply_update(asset, mode),
+                command=lambda: self._apply_downloaded_update(asset, mode, ui_refs),
             )
             if hasattr(update_btn, 'set_style'):
                 update_btn.set_style('primary')
@@ -1827,6 +1827,14 @@ class SmartPaperTool:
             window.protocol('WM_DELETE_WINDOW', lambda: self._close_dialog(window))
         except tk.TclError:
             pass
+
+    def _apply_downloaded_update(self, asset, mode, ui_refs):
+        try:
+            apply_update(asset, mode)
+        except Exception as exc:
+            self._update_in_progress = False
+            self._write_app_log(f'启动更新失败: {exc}', level='ERROR')
+            self._on_update_failed(f'启动更新失败: {exc}', ui_refs.get('download_url', ''), ui_refs)
 
     def _on_update_cancelled(self, ui_refs):
         self._update_in_progress = False
