@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-发现技能弹窗面板 — 支持仓库/skill.sh 切换、搜索筛选、网格化卡片、安装/详情、仓库管理。
+发现技能弹窗面板 — 支持仓库搜索筛选、网格化卡片、安装/详情、仓库管理。
 """
 
 from __future__ import annotations
@@ -37,22 +37,19 @@ class DiscoverSkillsPanel:
     SKILL_CARD_DESC_CHARS = 72
 
     def __init__(self, parent, config_mgr, skill_manager, remote_content_manager,
-                 marketplace_client, *, set_status, close_panel=None, on_skill_installed=None,
+                 *, set_status, close_panel=None, on_skill_installed=None,
                  on_open_repo_manage=None):
         self.config = config_mgr
         self.skill_manager = skill_manager
         self.remote_content = remote_content_manager
-        self.marketplace = marketplace_client
         self.set_status = set_status
         self.close_panel = close_panel
         self.on_skill_installed = on_skill_installed
         self.on_open_repo_manage = on_open_repo_manage
         self.frame = tk.Frame(parent, bg=COLORS['bg_main'])
 
-        self._current_source = 'registry'  # 'registry' | 'marketplace'
+        self._current_source = 'registry'
         self._registry_payload = self.skill_manager.load_registry_cache()
-        self._marketplace_payload = None
-        self._marketplace_error = None
         self._all_skills = []
         self._filtered_skills = []
         self._search_var = tk.StringVar(value='')
@@ -94,15 +91,15 @@ class DiscoverSkillsPanel:
         self._card_grid.pack(fill=tk.BOTH, expand=True)
 
     def _build_toolbar(self, parent):
-        # 第一行：数据源切换 | 搜索框 | 刷新
+        # 第一行：仓库入口 | 搜索框 | 刷新
         row1 = tk.Frame(parent, bg=COLORS['bg_main'])
         row1.pack(fill=tk.X, pady=(0, 8))
 
-        # 数据源切换按钮组
+        # 仓库入口
         source_frame = tk.Frame(row1, bg=COLORS['bg_main'])
         source_frame.pack(side=tk.LEFT)
 
-        for source_key, source_label in [('registry', '仓库'), ('marketplace', 'skill.sh')]:
+        for source_key, source_label in [('registry', '仓库')]:
             btn = ModernButton(
                 source_frame,
                 source_label,
@@ -268,12 +265,7 @@ class DiscoverSkillsPanel:
         self._current_source = source_key
         for key, btn in self._source_buttons.items():
             btn.set_style('primary' if key == source_key else 'ghost')
-        # 来源筛选仅在仓库模式下启用
-        if source_key == 'marketplace':
-            self._source_filter_combo.configure(state='disabled')
-            self._source_filter_var.set('全部来源')
-        else:
-            self._source_filter_combo.configure(state='readonly')
+        self._source_filter_combo.configure(state='readonly')
         # 重置搜索（正确清空，避免占位符冲突）
         # 如果搜索框仍有焦点，先移除焦点，防止占位符与用户输入冲突
         if self._search_entry is not None:
@@ -293,11 +285,7 @@ class DiscoverSkillsPanel:
     # ------------------------------------------------------------------ 数据加载
     def _load_source_data(self, source_type):
         self.set_status('正在加载技能列表...', COLORS['warning'])
-
-        if source_type == 'registry':
-            self._load_registry_data()
-        else:
-            self._load_marketplace_data()
+        self._load_registry_data()
 
     def _load_registry_data(self):
         repos = self.config.get_skills_repositories()
@@ -439,74 +427,6 @@ class DiscoverSkillsPanel:
         else:
             self.set_status(f'使用缓存索引，共 {len(self._all_skills)} 个技能', COLORS['text_sub'])
 
-    def _load_marketplace_data(self):
-        self.set_status('正在加载 skill.sh 技能市场...', COLORS['warning'])
-
-        def on_loaded(data):
-            if self._current_source != 'marketplace':
-                return
-            self._marketplace_payload = data
-            self._merge_marketplace_to_skills(data)
-            self._apply_filters()
-            skill_count = len(self._all_skills)
-            if skill_count > 0:
-                self.set_status(f'skill.sh 已加载，共 {skill_count} 个技能', COLORS['success'])
-            else:
-                self.set_status('skill.sh 已加载，但没有可用技能', COLORS['warning'])
-
-        def on_error(exc):
-            if self._current_source != 'marketplace':
-                return
-            self._all_skills = []
-            self._marketplace_error = str(exc)
-            self._apply_filters()
-            self.set_status(f'skill.sh 加载失败: {exc}', COLORS['warning'])
-
-        self._marketplace_error = None
-        self.marketplace.fetch_index(on_success=on_loaded, on_error=on_error, force=True)
-
-    def _merge_marketplace_to_skills(self, payload):
-        installed = self.skill_manager.list_installed_skills(self._registry_payload)
-        installed_map = {s.get('id'): s for s in installed}
-
-        all_skills = []
-        seen_ids = set()
-        for item in (payload or {}).get('skills', []):
-            skill_id = item.get('id', '')
-            if not skill_id:
-                continue
-            seen_ids.add(skill_id)
-            if skill_id in installed_map:
-                view = dict(installed_map[skill_id])
-                view['source_label'] = 'skill.sh'
-                view['is_installed'] = True
-                if view.get('registry_entry'):
-                    view['registry_entry'] = dict(view['registry_entry'], source='marketplace')
-                all_skills.append(view)
-            else:
-                all_skills.append({
-                    'id': skill_id,
-                        'name': item.get('name') or skill_id,
-                        'version': item.get('version', ''),
-                        'latest_version': item.get('version', ''),
-                        'description': item.get('description') or '',
-                        'min_app_version': item.get('min_app_version', ''),
-                        'download_url': item.get('download_url', ''),
-                        'publisher': item.get('publisher') or '',
-                        'homepage': item.get('homepage') or '',
-                    'manifest': None,
-                    'is_installed': False,
-                    'has_update': False,
-                    'enabled': False,
-                    'global_enabled': False,
-                    'bound_scene_ids': [],
-                    'source_type': 'marketplace',
-                    'source_label': 'skill.sh',
-                    'actions_count': 0,
-                })
-
-        self._all_skills = all_skills
-
     # ------------------------------------------------------------------ 筛选
     def _apply_filters(self):
         query = ''
@@ -532,8 +452,8 @@ class DiscoverSkillsPanel:
                 continue
             if status_filter == '未安装' and view.get('is_installed'):
                 continue
-            # 来源筛选（仅仓库模式）
-            if self._current_source == 'registry' and source_filter and source_filter != '全部来源':
+            # 来源筛选
+            if source_filter and source_filter != '全部来源':
                 repo_name = view.get('repo_name', '')
                 if repo_name != source_filter:
                     continue
@@ -559,9 +479,7 @@ class DiscoverSkillsPanel:
 
         if not self._filtered_skills:
             # 区分不同空状态
-            if self._current_source == 'marketplace' and getattr(self, '_marketplace_error', None):
-                empty_text = f'skill.sh 暂时不可用\n{self._marketplace_error}'
-            elif not self._all_skills and self._current_source == 'registry':
+            if not self._all_skills:
                 empty_text = '仓库中没有技能，请添加仓库或检查网络连接。'
             elif self._all_skills and not self._filtered_skills:
                 empty_text = '没有找到匹配的技能。'

@@ -46,7 +46,7 @@ _SOURCE_TYPE_LABELS = {
     'registry': '仓库',
     'zip': 'ZIP 导入',
     'directory': '目录导入',
-    'marketplace': '技能市场',
+    'marketplace': '历史市场来源',
     'local': '本地',
 }
 

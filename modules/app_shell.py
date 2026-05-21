@@ -4559,7 +4559,6 @@ class SmartPaperTool:
 
     def _show_discover_skills(self):
         from pages.discover_skills_page import DiscoverSkillsPanel
-        from modules.skill_marketplace import SkillMarketplaceClient
 
         existing_window = self._discover_skills_window
         existing_panel = self._discover_skills_panel
@@ -4574,16 +4573,6 @@ class SmartPaperTool:
         apply_adaptive_window_geometry(window, '1640x980', min_width=1420, min_height=820)
         self._discover_skills_window = window
 
-        # 创建或复用 marketplace 客户端
-        if not hasattr(self, '_marketplace_client') or self._marketplace_client is None:
-            skills_root = self.skill_manager.resolve_skills_root() if self.skill_manager else os.path.join(self.config_mgr.app_dir, 'skills')
-            self._marketplace_client = SkillMarketplaceClient(
-                skills_root,
-                self.root,
-                log_callback=self._write_app_log if hasattr(self, '_write_app_log') else None,
-                project_root=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            )
-
         # 安装后回调，同步 Skills 管理面板
         def on_installed():
             if self._skills_center_panel and hasattr(self._skills_center_panel, 'refresh_all'):
@@ -4597,7 +4586,6 @@ class SmartPaperTool:
             self.config_mgr,
             self.skill_manager,
             self._remote_content,
-            self._marketplace_client,
             set_status=self._set_status,
             close_panel=lambda win=window: self._close_discover_dialog(win),
             on_skill_installed=on_installed,
