@@ -31,6 +31,7 @@ PAGE_ORDER = (
 
 PAGE_META = {
     'paper_write': {'label': '论文写作'},
+    'academic_paper': {'label': 'AI论文助手'},
     'ai_diagram': {'label': 'AI 图表'},
     'ai_reduce': {'label': '降AI检测'},
     'plagiarism': {'label': '降查重率'},
@@ -193,6 +194,121 @@ SCENE_DEFS = {
         ),
         'required_variables': ('instruction', 'current_xml'),
     },
+    'academic_paper.full': {
+        'page_id': 'academic_paper',
+        'page_label': 'AI论文助手',
+        'label': '完整论文写作',
+        'variables': (
+            ('topic', '论文主题'),
+            ('paper_type', '论文类型'),
+            ('discipline', '学科方向'),
+            ('citation_format', '引用格式'),
+            ('word_count', '目标字数'),
+            ('conversation', '对话历史'),
+        ),
+        'required_variables': ('topic',),
+    },
+    'academic_paper.plan': {
+        'page_id': 'academic_paper',
+        'page_label': 'AI论文助手',
+        'label': '规划论文',
+        'variables': (
+            ('topic', '论文主题'),
+            ('materials', '已有材料'),
+            ('conversation', '对话历史'),
+        ),
+        'required_variables': ('topic',),
+    },
+    'academic_paper.outline': {
+        'page_id': 'academic_paper',
+        'page_label': 'AI论文助手',
+        'label': '仅生成大纲',
+        'variables': (
+            ('topic', '论文主题'),
+            ('paper_type', '论文类型'),
+            ('conversation', '对话历史'),
+        ),
+        'required_variables': ('topic',),
+    },
+    'academic_paper.lit_review': {
+        'page_id': 'academic_paper',
+        'page_label': 'AI论文助手',
+        'label': '文献综述',
+        'variables': (
+            ('topic', '研究主题'),
+            ('scope', '检索范围'),
+            ('conversation', '对话历史'),
+        ),
+        'required_variables': ('topic',),
+    },
+    'academic_paper.abstract': {
+        'page_id': 'academic_paper',
+        'page_label': 'AI论文助手',
+        'label': '仅生成摘要',
+        'variables': (
+            ('full_text', '论文全文'),
+            ('language', '摘要语言'),
+            ('conversation', '对话历史'),
+        ),
+        'required_variables': ('full_text',),
+    },
+    'academic_paper.revision': {
+        'page_id': 'academic_paper',
+        'page_label': 'AI论文助手',
+        'label': '修订论文',
+        'variables': (
+            ('review_comments', '评审意见'),
+            ('paper_text', '论文原文'),
+            ('conversation', '对话历史'),
+        ),
+        'required_variables': ('paper_text',),
+    },
+    'academic_paper.revision_coach': {
+        'page_id': 'academic_paper',
+        'page_label': 'AI论文助手',
+        'label': '修订指导',
+        'variables': (
+            ('review_comments', '评审意见'),
+            ('paper_text', '论文原文'),
+            ('conversation', '对话历史'),
+        ),
+        'required_variables': ('review_comments',),
+    },
+    'academic_paper.citation_check': {
+        'page_id': 'academic_paper',
+        'page_label': 'AI论文助手',
+        'label': '检查引用',
+        'variables': (
+            ('paper_text', '论文文本'),
+            ('citation_format', '引用格式'),
+            ('conversation', '对话历史'),
+        ),
+        'required_variables': ('paper_text',),
+    },
+    'academic_paper.format_convert': {
+        'page_id': 'academic_paper',
+        'page_label': 'AI论文助手',
+        'label': '格式转换',
+        'variables': (
+            ('paper_text', '论文文本'),
+            ('output_format', '输出格式'),
+            ('citation_format', '引用格式'),
+            ('conversation', '对话历史'),
+        ),
+        'required_variables': ('paper_text',),
+    },
+    'academic_paper.disclosure': {
+        'page_id': 'academic_paper',
+        'page_label': 'AI论文助手',
+        'label': 'AI 声明',
+        'variables': (
+            ('paper_text', '论文文本'),
+            ('venue', '投稿期刊/会议'),
+            ('ai_usage', 'AI 使用说明'),
+            ('conversation', '对话历史'),
+        ),
+        'required_variables': ('ai_usage',),
+    },
 }
 
 PAGE_SCENE_MAP = {}
@@ -202,6 +318,9 @@ for _scene_id, _scene_def in SCENE_DEFS.items():
 DEFAULTS_PATH = resolve_resource_path('modules', 'prompt_defaults.json')
 SYSTEM_DEFAULT_SYNC_SCENE_IDS = (
     'paper_write.outline', 'paper_write.section', 'paper_write.abstract', 'paper_write.import_outline',
+    'academic_paper.full', 'academic_paper.plan', 'academic_paper.outline', 'academic_paper.lit_review',
+    'academic_paper.abstract', 'academic_paper.revision', 'academic_paper.revision_coach',
+    'academic_paper.citation_check', 'academic_paper.format_convert', 'academic_paper.disclosure',
     'ai_diagram.chat',
     'polish.run_task', 'polish.translate', 'polish.grammar', 'polish.academic_vocab', 'polish.logic', 'polish.full',
     'ai_reduce.transform', 'plagiarism.transform', 'correction.ai_review',

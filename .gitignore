@@ -8,3 +8,12 @@
 /logs
 /logs
 /logs
+config.enc
+config_dir.json
+usage_events.jsonl
+*.log
+*.tmp
+__pycache__/
+*.py[cod]
+build/
+dist/

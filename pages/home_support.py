@@ -19,10 +19,10 @@ from modules.config import resolve_model_display_name
 
 
 TASK_TEXT = (
-    '1. 先配置自己的模型 Key、端点和模型名称\n'
-    '2. 导入论文文档或新建空白草稿开始写作\n'
-    '3. 生成大纲、优化表达，并补齐摘要或结论\n'
-    '4. 检查格式、差异和重复风险后再导出成文档'
+    '1. 导入论文文档或新建空白草稿开始写作\n'
+    '2. 生成大纲、优化表达，并补齐摘要或结论\n'
+    '3. 依次执行润色、检测、纠错，处理风险项\n'
+    '4. 检查格式、差异和引用后再导出成文档'
 )
 
 STAGE_RULES = {
@@ -206,8 +206,8 @@ def _resolve_current_paper_topic(config_mgr):
 def _resolve_stage(model_ready, latest_record, config_mgr):
     if not model_ready:
         return {
-            'label': '待配置模型',
-            'target': 'api_config',
+            'label': '待开始写作',
+            'target': 'paper_write',
         }
 
     if latest_record:
@@ -303,12 +303,9 @@ def build_system_status_items(config_mgr):
 
     if not active_model_ready(config_mgr):
         items.append({
-            'level': 'error',
-            'title': '模型未配置',
-            'detail': '当前激活模型配置不完整，AI 功能暂时不可用。',
-            'action_name': '前往配置',
-            'action_kind': 'bridge',
-            'action_value': 'show_api_config',
+            'level': 'warning',
+            'title': '未检测到模型配置',
+            'detail': '当前未检测到可用模型配置，部分 AI 功能将不可用。',
         })
 
     modified_scenes = _modified_prompt_scenes(config_mgr)
@@ -362,11 +359,11 @@ def build_dashboard_view_model(show_home_stats, config_mgr, history_mgr, period_
 
     if not show_home_stats:
         tip_text = '今日建议：首页统计已关闭，你仍然可以从这里直接进入写作与润色流程。'
-        board_text = '把模型配置、写作、润色、检测和导出串成一套真实的论文处理流程。'
+        board_text = '把写作、润色、检测和导出串成一套真实的论文处理流程。'
         completion_hint = '静态首页\n视图'
     elif not model_ready:
-        tip_text = '今日建议：先完成模型配置，再导入论文开始写作。'
-        board_text = '先连通模型，再把写作、润色、检测和导出串起来。'
+        tip_text = '今日建议：先导入文稿并整理结构，再按需执行 AI 流程。'
+        board_text = '从写作与结构整理开始，再把润色、检测和导出串起来。'
         completion_hint = f'最近处理\n{latest_time}'
     elif total == 0:
         tip_text = '今日建议：先导入论文文档，再生成大纲、摘要与正文草稿。'
@@ -378,11 +375,10 @@ def build_dashboard_view_model(show_home_stats, config_mgr, history_mgr, period_
         completion_hint = f'最近处理\n{latest_time}'
 
     stage = _resolve_stage(model_ready, latest_record, config_mgr)
-    active_model = get_active_model_label(config_mgr) if model_ready else '未配置'
     status_fields = (
         ('当前文稿主题', _resolve_current_paper_topic(config_mgr)),
         ('当前阶段', stage['label']),
-        ('活跃模型', active_model),
+        ('工作区模式', '本地模式'),
         ('当前字数', str(_resolve_current_word_count(config_mgr, stage['target'], latest_record))),
         ('最近一次处理时间', str(latest_record.get('time', '') or '暂无记录') if latest_record else '暂无记录'),
         ('待处理风险数', str(_count_pending_risks(config_mgr))),

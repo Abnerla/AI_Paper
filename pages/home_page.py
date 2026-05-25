@@ -13,7 +13,6 @@ from modules.config import resolve_model_display_name
 from pages.home_support import (
     active_model_ready,
     build_dashboard_view_model,
-    get_active_model_label,
 )
 from modules.usage_stats import (
     USAGE_PERIOD_OPTIONS,
@@ -1374,7 +1373,7 @@ class HomePage:
             0,
             0,
             anchor='nw',
-            text=get_active_model_label(self.config),
+            text='本地优先工作区',
             font=(FONTS['body_bold'][0], 12, 'bold'),
             fill=COLORS['text_sub'],
         )
@@ -1382,7 +1381,7 @@ class HomePage:
             0,
             0,
             anchor='nw',
-            text='今日建议：先完成模型配置，再导入论文开始写作。',
+            text='今日建议：先导入文稿并整理结构，再按需执行 AI 流程。',
             font=FONTS['small'],
             fill=COLORS['text_sub'],
             width=700,
@@ -1458,9 +1457,6 @@ class HomePage:
         self.hero_tags_bar.pack(fill=tk.X)
         hero_tag_specs = (
             ('使用教程', lambda: self._trigger_action('show_tutorial'), FONTS['tiny']),
-            ('模型列表', lambda: self._show_model_list(), FONTS['tiny']),
-            ('模型配置', lambda: self._trigger_action('show_api_config'), FONTS['tiny']),
-            ('模型路由', lambda: self._trigger_action('show_model_routing'), FONTS['tiny']),
             ('提示词', lambda: self._trigger_action('show_prompt_manager'), FONTS['tiny']),
             ('MCP 服务', lambda: self._trigger_action('show_mcp_services'), FONTS['tiny']),
         )
@@ -1619,6 +1615,8 @@ class HomePage:
         self.board_subtitle_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(16, 0), pady=(10, 0))
         bind_adaptive_wrap(self.board_subtitle_label, board_title_row, padding=260, min_width=220)
 
+        self._build_ai_paper_assistant_card()
+
         self.dashboard_columns = tk.Frame(self.dashboard_panel.inner, bg=COLORS['card_bg'])
         self.dashboard_columns.pack(fill=tk.X)
 
@@ -1637,12 +1635,12 @@ class HomePage:
 
     def _build_status_card(self):
         self.status_card = CardFrame(self.left_column, padding=22)
-        self.status_card.pack(fill=tk.X, pady=(0, 16))
+        self.status_card.pack(fill=tk.BOTH, expand=True)
         self.status_card.inner.grid_columnconfigure(0, weight=1)
 
         tk.Label(
             self.status_card.inner,
-            text='我的状态',
+            text='工作状态',
             font=(FONTS['title'][0], DASHBOARD_SECTION_TITLE_FONT_SIZE, 'bold'),
             fg=COLORS['text_main'],
             bg=COLORS['card_bg'],
@@ -1657,7 +1655,7 @@ class HomePage:
         field_specs = (
             ('当前文稿主题', 'paper_topic'),
             ('当前阶段', 'stage'),
-            ('活跃模型', 'active_model'),
+            ('工作区模式', 'work_mode'),
             ('当前字数', 'word_count'),
             ('最近一次处理时间', 'latest_time'),
             ('待处理风险数', 'pending_risks'),
@@ -1719,7 +1717,7 @@ class HomePage:
 
     def _build_tasks_card(self):
         self.tasks_card = CardFrame(self.right_column, padding=22)
-        self.tasks_card.pack(fill=tk.X, pady=(0, 16))
+        self.tasks_card.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
         tk.Label(
             self.tasks_card.inner,
@@ -1746,6 +1744,108 @@ class HomePage:
         self.task_text_label.pack(fill=tk.X, anchor='w', pady=(14, 0))
         bind_adaptive_wrap(self.task_text_label, self.tasks_card.inner, padding=26, min_width=320)
 
+    def _build_ai_paper_assistant_card(self):
+        """构建首页顶部 academic 工作流入口。"""
+        card = CardFrame(self.dashboard_panel.inner, padding=18)
+        card.pack(fill=tk.X, pady=(0, 16))
+        card.inner.grid_columnconfigure(0, weight=1)
+        card.inner.grid_columnconfigure(1, weight=0)
+
+        title_row = tk.Frame(card.inner, bg=COLORS['card_bg'])
+        title_row.grid(row=0, column=0, sticky='ew')
+        title_row.grid_columnconfigure(0, weight=1)
+
+        tk.Label(
+            title_row,
+            text='Academic 工作流',
+            font=(FONTS['title'][0], DASHBOARD_SECTION_TITLE_FONT_SIZE + 2, 'bold'),
+            fg=COLORS['text_main'],
+            bg=COLORS['card_bg'],
+        ).grid(row=0, column=0, sticky='w')
+
+        badge_row = tk.Frame(title_row, bg=COLORS['card_bg'])
+        badge_row.grid(row=1, column=0, sticky='w', pady=(8, 0))
+        for badge in ('内置学术写作', '10 种模式', '引用与声明'):
+            tk.Label(
+                badge_row,
+                text=badge,
+                font=FONTS['tiny'],
+                fg=COLORS['primary'],
+                bg=COLORS['primary_light'],
+                padx=9,
+                pady=4,
+            ).pack(side=tk.LEFT, padx=(0, 8))
+
+        desc_label = tk.Label(
+            card.inner,
+            text='面向论文写作的完整工作流：从研究问题、文献综述、论文成稿到修订检查，都可以从这里直接进入对应代理链路。',
+            font=FONTS['small'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['card_bg'],
+            justify='left',
+            anchor='w',
+        )
+        desc_label.grid(row=1, column=0, sticky='ew', pady=(12, 0))
+        bind_adaptive_wrap(desc_label, card.inner, padding=360, min_width=360)
+
+        quick_row = tk.Frame(card.inner, bg=COLORS['card_bg'])
+        quick_row.grid(row=2, column=0, sticky='ew', pady=(16, 0))
+        quick_entries = (
+            ('完整论文', 'full'),
+            ('规划论文', 'plan'),
+            ('文献综述', 'lit-review'),
+            ('修订指导', 'revision-coach'),
+            ('引用检查', 'citation-check'),
+            ('AI 声明', 'disclosure'),
+        )
+        for label, mode in quick_entries:
+            tk.Button(
+                quick_row,
+                text=label,
+                font=FONTS['small'],
+                fg=COLORS['text_main'],
+                bg=COLORS['surface_alt'],
+                activebackground=COLORS['primary_light'],
+                relief=tk.FLAT,
+                bd=0,
+                padx=14,
+                pady=8,
+                cursor='hand2',
+                command=lambda m=mode: self._navigate_to_academic_paper(m),
+            ).pack(side=tk.LEFT, padx=(0, 8), pady=(0, 6))
+
+        action_panel = tk.Frame(card.inner, bg=COLORS['card_bg'])
+        action_panel.grid(row=0, column=1, rowspan=3, sticky='nse', padx=(26, 0))
+
+        tk.Label(
+            action_panel,
+            text='论文工作台',
+            font=FONTS['body_bold'],
+            fg=COLORS['text_main'],
+            bg=COLORS['card_bg'],
+        ).pack(anchor='e')
+        tk.Label(
+            action_panel,
+            text='配置、输入、产出三栏处理',
+            font=FONTS['tiny'],
+            fg=COLORS['text_sub'],
+            bg=COLORS['card_bg'],
+        ).pack(anchor='e', pady=(4, 12))
+        enter_btn = ModernButton(
+            action_panel,
+            '打开工作台',
+            style='primary',
+            command=lambda: self._navigate_to_academic_paper('full'),
+        )
+        enter_btn.pack(anchor='e')
+
+    def _navigate_to_academic_paper(self, mode=None):
+        """导航到 AI 论文助手页面"""
+        if mode and self.config:
+            self.config.set_setting('academic_paper_pending_mode', mode)
+        if self.navigate_page:
+            self.navigate_page('academic_paper')
+
     def _build_notice_card(self):
         self.notice_card = CardFrame(self.dashboard_usage_row, padding=22)
         self.notice_card.pack(fill=tk.BOTH, expand=True)
@@ -1754,19 +1854,21 @@ class HomePage:
 
     def _build_quick_card(self):
         self.quick_card = CardFrame(self.right_column, padding=22)
-        self.quick_card.pack(fill=tk.BOTH, expand=True)
+        self.quick_card.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
+        header = tk.Frame(self.quick_card.inner, bg=COLORS['card_bg'])
+        header.pack(fill=tk.X)
         tk.Label(
-            self.quick_card.inner,
+            header,
             text='系统状态',
             font=(FONTS['title'][0], DASHBOARD_SECTION_TITLE_FONT_SIZE, 'bold'),
             fg=COLORS['text_main'],
             bg=COLORS['card_bg'],
-        ).pack(anchor='w')
+        ).pack(side=tk.LEFT, anchor='w')
 
         self.system_status_empty_label = tk.Label(
             self.quick_card.inner,
-            text='系统运行正常',
+            text='OK 运行正常',
             font=FONTS['body_bold'],
             fg=COLORS['success'],
             bg=COLORS['card_bg'],
@@ -1776,7 +1878,7 @@ class HomePage:
         self.system_status_empty_label.pack(fill=tk.X, anchor='w', pady=(12, 0))
 
         self.system_status_list = tk.Frame(self.quick_card.inner, bg=COLORS['card_bg'])
-        self.system_status_list.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        self.system_status_list.pack(fill=tk.X, pady=(12, 0))
 
     def _build_usage_card(self):
         header = tk.Frame(self.notice_card.inner, bg=COLORS['card_bg'])
@@ -3294,6 +3396,10 @@ class HomePage:
             self._navigate(action_value)
 
     def _render_system_status_items(self, items):
+        items = list(items or [])
+        if self.system_status_list is None or self.system_status_empty_label is None:
+            return
+
         for child in self.system_status_list.winfo_children():
             child.destroy()
 
@@ -3329,9 +3435,7 @@ class HomePage:
     def _continue_current_task(self):
         status_card = self.dashboard_view_model.get('status_card', {})
         target = str(status_card.get('continue_target', '') or '').strip()
-        if target == 'api_config':
-            self._trigger_action('show_api_config')
-        elif target:
+        if target:
             self._navigate(target)
 
     def _draw_hero_background(self, width, height):
@@ -3402,7 +3506,7 @@ class HomePage:
         )
         self.hero_text.itemconfigure(
             self.hero_identity_item,
-            text=get_active_model_label(self.config) if active_model_ready(self.config) else '未配置',
+            text='本地优先工作区',
             font=(FONTS['body_bold'][0], 12, 'bold'),
             fill=COLORS['text_sub'],
         )
@@ -3494,6 +3598,7 @@ class HomePage:
             self.hero_completion_hint.configure(wraplength=max(progress_card_width - 54, 200))
             self.hero_canvas.itemconfigure(self.hero_progress_window, width=progress_card_width, height=progress_height)
             self.hero_canvas.coords(self.hero_progress_window, pad, progress_y)
+
             canvas_height = progress_y + progress_height + 24
         else:
             progress_x = width - progress_right_pad - progress_width
@@ -3995,12 +4100,11 @@ class HomePage:
         win.protocol('WM_DELETE_WINDOW', lambda: [setattr(self, '_model_list_refresh', None), win.destroy()])
 
     def _start_using(self):
+        self._navigate('paper_write')
         if active_model_ready(self.config):
-            self._navigate('paper_write')
             self.set_status('已进入论文写作页面')
         else:
-            self._trigger_action('show_api_config')
-            self.set_status('请先完成模型配置，再开始写作', COLORS['warning'])
+            self.set_status('已进入论文写作页面（当前未检测到模型配置）', COLORS['warning'])
 
     def refresh_dashboard(self, *, usage_mode='async'):
         show_home_stats = self.config.get_setting('show_home_stats', True)
@@ -4021,7 +4125,7 @@ class HomePage:
         field_keys = (
             'paper_topic',
             'stage',
-            'active_model',
+            'work_mode',
             'word_count',
             'latest_time',
             'pending_risks',

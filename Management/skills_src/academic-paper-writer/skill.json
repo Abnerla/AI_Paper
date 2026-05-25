@@ -1,0 +1,499 @@
+{
+  "id": "academic-paper-writer",
+  "name": "AI 论文助手",
+  "version": "v1.1.0",
+  "description": "面向学术论文写作的 12-agent 协作系统，内置 agents、references、templates 与 examples，支持从选题、规划、文献综述、写作、修订、引用检查、格式转换到 AI 声明的完整工作流。",
+  "min_app_version": "v1.5.0",
+  "entry": {
+    "module": "entry",
+    "class": "AcademicPaperWriterSkill"
+  },
+  "priority": 10,
+  "actions": [
+    {
+      "id": "full_paper",
+      "label": "完整论文写作",
+      "description": "从选题到成稿，全流程 AI 协作",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "topic",
+            "label": "论文主题",
+            "type": "text",
+            "required": true,
+            "placeholder": "请输入论文主题或研究问题"
+          },
+          {
+            "id": "paper_type",
+            "label": "论文类型",
+            "type": "select",
+            "required": true,
+            "default": "imrad",
+            "options": [
+              {
+                "label": "实证研究论文 (IMRaD)",
+                "value": "imrad"
+              },
+              {
+                "label": "文献综述论文",
+                "value": "literature_review"
+              },
+              {
+                "label": "案例研究论文",
+                "value": "case_study"
+              },
+              {
+                "label": "理论研究论文",
+                "value": "theoretical"
+              },
+              {
+                "label": "会议论文",
+                "value": "conference"
+              },
+              {
+                "label": "政策简报",
+                "value": "policy_brief"
+              }
+            ]
+          },
+          {
+            "id": "discipline",
+            "label": "学科方向",
+            "type": "select",
+            "required": true,
+            "default": "education",
+            "options": [
+              {
+                "label": "教育学",
+                "value": "education"
+              },
+              {
+                "label": "管理学",
+                "value": "management"
+              },
+              {
+                "label": "经济学",
+                "value": "economics"
+              },
+              {
+                "label": "心理学",
+                "value": "psychology"
+              },
+              {
+                "label": "社会学",
+                "value": "sociology"
+              },
+              {
+                "label": "计算机科学",
+                "value": "computer_science"
+              },
+              {
+                "label": "工程学",
+                "value": "engineering"
+              },
+              {
+                "label": "医学",
+                "value": "medicine"
+              },
+              {
+                "label": "法学",
+                "value": "law"
+              },
+              {
+                "label": "人文学科",
+                "value": "humanities"
+              }
+            ]
+          },
+          {
+            "id": "citation_format",
+            "label": "引用格式",
+            "type": "select",
+            "required": true,
+            "default": "APA 7",
+            "options": [
+              {
+                "label": "APA 第 7 版",
+                "value": "APA 7"
+              },
+              {
+                "label": "GB/T 7714 (国标)",
+                "value": "GB/T 7714"
+              },
+              {
+                "label": "Chicago",
+                "value": "Chicago"
+              },
+              {
+                "label": "MLA 第 9 版",
+                "value": "MLA 9"
+              },
+              {
+                "label": "IEEE",
+                "value": "IEEE"
+              },
+              {
+                "label": "Vancouver",
+                "value": "Vancouver"
+              }
+            ]
+          },
+          {
+            "id": "word_count",
+            "label": "目标字数",
+            "type": "number",
+            "required": false,
+            "placeholder": "8000",
+            "default": 8000
+          }
+        ]
+      }
+    },
+    {
+      "id": "plan_paper",
+      "label": "规划论文",
+      "description": "苏格拉底式引导，逐步完善论文蓝图",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "topic",
+            "label": "论文主题",
+            "type": "text",
+            "required": true,
+            "placeholder": "请输入论文主题或研究方向"
+          },
+          {
+            "id": "materials",
+            "label": "已有材料",
+            "type": "textarea",
+            "required": false,
+            "placeholder": "请描述已有文献、数据、想法等"
+          }
+        ]
+      }
+    },
+    {
+      "id": "outline_only",
+      "label": "仅生成大纲",
+      "description": "快速生成论文结构和章节大纲",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "topic",
+            "label": "论文主题",
+            "type": "text",
+            "required": true,
+            "placeholder": "请输入论文主题"
+          },
+          {
+            "id": "paper_type",
+            "label": "论文类型",
+            "type": "select",
+            "required": true,
+            "default": "imrad",
+            "options": [
+              {
+                "label": "实证研究论文 (IMRaD)",
+                "value": "imrad"
+              },
+              {
+                "label": "文献综述论文",
+                "value": "literature_review"
+              },
+              {
+                "label": "案例研究论文",
+                "value": "case_study"
+              },
+              {
+                "label": "理论研究论文",
+                "value": "theoretical"
+              },
+              {
+                "label": "会议论文",
+                "value": "conference"
+              },
+              {
+                "label": "政策简报",
+                "value": "policy_brief"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "literature_review",
+      "label": "文献综述",
+      "description": "系统化文献检索与综述",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "topic",
+            "label": "研究主题",
+            "type": "text",
+            "required": true,
+            "placeholder": "请输入研究主题"
+          },
+          {
+            "id": "scope",
+            "label": "检索范围",
+            "type": "textarea",
+            "required": false,
+            "placeholder": "请描述检索范围、数据库、年份或纳排标准"
+          }
+        ]
+      }
+    },
+    {
+      "id": "abstract_only",
+      "label": "仅生成摘要",
+      "description": "为已有论文生成双语摘要",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "full_text",
+            "label": "论文全文",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "请粘贴论文全文"
+          },
+          {
+            "id": "language",
+            "label": "摘要语言",
+            "type": "select",
+            "required": true,
+            "default": "bilingual",
+            "options": [
+              {
+                "label": "中英双语",
+                "value": "bilingual"
+              },
+              {
+                "label": "仅中文",
+                "value": "zh-CN"
+              },
+              {
+                "label": "仅英文",
+                "value": "en"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "revision",
+      "label": "修订论文",
+      "description": "根据评审意见修改论文并生成回复草稿",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "paper_text",
+            "label": "论文原文",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "请粘贴论文原文"
+          },
+          {
+            "id": "review_comments",
+            "label": "评审意见",
+            "type": "textarea",
+            "required": false,
+            "placeholder": "请粘贴评审意见，可为空"
+          }
+        ]
+      }
+    },
+    {
+      "id": "revision_coach",
+      "label": "修订指导",
+      "description": "解析评审意见，生成修订路线图",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "review_comments",
+            "label": "评审意见",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "请粘贴评审意见"
+          },
+          {
+            "id": "paper_text",
+            "label": "论文原文",
+            "type": "textarea",
+            "required": false,
+            "placeholder": "请粘贴论文原文，可选"
+          }
+        ]
+      }
+    },
+    {
+      "id": "citation_check",
+      "label": "检查引用",
+      "description": "验证引用格式和完整性",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "paper_text",
+            "label": "论文文本",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "请粘贴论文正文和参考文献"
+          },
+          {
+            "id": "citation_format",
+            "label": "引用格式",
+            "type": "select",
+            "required": true,
+            "default": "APA 7",
+            "options": [
+              {
+                "label": "APA 第 7 版",
+                "value": "APA 7"
+              },
+              {
+                "label": "GB/T 7714 (国标)",
+                "value": "GB/T 7714"
+              },
+              {
+                "label": "Chicago",
+                "value": "Chicago"
+              },
+              {
+                "label": "MLA 第 9 版",
+                "value": "MLA 9"
+              },
+              {
+                "label": "IEEE",
+                "value": "IEEE"
+              },
+              {
+                "label": "Vancouver",
+                "value": "Vancouver"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "format_convert",
+      "label": "格式转换",
+      "description": "转换为 Markdown/LaTeX/DOCX/PDF 交付格式",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "paper_text",
+            "label": "论文文本",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "请粘贴论文正文"
+          },
+          {
+            "id": "output_format",
+            "label": "输出格式",
+            "type": "select",
+            "required": true,
+            "default": "markdown",
+            "options": [
+              {
+                "label": "Markdown",
+                "value": "markdown"
+              },
+              {
+                "label": "LaTeX",
+                "value": "latex"
+              },
+              {
+                "label": "DOCX",
+                "value": "docx"
+              },
+              {
+                "label": "PDF",
+                "value": "pdf"
+              }
+            ]
+          },
+          {
+            "id": "citation_format",
+            "label": "引用格式",
+            "type": "select",
+            "required": true,
+            "default": "APA 7",
+            "options": [
+              {
+                "label": "APA 第 7 版",
+                "value": "APA 7"
+              },
+              {
+                "label": "GB/T 7714 (国标)",
+                "value": "GB/T 7714"
+              },
+              {
+                "label": "Chicago",
+                "value": "Chicago"
+              },
+              {
+                "label": "MLA 第 9 版",
+                "value": "MLA 9"
+              },
+              {
+                "label": "IEEE",
+                "value": "IEEE"
+              },
+              {
+                "label": "Vancouver",
+                "value": "Vancouver"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "disclosure",
+      "label": "AI 声明",
+      "description": "生成投稿所需的 AI 使用声明",
+      "input_schema": {
+        "fields": [
+          {
+            "id": "ai_usage",
+            "label": "AI 使用说明",
+            "type": "textarea",
+            "required": true,
+            "placeholder": "说明使用了哪些 AI 工具、用于哪些环节"
+          },
+          {
+            "id": "venue",
+            "label": "投稿期刊/会议",
+            "type": "text",
+            "required": false,
+            "placeholder": "例如 Nature / Elsevier / 某中文期刊"
+          },
+          {
+            "id": "paper_text",
+            "label": "论文文本",
+            "type": "textarea",
+            "required": false,
+            "placeholder": "可粘贴摘要或方法部分"
+          }
+        ]
+      }
+    }
+  ],
+  "scene_bindings": [
+    "academic_paper.full",
+    "academic_paper.plan",
+    "academic_paper.outline",
+    "academic_paper.lit_review",
+    "academic_paper.abstract",
+    "academic_paper.revision",
+    "academic_paper.revision_coach",
+    "academic_paper.citation_check",
+    "academic_paper.format_convert",
+    "academic_paper.disclosure"
+  ],
+  "global_hook": false,
+  "publisher": "PaperLab",
+  "homepage": "https://github.com/Abnerla/AI_paper"
+}

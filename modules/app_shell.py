@@ -492,6 +492,7 @@ class SmartPaperTool:
             'home': {'module': 'pages.home_page', 'class': 'HomePage', 'title': '首页'},
             'api_config': {'module': 'pages.api_config_page', 'class': 'APIConfigPage', 'title': '模型配置'},
             'paper_write': {'module': 'pages.paper_write_page', 'class': 'PaperWritePage', 'title': '论文写作'},
+            'academic_paper': {'module': 'pages.academic_paper_page', 'class': 'AcademicPaperPage', 'title': 'AI论文助手'},
             'ai_diagram': {'module': 'pages.ai_diagram_page', 'class': 'AIDiagramPage', 'title': 'AI图表'},
             'ai_reduce': {'module': 'pages.ai_reduce_page', 'class': 'AIReducePage', 'title': '降AI检测'},
             'polish': {'module': 'pages.polish_page', 'class': 'PolishPage', 'title': '学术润色'},
